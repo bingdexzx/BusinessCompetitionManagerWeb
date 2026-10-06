@@ -38,6 +38,7 @@ ALLOWED_HOSTS = []
 # 应用定义
 
 INSTALLED_APPS = [
+    'BusinessCompetitionManager.apps.BusinessCompetitionManagerConfig',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
