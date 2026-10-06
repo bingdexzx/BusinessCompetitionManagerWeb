@@ -1,0 +1,17 @@
+[project]
+name = "businesscompetitionmanagerweb"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "bing_de", email = "3239480660@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+businesscompetitionmanagerweb = "businesscompetitionmanagerweb:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
