@@ -38,6 +38,8 @@ ALLOWED_HOSTS = []
 # 应用定义
 
 INSTALLED_APPS = [
+    'corsheaders',
+    'rest_framework',
     'BusinessCompetitionManager.apps.BusinesscompetitionmanagerConfig',
     'django.contrib.admin',
     'django.contrib.auth',
@@ -48,6 +50,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -137,4 +140,24 @@ MAILERS = {
     'default': {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
+}
+
+
+# 跨域资源共享（CORS），供前端 Vue 开发联调
+# 允许 Vite 开发服务器的来源访问 API
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+]
+CORS_ALLOW_CREDENTIALS = True
+
+# Django REST Framework 配置
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': [
+        # 演示阶段放开为允许任意访问，生产环境请改为登录/令牌校验
+        'rest_framework.permissions.AllowAny',
+    ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
 }

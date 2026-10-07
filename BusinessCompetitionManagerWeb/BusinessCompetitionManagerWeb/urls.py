@@ -15,8 +15,10 @@ BusinessCompetitionManagerWeb 项目的 URL 配置。
     2. 向 urlpatterns 添加 URL：  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # 前端 Vue 通过 /api/ 访问后端接口
+    path('api/', include('BusinessCompetitionManager.urls')),
 ]
