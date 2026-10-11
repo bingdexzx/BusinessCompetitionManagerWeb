@@ -1,24 +1,33 @@
-"""
-BusinessCompetitionManagerWeb 项目的 URL 配置。
+"""根路由（§12 API 设计概览）。"""
 
-`urlpatterns` 列表将 URL 路由到对应的视图函数。如需了解更多信息，请参阅：
-    https://docs.djangoproject.com/en/6.1/topics/http/urls/
-示例：
-函数视图
-    1. 添加导入：  from my_app import views
-    2. 向 urlpatterns 添加 URL：  path('', views.home, name='home')
-基于类的视图
-    1. 添加导入：  from other_app.views import Home
-    2. 向 urlpatterns 添加 URL：  path('', Home.as_view(), name='home')
-引入其他 URLconf
-    1. 导入 include() 函数： from django.urls import include, path
-    2. 向 urlpatterns 添加 URL：  path('blog/', include('blog.urls'))
-"""
 from django.contrib import admin
-from django.urls import path, include
+from django.http import JsonResponse
+from django.urls import include, path
+
+
+def health(_request):
+    return JsonResponse({'status': 'ok', 'service': 'gipfel'})
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    # 前端 Vue 通过 /api/ 访问后端接口
-    path('api/', include('BusinessCompetitionManager.urls')),
+    path('api/health', health),
+    # 全局域
+    path('api/', include('apps.global_.accounts.urls')),
+    path('api/', include('apps.global_.schools.urls')),
+    path('api/', include('apps.global_.competitions.urls')),
+    path('api/', include('apps.global_.memberships.urls')),
+    path('api/', include('apps.global_.logs.urls')),
+    path('api/', include('apps.global_.packages.urls')),
+    path('api/', include('apps.global_.teams.urls')),
+    path('api/', include('apps.global_.invites.urls')),
+    path('api/', include('apps.global_.profiles.urls')),
+    # 比赛域（/api/competitions/{cid}/... 由多库路由解析到对应比赛库）
+    path('api/', include('apps.competition.companies.urls')),
+    path('api/', include('apps.competition.contracts.urls')),
+    path('api/', include('apps.competition.fiscal.urls')),
+    path('api/', include('apps.competition.fieldlogs.urls')),
+    path('api/', include('apps.competition.messages.urls')),
+    path('api/', include('apps.competition.audit.urls')),
+    path('api/', include('apps.competition.settlement.urls')),
 ]

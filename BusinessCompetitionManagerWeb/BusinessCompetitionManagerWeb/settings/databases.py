@@ -1,0 +1,64 @@
+"""数据库拓扑：全局库 + 每场比赛独立库（重构方案 §5.2，决策 D1）。
+
+- ``default`` 全局库（.env 中 DATABASES_NAME，默认 gipfel_global）：账号、学校、
+  比赛元数据、比赛内身份、设备、网络日志等全局域数据；
+- ``comp_<id>`` 比赛库：导入/创建比赛时动态 ``CREATE DATABASE`` + ``migrate``，
+  承载该公司/产业字段/合同/财年/字段日志等比赛域数据。
+"""
+
+import os
+
+from pathlib import Path
+
+# ---------------------------------------------------------------- 全局库连接
+
+GLOBAL_DB_NAME = os.getenv('DATABASES_NAME', 'gipfel_global')
+
+GLOBAL_DB = {
+    'ENGINE': 'django.db.backends.postgresql',
+    'NAME': GLOBAL_DB_NAME,
+    'USER': os.getenv('DATABASES_USER', 'postgres'),
+    'PASSWORD': os.getenv('DATABASES_PASSWORD', ''),
+    'HOST': os.getenv('DATABASES_HOST', 'localhost'),
+    'PORT': os.getenv('DATABASES_PORT', '5432'),
+}
+
+DATABASES = {
+    'default': GLOBAL_DB,
+}
+
+# 比赛库统一前缀（comp_<id>）
+COMPETITION_DB_PREFIX = 'comp_'
+
+# 多库路由器：把比赛域模型路由到当前比赛上下文对应的库
+DATABASE_ROUTERS = ['apps.competition.routing.CompetitionDatabaseRouter']
+
+
+def competition_db_name(competition_id: int) -> str:
+    """比赛库命名（决策 D1 / §6.1 competitions.dbName）。"""
+    return f'{COMPETITION_DB_PREFIX}{competition_id}'
+
+
+def competition_db_config(db_name: str) -> dict:
+    """由全局库连接克隆出比赛库连接配置（同服务器，仅库名不同）。"""
+    cfg = dict(GLOBAL_DB)
+    cfg['NAME'] = db_name
+    return cfg
+
+
+def register_competition_db(db_name: str) -> str:
+    """把比赛库注册进 settings.DATABASES（幂等），返回 alias（即库名）。"""
+    if not db_name.startswith(COMPETITION_DB_PREFIX):
+        raise ValueError(f'非法比赛库名：{db_name!r}')
+    if db_name not in DATABASES:
+        DATABASES[db_name] = competition_db_config(db_name)
+    return db_name
+
+
+def registered_competition_dbs() -> dict:
+    """当前进程内已注册的比赛库 {alias: db_name}。"""
+    return {
+        alias: cfg['NAME']
+        for alias, cfg in DATABASES.items()
+        if alias.startswith(COMPETITION_DB_PREFIX)
+    }

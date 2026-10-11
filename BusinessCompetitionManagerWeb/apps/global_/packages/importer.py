@@ -1,0 +1,413 @@
+"""比赛包导入编排（§9.2、《比赛包格式规范》§8）。
+
+流程：解压 → manifest/SHA-256 校验 → AST 扫描插件 → 建库即迁移
+     → 产业插件字段迁移 → 基础数据表格导入 → 合同插件注册 → 合同实例导入 → 导入报告
+
+失败策略：任一阶段错误 → 全局库/比赛库写入整体回滚（本次新建的比赛库直接删除），
+并持久化一份 FAILED 的导入报告供排查。
+"""
+
+import tempfile
+
+from datetime import datetime, timezone
+from pathlib import Path
+from zipfile import BadZipFile, ZipFile
+
+import yaml
+
+from django.apps import apps as django_apps
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from django.db import transaction
+
+from apps.common import context as ctx
+from apps.competition import provisioning
+from apps.competition.contracts import services as contract_services
+from apps.competition.industries import services as industry_services
+from apps.global_.packages import parsers
+from apps.global_.packages.models import Package, PackagePlugin
+from apps.global_.plugins.models import PluginRegistry
+from plugins_runtime import loader
+
+MAX_PACKAGE_BYTES = 100 * 1024 * 1024
+MAX_ROWS_PER_SHEET = 50_000
+
+
+class ImportFailure(Exception):
+    def __init__(self, report):
+        self.report = report
+        super().__init__('；'.join(report.get('errors') or ['导入失败']))
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------- manifest
+
+
+def _load_manifest(root: Path) -> dict:
+    path = root / 'manifest.yaml'
+    if not path.exists():
+        raise ImportFailure({'errors': ['缺少 manifest.yaml']})
+    try:
+        manifest = yaml.safe_load(path.read_text(encoding='utf-8'))
+    except yaml.YAMLError as exc:
+        raise ImportFailure({'errors': [f'manifest.yaml 解析失败：{exc}']})
+    if not isinstance(manifest, dict):
+        raise ImportFailure({'errors': ['manifest.yaml 格式错误']})
+    return manifest
+
+
+def _validate_manifest(manifest: dict, root: Path, report: dict):
+    errors, warnings = report['errors'], report['warnings']
+
+    version = str(manifest.get('packageVersion') or '')
+    if not version.startswith('1'):
+        errors.append(f'不支持的 packageVersion：{version or "(空)"}')
+
+    declared = set()
+    for entry in manifest.get('plugins') or []:
+        file_rel = entry.get('file')
+        if not file_rel:
+            errors.append('plugins 清单存在无 file 的条目')
+            continue
+        declared.add(file_rel)
+        path = root / file_rel
+        if not path.exists():
+            errors.append(f'插件文件缺失：{file_rel}')
+            continue
+        sha = loader.sha256_file(path)
+        if entry.get('sha256') and entry['sha256'] != sha:
+            errors.append(f'插件哈希不一致：{file_rel}')
+        kind, fname = entry.get('kind'), Path(file_rel).name
+        if kind == 'CONTRACT' and not fname.startswith('contract_'):
+            errors.append(f'kind=CONTRACT 但文件名不符合 contract_ 前缀：{file_rel}')
+        if kind == 'INDUSTRY' and not fname.startswith('industry_'):
+            errors.append(f'kind=INDUSTRY 但文件名不符合 industry_ 前缀：{file_rel}')
+
+    for entry in manifest.get('sheets') or []:
+        file_rel = entry.get('file')
+        if not file_rel:
+            continue
+        declared.add(file_rel)
+        path = root / file_rel
+        if not path.exists():
+            errors.append(f'表格文件缺失：{file_rel}')
+            continue
+        if entry.get('sha256'):
+            sha = loader.sha256_file(path)
+            if entry['sha256'] != sha:
+                errors.append(f'表格哈希不一致：{file_rel}')
+
+    for path in root.rglob('*'):
+        if path.is_file():
+            rel = str(path.relative_to(root)).replace('\\', '/')
+            if rel != 'manifest.yaml' and rel not in declared:
+                warnings.append(f'未在 manifest 声明的文件：{rel}')
+
+
+# ---------------------------------------------------------------- 解压
+
+
+def _extract_package(zip_path, dest: Path):
+    try:
+        with ZipFile(zip_path) as zf:
+            for member in zf.infolist():
+                target = (dest / member.filename).resolve()
+                if not str(target).startswith(str(dest.resolve())):
+                    raise ImportFailure({'errors': [f'非法压缩包路径：{member.filename}']})
+            zf.extractall(dest)
+    except BadZipFile as exc:
+        raise ImportFailure({'errors': [f'压缩包无法读取：{exc}']})
+
+
+# ---------------------------------------------------------------- 主流程
+
+
+def import_package(*, competition, zip_path, file_name, user):
+    """执行完整导入；成功返回 Package，失败抛 ImportFailure（report 含问题清单）。"""
+    report = {
+        'status': 'FAILED', 'startedAt': _now(), 'finishedAt': None,
+        'files': [], 'plugins': [], 'createdDatabase': None,
+        'fieldMigrations': [], 'basedataRows': {}, 'contractsCreated': 0,
+        'errors': [], 'warnings': [],
+    }
+    db_created_this_run = False
+    try:
+        if Path(zip_path).stat().st_size > MAX_PACKAGE_BYTES:
+            raise ImportFailure({'errors': [f'包超过大小上限 {MAX_PACKAGE_BYTES // 1024 // 1024}MB']})
+
+        with tempfile.TemporaryDirectory(prefix='gipfel_pkg_') as tmp:
+            root = Path(tmp)
+            _extract_package(zip_path, root)
+            manifest = _load_manifest(root)
+            _validate_manifest(manifest, root, report)
+            if report['errors']:
+                raise ImportFailure(report)
+
+            plugins = _load_plugins(root, manifest, report, user)
+            db_created_this_run = _provision_database(competition, report)
+            _import_data(competition, root, plugins, report, user)
+
+        report['status'] = 'SUCCESS'
+        report['finishedAt'] = _now()
+        package = _persist_package(competition, zip_path, file_name, user, report,
+                                   plugins, status=Package.Status.SUCCESS)
+        return package
+
+    except ImportFailure as exc:
+        report.update({k: v for k, v in exc.report.items() if k in ('errors', 'warnings')})
+        report['status'] = 'FAILED'
+        report['finishedAt'] = _now()
+        if competition is not None:
+            if db_created_this_run and competition.db_name:
+                _drop_database(competition.db_name)
+                report['createdDatabase'] = f'{competition.db_name}（已回滚删除）'
+            _persist_package(competition, zip_path, file_name, user, report,
+                             {}, status=Package.Status.FAILED)
+        raise
+
+
+# ---------------------------------------------------------------- 插件加载
+
+
+def _load_plugins(root: Path, manifest: dict, report: dict, user) -> dict:
+    """AST 扫描 + 接口校验 + 注册不可变版本（全局库事务）。"""
+    plugins = {}
+    with transaction.atomic():
+        for entry in manifest.get('plugins') or []:
+            file_rel = entry.get('file')
+            path = root / file_rel
+            if not path.exists():
+                continue  # manifest 校验已报错
+
+            module, problems = loader.load_plugin(path)
+            kind = entry.get('kind')
+            if not problems:
+                if kind == 'CONTRACT':
+                    problems = loader.validate_contract_plugin(module)
+                    key = getattr(module, 'CONTRACT_KEY', '')
+                    prefix = getattr(module, 'NUMBER_PREFIX', key[:2].upper() if key else '')
+                else:
+                    problems = loader.validate_industry_plugin(module)
+                    key = getattr(module, 'INDUSTRY_KEY', '')
+                    prefix = ''
+            if problems:
+                report['errors'] += [f'{file_rel}：{p}' for p in problems]
+                continue
+            if key != entry.get('key'):
+                report['errors'].append(
+                    f'{file_rel}：manifest key({entry.get("key")}) 与插件 {key} 不一致')
+                continue
+
+            sha = loader.sha256_file(path)
+            version = str(entry.get('version') or '1.0.0')
+            stored = _store_plugin_file(path, key, version)
+            registry, _ = PluginRegistry.objects.get_or_create(
+                kind=kind, key=key, version=version, sha256=sha,
+                defaults={
+                    'name': entry.get('name') or key,
+                    'file_name': Path(file_rel).name,
+                    'file_path': stored,
+                    'number_prefix': prefix,
+                    'uploaded_by': getattr(user, 'id', None),
+                    'uploaded_by_username': getattr(user, 'username', ''),
+                    'audit_trail': [{'event': 'UPLOAD', 'actor': getattr(user, 'username', ''),
+                                     'detail': {'file': file_rel, 'sha256': sha}}],
+                },
+            )
+            plugins[key] = {'module': module, 'version': version, 'kind': kind,
+                            'registry': registry, 'file': file_rel}
+            report['plugins'].append({'file': file_rel, 'key': key, 'kind': kind,
+                                      'version': version, 'sha256': sha})
+        if report['errors']:
+            raise ImportFailure(report)
+    return plugins
+
+
+# ---------------------------------------------------------------- 建库
+
+
+def _provision_database(competition, report: dict) -> bool:
+    db_name = competition.db_name
+    db_existed = provisioning.database_exists(db_name)
+    provisioning.create_competition_database(db_name)
+    report['createdDatabase'] = db_name if not db_existed else f'{db_name}（已存在，仅补迁移）'
+    return not db_existed
+
+
+def _drop_database(db_name: str):
+    from django.db import connections
+
+    import psycopg2
+    from django.conf import settings
+
+    connections.close_all()
+    cfg = settings.DATABASES['default']
+    conn = psycopg2.connect(dbname='postgres', user=cfg['USER'], password=cfg['PASSWORD'],
+                            host=cfg['HOST'] or 'localhost', port=cfg['PORT'] or '5432')
+    try:
+        conn.autocommit = True
+        conn.cursor().execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------- 数据导入（比赛库事务）
+
+
+def _import_data(competition, root: Path, plugins: dict, report: dict, user):
+    alias = provisioning.ensure_competition_db(competition.db_name)
+    ctx.set_competition_context(competition.id, alias)
+    try:
+        with transaction.atomic(using=alias):
+            # 产业字段迁移（§8.2）
+            industry_modules = {k: v for k, v in plugins.items() if v['kind'] == 'INDUSTRY'}
+            for key, entry in industry_modules.items():
+                stats = industry_services.apply_industry_fields(
+                    entry['module'].FIELDS, plugin_key=key,
+                    plugin_version=entry['version'], operator=user,
+                )
+                report['fieldMigrations'].append(stats)
+
+            # industries.xlsx 对账（规范 §6）
+            _import_industries_sheet(root, industry_modules, report)
+
+            # 基础数据表格（规范 §5）
+            all_entries, all_codes = {}, {}
+            for sheet_key in parsers.BASEDATA_SPECS:
+                path = _find_sheet(root, sheet_key)
+                if path is None:
+                    continue
+                headers, rows = parsers.read_table(path)
+                if len(rows) > MAX_ROWS_PER_SHEET:
+                    report['errors'].append(f'{sheet_key}：行数超过上限 {MAX_ROWS_PER_SHEET}')
+                    continue
+                entries, errors, warnings = parsers.parse_basedata_sheet(sheet_key, headers, rows)
+                report['errors'] += [f'{sheet_key}：{e}' for e in errors]
+                report['warnings'] += [f'{sheet_key}：{w}' for w in warnings]
+                all_entries[sheet_key] = entries
+                all_codes[sheet_key] = {e['code'] for e in entries}
+
+            for sheet_key, entries in all_entries.items():
+                ref_errors = parsers.check_refs(sheet_key, entries, all_codes)
+                report['errors'] += [f'{sheet_key}：{e}' for e in ref_errors]
+            if report['errors']:
+                raise ImportFailure(report)
+
+            for sheet_key, entries in all_entries.items():
+                app_label, model_name = parsers.BASEDATA_SPECS[sheet_key]['model']
+                model = django_apps.get_model(app_label, model_name)
+                for e in entries:
+                    code = e.pop('code')
+                    model.objects.update_or_create(code=code,
+                                                   defaults=_normalize_entry(model, e))
+                report['basedataRows'][sheet_key] = len(entries)
+                report['files'].append({'file': f'sheets/{sheet_key}', 'stage': 'basedata',
+                                        'rows': len(entries), 'errors': [], 'warnings': []})
+
+            # 合同实例导入（规范 §7）
+            contract_modules = {k: {'module': v['module'], 'version': v['version']}
+                                for k, v in plugins.items() if v['kind'] == 'CONTRACT'}
+            contracts_path = _find_sheet(root, 'contracts')
+            if contracts_path and contract_modules:
+                headers, rows = parsers.read_table(contracts_path)
+                created, errors = contract_services.import_contract_instances(
+                    rows, contract_modules, user=user)
+                report['contractsCreated'] = created
+                report['errors'] += [f'contracts：{e}' for e in errors]
+                if errors:
+                    raise ImportFailure(report)
+    finally:
+        ctx.clear_request_context()
+
+
+# ---------------------------------------------------------------- 工具
+
+
+def _normalize_entry(model, entry: dict) -> dict:
+    """空单元格 → 文本列 '' / JSON 列默认值 / 其余 NULL。"""
+    from django.db import models as dj_models
+
+    for f in model._meta.fields:
+        if f.name not in entry:
+            continue
+        if entry[f.name] is None:
+            if isinstance(f, (dj_models.CharField, dj_models.TextField)):
+                entry[f.name] = ''
+            elif isinstance(f, dj_models.JSONField):
+                del entry[f.name]
+    return entry
+
+
+def _find_sheet(root: Path, sheet_key: str):
+    for ext in ('.xlsx', '.csv'):
+        for prefix in ('sheets/', ''):
+            path = root / f'{prefix}{sheet_key}{ext}'
+            if path.exists():
+                return path
+    return None
+
+
+def _import_industries_sheet(root: Path, industry_modules: dict, report: dict):
+    path = _find_sheet(root, 'industries')
+    if path is None:
+        return
+    headers, rows = parsers.read_table(path)
+    known = {str(r.get('industryKey') or r.get('industrykey') or '').strip() for r in rows}
+    for key in known - set(industry_modules):
+        if key:
+            report['warnings'].append(f'industries：表格声明的产业 {key} 没有对应插件')
+
+    # fields 工作表对账：插件 FIELDS 为准，不一致报错误（规范 §6 / 待确认 #1）
+    if path.suffix.lower() != '.xlsx':
+        return
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True, data_only=True)
+    if 'fields' not in wb.sheetnames:
+        wb.close()
+        return
+    ws = wb['fields']
+    raw = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if not raw:
+        return
+    f_headers = [str(h).strip().lower() if h else '' for h in raw[0]]
+    for line in raw[1:]:
+        row = {f_headers[i]: line[i] for i in range(min(len(f_headers), len(line)))}
+        key = str(row.get('industrykey') or '').strip()
+        field_key = str(row.get('fieldkey') or '').strip()
+        entry = industry_modules.get(key)
+        if not entry or not field_key:
+            continue
+        spec = next((f for f in entry['module'].FIELDS if f.get('key') == field_key), None)
+        if spec is None:
+            report['errors'].append(f'industries!fields：{key}.{field_key} 在插件 FIELDS 中不存在')
+        elif row.get('formula') and str(row['formula']) != str(spec.get('formula') or ''):
+            report['errors'].append(f'industries!fields：{key}.{field_key} 公式与插件不一致')
+
+
+def _store_plugin_file(path: Path, key: str, version: str) -> str:
+    rel = f'plugins/{key}/{version}/{path.name}'
+    return default_storage.save(rel, ContentFile(path.read_bytes()))
+
+
+def _persist_package(competition, zip_path, file_name, user, report, plugins, status):
+    sha = loader.sha256_file(zip_path)
+    stored = default_storage.save(
+        f'packages/{competition.id}/{file_name}', ContentFile(Path(zip_path).read_bytes()))
+    package = Package.objects.create(
+        competition=competition, file_name=file_name, file_path=stored, sha256=sha,
+        status=status, import_report=report,
+        created_by=getattr(user, 'id', None),
+        created_by_username=getattr(user, 'username', ''),
+    )
+    for key, entry in plugins.items():
+        PackagePlugin.objects.create(
+            package=package, plugin=entry['registry'], kind=entry['kind'],
+            key=key, version=entry['version'],
+        )
+    if status == Package.Status.SUCCESS and competition.status == competition.Status.CREATED:
+        competition.transition_to(competition.Status.PACKAGE_IMPORTED)
+    return package
