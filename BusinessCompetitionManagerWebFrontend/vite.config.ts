@@ -18,11 +18,15 @@ export default defineConfig({
     },
   },
   server: {
-    // 开发时把 /api 请求转发到 Django 后端，避免跨域
+    // 开发时把 /api 请求转发到 Django 后端，避免跨域；/ws 为 WebSocket 实时通道
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+      },
+      '/ws': {
+        target: 'ws://localhost:8000',
+        ws: true,
       },
     },
   },
