@@ -9,3 +9,10 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# 运行时上传（比赛包 / 插件文件，由导入流程落盘）
+BusinessCompetitionManagerWeb/media/
+
+# 日志
+logs/
+*.log
