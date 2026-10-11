@@ -1,0 +1,834 @@
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import {
+  confirmContract,
+  getContract,
+  getContractEffects,
+  requestContractModify,
+  reviewBackfill,
+  reviewContractModify,
+  reviewContractOtherParty,
+  submitContract,
+  submitContractChanges,
+} from '@/api'
+import type { Contract, ContractEffect, ContractParty, TimelineNode } from '@/api/types'
+import { formatDateTime, toDisplay } from '@/utils/format'
+import { useAuthStore } from '@/stores/auth'
+
+const props = defineProps<{ cid: string; id: string }>()
+const router = useRouter()
+const auth = useAuthStore()
+
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+
+// 合同状态展示映射
+const STATUS_META: Record<string, { label: string; type: TagType }> = {
+  BACKFILL_REVIEW: { label: '补录待审核', type: 'warning' },
+  DRAFT: { label: '草稿', type: 'info' },
+  PENDING_PARTY: { label: '待确认', type: 'warning' },
+  PENDING_EXEC: { label: '待执行', type: 'primary' },
+  EXECUTED: { label: '已执行', type: 'primary' },
+  POSTED: { label: '已落账', type: 'success' },
+  MOD_APPLYING: { label: '修改申请中', type: 'warning' },
+  MOD_EDITING: { label: '修改中', type: 'warning' },
+  EXEC_FAILED: { label: '执行失败', type: 'danger' },
+  CANCELLED: { label: '已取消', type: 'info' },
+}
+
+function statusMeta(status: string): { label: string; type: TagType } {
+  return STATUS_META[status] ?? { label: status, type: 'info' }
+}
+
+// 时间线节点类型展示映射（§14.6 确认时间线）
+const TIMELINE_META: Record<string, { label: string; type: TagType }> = {
+  CREATED: { label: '创建', type: 'info' },
+  CONFIRM: { label: '参与方确认', type: 'primary' },
+  NUMBERED: { label: '统一编号', type: 'warning' },
+  EXECUTED: { label: '执行', type: 'success' },
+  POSTED: { label: '落账', type: 'success' },
+  MOD_APPLY: { label: '申请修改', type: 'warning' },
+  MOD_REVIEW: { label: '修改审核', type: 'warning' },
+  MOD_OTHER_PARTY: { label: '其他方表态', type: 'warning' },
+  FIELD: { label: '字段变更', type: 'info' },
+  WAITING: { label: '等待确认', type: 'primary' },
+}
+
+function timelineMeta(type: string): { label: string; type: TagType } {
+  return TIMELINE_META[type] ?? { label: type, type: 'info' }
+}
+
+// ---------- 数据 ----------
+const contract = ref<Contract | null>(null)
+const effects = ref<ContractEffect[]>([])
+const loading = ref(false)
+const effectsLoading = ref(false)
+
+async function load(): Promise<void> {
+  loading.value = true
+  try {
+    contract.value = await getContract(props.cid, Number(props.id))
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadEffects(): Promise<void> {
+  effectsLoading.value = true
+  try {
+    effects.value = await getContractEffects(props.cid, Number(props.id))
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+  } finally {
+    effectsLoading.value = false
+  }
+}
+
+// ---------- 参与方 / 待确认方 ----------
+const sortedParties = computed<ContractParty[]>(() =>
+  [...(contract.value?.parties ?? [])].sort((a, b) => a.confirmOrder - b.confirmOrder),
+)
+
+/** 待确认方（按 confirmOrder 排序 + pendingPartyIndex） */
+const pendingParty = computed<ContractParty | null>(() => {
+  const c = contract.value
+  if (!c || c.status !== 'PENDING_PARTY') return null
+  return sortedParties.value[c.pendingPartyIndex] ?? null
+})
+
+// ---------- 确认时间线（含等待确认高亮节点） ----------
+interface DisplayNode {
+  type: string
+  at: string
+  title: string
+  actor: string
+  detail: string
+  waiting: boolean
+}
+
+const timelineNodes = computed<DisplayNode[]>(() => {
+  const nodes: DisplayNode[] = (contract.value?.timeline ?? []).map((n: TimelineNode) => ({
+    type: n.type,
+    at: n.at,
+    title: n.title,
+    actor: n.actor,
+    detail: n.detail ?? '',
+    waiting: false,
+  }))
+  // 状态为待确认时，在时间线末尾高亮「等待 xx 确认」
+  const waiting = pendingParty.value
+  if (waiting) {
+    nodes.push({
+      type: 'WAITING',
+      at: '',
+      title: `等待 ${waiting.companyName || waiting.role} 确认`,
+      actor: '—',
+      detail: `按确认顺序第 ${waiting.confirmOrder} 位参与方尚未确认`,
+      waiting: true,
+    })
+  }
+  return nodes
+})
+
+// ---------- 权限（best-effort，最终以后端校验为准） ----------
+const isCompSuperAdmin = computed(() =>
+  auth.memberships.some(
+    (m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN',
+  ),
+)
+/** 超管 / 比赛超管可审核修改与补录 */
+const canReview = computed(() => auth.isSuperuser || isCompSuperAdmin.value)
+
+/** 当前用户是否可能代待确认方操作（无法判断时放开，由后端校验） */
+const canActForPending = computed(() => {
+  const user = auth.user
+  if (!user) return true
+  if (auth.isSuperuser) return true
+  const m = auth.memberships.find((x) => String(x.id) === props.cid)
+  if (!m) return true
+  if (m.identity === 'COMP_SUPER_ADMIN') return true
+  const companyId = pendingParty.value?.companyId
+  if (companyId == null) return true
+  return m.managedCompanies.includes(companyId)
+})
+
+// ---------- 状态操作 ----------
+const actionLoading = ref(false)
+
+async function runAction(action: () => Promise<unknown>, success: string): Promise<void> {
+  actionLoading.value = true
+  try {
+    await action()
+    ElMessage.success(success)
+    await load()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+function doSubmit(): void {
+  void runAction(() => submitContract(props.cid, Number(props.id)), '合同已提交')
+}
+
+function doConfirm(): void {
+  void runAction(() => confirmContract(props.cid, Number(props.id)), '已确认，末方确认后自动编号并落账')
+}
+
+// --- 申请修改 ---
+const showModifyDialog = ref(false)
+const modifyReason = ref('')
+
+function openModifyDialog(): void {
+  modifyReason.value = ''
+  showModifyDialog.value = true
+}
+
+function submitModifyRequest(): void {
+  if (!modifyReason.value.trim()) {
+    ElMessage.error('请填写修改原因')
+    return
+  }
+  showModifyDialog.value = false
+  void runAction(
+    () => requestContractModify(props.cid, Number(props.id), modifyReason.value.trim()),
+    '修改申请已提交，等待超管审核',
+  )
+}
+
+// --- 审核（修改审核 / 其他方表态 / 补录审核） ---
+type ReviewMode = 'modify' | 'otherParty' | 'backfill'
+const showReviewDialog = ref(false)
+const reviewMode = ref<ReviewMode>('modify')
+const reviewAction = ref<'approve' | 'reject'>('approve')
+const reviewNote = ref('')
+
+const REVIEW_TITLES: Record<ReviewMode, string> = {
+  modify: '修改申请审核',
+  otherParty: '其他方表态',
+  backfill: '补录审核',
+}
+
+function openReview(mode: ReviewMode, action: 'approve' | 'reject'): void {
+  reviewMode.value = mode
+  reviewAction.value = action
+  reviewNote.value = ''
+  showReviewDialog.value = true
+}
+
+function submitReview(): void {
+  const cid = props.cid
+  const id = Number(props.id)
+  const action = reviewAction.value
+  const note = reviewNote.value.trim() || undefined
+  showReviewDialog.value = false
+  const label = action === 'approve' ? '已通过' : '已驳回'
+  const apiCall =
+    reviewMode.value === 'modify'
+      ? () => reviewContractModify(cid, id, action, note)
+      : reviewMode.value === 'otherParty'
+        ? () => reviewContractOtherParty(cid, id, action, note)
+        : () => reviewBackfill(cid, id, action, note)
+  void runAction(apiCall, label)
+}
+
+// --- 提交修改（编辑 inputs 后回滚重执行） ---
+interface EditField {
+  key: string
+  kind: 'number' | 'boolean' | 'json' | 'text'
+}
+
+const showChangesDialog = ref(false)
+const editFields = ref<EditField[]>([])
+const editNumbers = ref<Record<string, number | undefined>>({})
+const editBools = ref<Record<string, boolean>>({})
+const editJsons = ref<Record<string, string>>({})
+const editTexts = ref<Record<string, string>>({})
+
+function setNumber(key: string, v: unknown): void {
+  editNumbers.value[key] = typeof v === 'number' && !Number.isNaN(v) ? v : undefined
+}
+
+function openChangesDialog(): void {
+  const inputs = contract.value?.inputs ?? {}
+  const fields: EditField[] = []
+  const nums: Record<string, number | undefined> = {}
+  const bools: Record<string, boolean> = {}
+  const jsons: Record<string, string> = {}
+  const texts: Record<string, string> = {}
+  for (const [key, value] of Object.entries(inputs)) {
+    if (typeof value === 'number') {
+      fields.push({ key, kind: 'number' })
+      nums[key] = value
+    } else if (typeof value === 'boolean') {
+      fields.push({ key, kind: 'boolean' })
+      bools[key] = value
+    } else if (value !== null && typeof value === 'object') {
+      fields.push({ key, kind: 'json' })
+      jsons[key] = JSON.stringify(value, null, 2)
+    } else {
+      fields.push({ key, kind: 'text' })
+      texts[key] = value === null || value === undefined ? '' : String(value)
+    }
+  }
+  editFields.value = fields
+  editNumbers.value = nums
+  editBools.value = bools
+  editJsons.value = jsons
+  editTexts.value = texts
+  showChangesDialog.value = true
+}
+
+function submitChanges(): void {
+  const inputs: Record<string, unknown> = {}
+  for (const f of editFields.value) {
+    if (f.kind === 'number') {
+      if (editNumbers.value[f.key] !== undefined) inputs[f.key] = editNumbers.value[f.key]
+    } else if (f.kind === 'boolean') {
+      inputs[f.key] = editBools.value[f.key]
+    } else if (f.kind === 'json') {
+      const raw = (editJsons.value[f.key] ?? '').trim()
+      try {
+        inputs[f.key] = raw ? JSON.parse(raw) : null
+      } catch {
+        ElMessage.error(`字段「${f.key}」不是合法 JSON`)
+        return
+      }
+    } else {
+      inputs[f.key] = editTexts.value[f.key]
+    }
+  }
+  showChangesDialog.value = false
+  void runAction(
+    () => submitContractChanges(props.cid, Number(props.id), { inputs }),
+    '修改已提交：旧效果已回滚并重新执行落账',
+  )
+}
+
+// ---------- 初始化 ----------
+onMounted(() => {
+  void load()
+  void loadEffects()
+})
+
+watch(
+  () => props.id,
+  () => {
+    void load()
+    void loadEffects()
+  },
+)
+
+function goBack(): void {
+  void router.push(`/competitions/${props.cid}/contracts`)
+}
+</script>
+
+<template>
+  <div v-loading="loading" class="contract-detail-page">
+    <!-- 头部信息 -->
+    <div class="detail-header">
+      <div class="detail-header__main">
+        <el-button class="back-btn" text @click="goBack">← 返回合同列表</el-button>
+        <h1 class="page-title">
+          {{ contract?.name || `合同 #${props.id}` }}
+        </h1>
+        <div class="meta-row">
+          <span class="meta-item">类型：<b>{{ contract?.contractTypeKey || '—' }}</b></span>
+          <el-tag :type="statusMeta(contract?.status ?? '').type">
+            {{ statusMeta(contract?.status ?? '').label }}
+          </el-tag>
+          <el-tag v-if="contract?.isBackfill" type="warning">补录</el-tag>
+          <span class="meta-item">轮次：<b>第 {{ contract?.roundNo ?? 0 }} 轮</b></span>
+          <span class="meta-item">财年：<b>{{ contract?.fiscalYear ?? '—' }}</b></span>
+        </div>
+      </div>
+      <div class="detail-header__number">
+        <div class="number-label">统一编号</div>
+        <div v-if="contract?.unifiedNumber" class="number-value text-gradient">
+          {{ contract.unifiedNumber }}
+        </div>
+        <div v-else class="number-value number-value--empty">未编号</div>
+      </div>
+    </div>
+
+    <!-- 状态操作 -->
+    <section class="panel action-panel">
+      <h2 class="section-title">状态操作</h2>
+      <div class="action-row">
+        <template v-if="contract?.status === 'DRAFT'">
+          <el-button type="primary" :loading="actionLoading" @click="doSubmit">提交</el-button>
+          <span class="action-hint">提交后进入逐方确认流程</span>
+        </template>
+
+        <template v-else-if="contract?.status === 'PENDING_PARTY'">
+          <el-button
+            type="primary"
+            :loading="actionLoading"
+            :disabled="!canActForPending"
+            @click="doConfirm"
+          >
+            确认
+          </el-button>
+          <span class="action-hint">
+            <template v-if="canActForPending">
+              末方确认后系统自动统一编号并执行落账
+            </template>
+            <template v-else>
+              当前账号可能不是待确认方「{{ pendingParty?.companyName || pendingParty?.role }}」（由后端最终校验）
+            </template>
+          </span>
+        </template>
+
+        <template v-else-if="contract?.status === 'POSTED'">
+          <el-button type="warning" :loading="actionLoading" @click="openModifyDialog">
+            申请修改
+          </el-button>
+          <span class="action-hint">申请修改需填写原因，经超管审核后进入修改流程</span>
+        </template>
+
+        <template v-else-if="contract?.status === 'MOD_APPLYING'">
+          <template v-if="canReview">
+            <el-button
+              type="success"
+              :loading="actionLoading"
+              @click="openReview('modify', 'approve')"
+            >
+              通过
+            </el-button>
+            <el-button
+              type="danger"
+              :loading="actionLoading"
+              @click="openReview('modify', 'reject')"
+            >
+              驳回
+            </el-button>
+            <span class="action-hint">超管审核修改申请，通过后进入修改编辑</span>
+          </template>
+          <span v-else class="action-hint">修改申请待超管审核</span>
+        </template>
+
+        <template v-else-if="contract?.status === 'MOD_EDITING'">
+          <el-button
+            type="success"
+            :loading="actionLoading"
+            @click="openReview('otherParty', 'approve')"
+          >
+            其他方通过
+          </el-button>
+          <el-button
+            type="danger"
+            :loading="actionLoading"
+            @click="openReview('otherParty', 'reject')"
+          >
+            其他方驳回
+          </el-button>
+          <el-button type="primary" :loading="actionLoading" @click="openChangesDialog">
+            提交修改
+          </el-button>
+          <span class="action-hint">其他方逐方表态；提交修改将回滚旧效果并重新执行落账</span>
+        </template>
+
+        <template v-else-if="contract?.status === 'BACKFILL_REVIEW'">
+          <template v-if="canReview">
+            <el-button
+              type="success"
+              :loading="actionLoading"
+              @click="openReview('backfill', 'approve')"
+            >
+              补录通过
+            </el-button>
+            <el-button
+              type="danger"
+              :loading="actionLoading"
+              @click="openReview('backfill', 'reject')"
+            >
+              补录驳回
+            </el-button>
+            <span class="action-hint">补录合同审核通过后进入正常确认链</span>
+          </template>
+          <span v-else class="action-hint">补录合同待超管审核</span>
+        </template>
+
+        <span v-else class="action-hint">当前状态（{{ statusMeta(contract?.status ?? '').label }}）无可用操作</span>
+      </div>
+    </section>
+
+    <!-- 确认时间线（§14.6） -->
+    <section class="panel timeline-panel">
+      <h2 class="section-title">确认时间线</h2>
+      <el-timeline v-if="timelineNodes.length > 0" class="confirm-timeline">
+        <el-timeline-item
+          v-for="(node, idx) in timelineNodes"
+          :key="idx"
+          :type="timelineMeta(node.type).type"
+          :hollow="node.waiting"
+          :timestamp="node.at ? formatDateTime(node.at) : '进行中'"
+          placement="top"
+          :class="{ 'timeline-item--waiting': node.waiting }"
+        >
+          <div class="node-card" :class="{ 'node-card--waiting': node.waiting }">
+            <div class="node-title">
+              <el-tag size="small" :type="timelineMeta(node.type).type">
+                {{ timelineMeta(node.type).label }}
+              </el-tag>
+              <b>{{ node.title }}</b>
+            </div>
+            <div class="node-meta">
+              <span>操作人：{{ node.actor }}</span>
+              <span v-if="node.at">时间：{{ formatDateTime(node.at) }}</span>
+            </div>
+            <!-- CONFIRM 节点：展示谁在何时确认 + 设备/IP 信息 -->
+            <div v-if="node.detail" class="node-detail" :class="{ 'node-detail--confirm': node.type === 'CONFIRM' }">
+              <template v-if="node.type === 'CONFIRM'">
+                <div class="confirm-line">
+                  {{ node.actor }} 于 {{ formatDateTime(node.at) }} 确认
+                </div>
+                <div class="device-line">设备信息：{{ node.detail }}</div>
+              </template>
+              <template v-else>{{ node.detail }}</template>
+            </div>
+          </div>
+        </el-timeline-item>
+      </el-timeline>
+      <el-empty v-else description="暂无时间线记录" />
+    </section>
+
+    <!-- 参与方 -->
+    <section class="panel party-panel">
+      <h2 class="section-title">参与方</h2>
+      <div class="party-grid">
+        <div
+          v-for="p in sortedParties"
+          :key="p.role"
+          class="party-card"
+          :class="{ 'party-card--pending': pendingParty && p.role === pendingParty.role }"
+        >
+          <div class="party-card__head">
+            <b>{{ p.companyName || '—' }}</b>
+            <el-tag size="small" effect="plain">{{ p.role }}</el-tag>
+          </div>
+          <div class="party-card__body">
+            <template v-if="p.confirmAt">
+              <el-tag type="success" size="small">已确认</el-tag>
+              <span class="party-confirm-info">
+                {{ p.confirmedBy || '—' }} · {{ formatDateTime(p.confirmAt) }}
+              </span>
+            </template>
+            <template v-else>
+              <el-tag type="warning" size="small">
+                {{ pendingParty && p.role === pendingParty.role ? '等待中' : '未确认' }}
+              </el-tag>
+              <span v-if="pendingParty && p.role === pendingParty.role" class="party-confirm-info">
+                等待 {{ p.companyName || p.role }} 确认
+              </span>
+            </template>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 效果审计 -->
+    <section class="panel effects-panel">
+      <h2 class="section-title">效果审计（落账）</h2>
+      <el-table v-loading="effectsLoading" :data="effects" border stripe style="width: 100%">
+        <template #empty>
+          <el-empty description="暂无落账效果" />
+        </template>
+        <el-table-column prop="fieldKey" label="字段" min-width="140" />
+        <el-table-column prop="op" label="操作" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain">{{ row.op }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="值" min-width="110">
+          <template #default="{ row }">{{ toDisplay(row.value) }}</template>
+        </el-table-column>
+        <el-table-column label="变更（前 → 后）" min-width="220">
+          <template #default="{ row }">
+            <span class="effect-before">{{ toDisplay(row.before) }}</span>
+            <span class="effect-arrow"> → </span>
+            <span class="effect-after">{{ toDisplay(row.after) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="轮次" width="80" align="center">
+          <template #default="{ row }">{{ row.roundNo }}</template>
+        </el-table-column>
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+        </el-table-column>
+      </el-table>
+    </section>
+
+    <!-- 申请修改弹窗 -->
+    <el-dialog v-model="showModifyDialog" title="申请修改" width="520px" append-to-body>
+      <el-form label-position="top">
+        <el-form-item label="修改原因" required>
+          <el-input
+            v-model="modifyReason"
+            type="textarea"
+            :rows="4"
+            placeholder="请说明申请修改的原因"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showModifyDialog = false">取消</el-button>
+        <el-button type="primary" :loading="actionLoading" @click="submitModifyRequest">
+          提交申请
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 审核弹窗 -->
+    <el-dialog
+      v-model="showReviewDialog"
+      :title="`${REVIEW_TITLES[reviewMode]}（${reviewAction === 'approve' ? '通过' : '驳回'}）`"
+      width="520px"
+      append-to-body
+    >
+      <el-form label-position="top">
+        <el-form-item label="审核意见">
+          <el-input
+            v-model="reviewNote"
+            type="textarea"
+            :rows="4"
+            placeholder="可填写审核意见（可留空）"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showReviewDialog = false">取消</el-button>
+        <el-button
+          :type="reviewAction === 'approve' ? 'success' : 'danger'"
+          :loading="actionLoading"
+          @click="submitReview"
+        >
+          {{ reviewAction === 'approve' ? '通过' : '驳回' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 提交修改弹窗 -->
+    <el-dialog v-model="showChangesDialog" title="提交修改" width="600px" append-to-body>
+      <el-form label-position="top">
+        <el-form-item
+          v-for="f in editFields"
+          :key="f.key"
+          :label="f.key"
+        >
+          <el-input-number
+            v-if="f.kind === 'number'"
+            :model-value="editNumbers[f.key]"
+            :controls="false"
+            style="width: 100%"
+            @update:model-value="(v: unknown) => setNumber(f.key, v)"
+          />
+          <el-switch v-else-if="f.kind === 'boolean'" v-model="editBools[f.key]" />
+          <el-input
+            v-else-if="f.kind === 'json'"
+            v-model="editJsons[f.key]"
+            type="textarea"
+            :rows="4"
+            placeholder="JSON 值"
+          />
+          <el-input v-else v-model="editTexts[f.key]" />
+        </el-form-item>
+        <el-empty
+          v-if="editFields.length === 0"
+          :image-size="60"
+          description="该合同没有可修改的数据字段"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="showChangesDialog = false">取消</el-button>
+        <el-button type="primary" :loading="actionLoading" @click="submitChanges">
+          提交修改
+        </el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped lang="scss">
+.contract-detail-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+// ---------- 头部 ----------
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.detail-header__main {
+  flex: 1 1 380px;
+  min-width: 0;
+}
+.back-btn {
+  margin-bottom: 4px;
+}
+.detail-header .page-title {
+  margin-bottom: 10px;
+}
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+}
+.meta-item b {
+  color: var(--color-text-primary);
+}
+.detail-header__number {
+  background: var(--surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 14px 22px;
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+}
+.number-label {
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary);
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+}
+.number-value {
+  font-size: var(--font-xl);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.number-value--empty {
+  color: var(--color-text-tertiary);
+}
+
+// ---------- 通用区块 ----------
+.panel {
+  padding: 20px 22px;
+}
+.section-title {
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 14px;
+}
+
+// ---------- 状态操作 ----------
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.action-hint {
+  color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+}
+
+// ---------- 时间线 ----------
+.node-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+}
+.node-card--waiting {
+  border-color: rgba(var(--color-warning-soft-rgb), 0.5);
+  background: var(--color-warning-soft);
+}
+.node-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.node-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+}
+.node-detail {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--color-border);
+  color: var(--el-text-color-regular);
+  font-size: var(--font-sm);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.node-detail--confirm {
+  background: var(--color-info-soft);
+  border: none;
+  border-radius: var(--radius-xs);
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+.confirm-line {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.device-line {
+  color: var(--color-text-secondary);
+  font-size: var(--font-xs);
+}
+
+// ---------- 参与方 ----------
+.party-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.party-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--surface-raised);
+}
+.party-card--pending {
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+.party-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.party-card__body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.party-confirm-info {
+  color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+}
+
+// ---------- 效果审计 ----------
+.effect-before {
+  color: var(--color-text-tertiary);
+}
+.effect-arrow {
+  color: var(--color-text-tertiary);
+}
+.effect-after {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+</style>
