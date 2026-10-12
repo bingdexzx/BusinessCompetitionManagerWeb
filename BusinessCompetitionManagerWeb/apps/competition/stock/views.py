@@ -1,0 +1,517 @@
+"""股票 API（契约 §4：行情与交易 + 快照/增量同步协议）。
+
+路由（挂在 /api/ 前缀，见 urls.py）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /stock/stocks | 股票列表（薄字段，?page&pageSize 分页） |
+| GET | /stock/stocks/{code} | 单股详情（含指标全字段） |
+| GET | /stock/stocks/{code}/candles | K 线（?fromRound&limit keyset 分页） |
+| GET | /stock/book | 我的持仓 + 资金账户 |
+| POST | /stock/orders | 下单 {code, side, price, quantity}（校验现金/持仓） |
+| DELETE | /stock/orders/{id} | 撤单（仅 PENDING 且本人） |
+| GET | /stock/orders | 我的委托（?status，分页） |
+| POST | /stock/round/advance | 推进轮次（超管） |
+| GET | /stock/market | 市场概览（轻量心跳） |
+| GET | /stock/sync | 快照+增量同步（§4.2） |
+
+权限（契约 §4 / 任务口径）：
+- 查看行情（含 sync/book/orders 读）= 任何比赛成员；
+- 下单/撤单 = 可操作本队/所辖公司的用户（COMPANY 账户 can_act_for_company；
+  USER 账户=本人）；
+- advance = 超管（apps.common.authority.can_manage_competition）。
+
+错误响应统一 ``{'code', 'message', 'details'}``（参考 contracts/views._error）。
+"""
+
+from decimal import Decimal, InvalidOperation
+
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.common.authority import (
+    can_act_for_company,
+    can_manage_competition,
+    user_company_ids,
+    user_membership,
+)
+from apps.competition.audit import services as audit_services
+
+from .engine import (
+    StockError,
+    advance_round,
+    resolve_effective_pbs,
+    resolve_field_value_map,
+    resolve_field_value_or_default,
+    round2,
+)
+from .models import (
+    Stock, StockCandle, StockFundsAccount, StockHolding, StockOrder,
+)
+from .services import (
+    account_owned_by_user,
+    build_last_candle_map,
+    build_sync_payload,
+    owner_account_q,
+    serialize_account,
+    serialize_candle,
+    serialize_holding,
+    serialize_order,
+    serialize_stock_detail,
+    serialize_stock_thin,
+)
+
+# 委托最小值（旧 CreateOrderSerializer：price/quantity min_value=0.0001）
+DECIMAL_MIN = Decimal('0.0001')
+
+
+def _error(message, code=400, details=''):
+    """统一业务错误响应（契约 §4 任务口径：{'code','message','details'}）。"""
+    return Response({'code': code, 'message': message, 'details': details}, status=code)
+
+
+# ---------------------------------------------------------------- 权限
+
+
+def _require_member(user, cid):
+    """查看行情权限：任何比赛成员（§4 任务口径）；系统超管恒通过。"""
+    if user is not None and user.is_authenticated:
+        if user.is_superuser:
+            return True
+        if user_membership(user, cid) is not None:
+            return True
+        if user_company_ids(user, cid):
+            return True
+    return False
+
+
+def _pagination(request, default_size=50, max_size=500):
+    """薄分页（§4.1 ?page&pageSize；§5 表格 50/页）。"""
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(request.query_params.get('pageSize', default_size))
+    except (TypeError, ValueError):
+        page_size = default_size
+    page_size = max(1, min(max_size, page_size))
+    return page, page_size, (page - 1) * page_size
+
+
+def _page_envelope(items, total, page, page_size):
+    return {'items': items, 'total': total, 'page': page, 'pageSize': page_size}
+
+
+def _parse_decimal(raw, field, *, min_value=None):
+    """金额/数量入参解析（Decimal 口径，拒绝非法值；旧 CreateOrderSerializer 语义）。"""
+    if raw is None or raw == '':
+        raise StockError(f'缺少参数 {field}')
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        raise StockError(f'{field} 不是合法数值')
+    if not value.is_finite():
+        raise StockError(f'{field} 不是合法数值')
+    if min_value is not None and value < min_value:
+        raise StockError(f'{field} 不能小于 {min_value}')
+    return value
+
+
+# ---------------------------------------------------------------- 行情
+
+
+class StockListView(APIView):
+    """GET /stock/stocks —— 股票列表（薄字段：code/name/currentPrice/initPrice/
+    round/updatedAt/涨跌幅，§4.1）；``?page&pageSize`` 分页。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        page, page_size, offset = _pagination(request)
+        qs = Stock.objects.all().order_by('code')
+        total = qs.count()
+        rows = list(qs[offset:offset + page_size])
+        candle_map = build_last_candle_map([s.id for s in rows])
+        items = [
+            serialize_stock_thin(
+                s, float(candle_map[s.id].change_pct) if s.id in candle_map else 0.0,
+            )
+            for s in rows
+        ]
+        return Response(_page_envelope(items, total, page, page_size))
+
+
+class StockDetailView(APIView):
+    """GET /stock/stocks/{code} —— 单股详情（含指标全字段，§4.1）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid, code):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        stock = Stock.objects.filter(code=code).first()
+        if stock is None:
+            return _error('股票不存在', 404)
+        field_map = resolve_field_value_map(cid)
+        pb_map = resolve_effective_pbs([stock])
+        candle = build_last_candle_map([stock.id]).get(stock.id)
+        return Response(serialize_stock_detail(
+            stock, field_map=field_map, pb_map=pb_map, candle=candle,
+        ))
+
+
+class StockCandlesView(APIView):
+    """GET /stock/stocks/{code}/candles —— K 线（``?fromRound&limit`` keyset 分页，
+    按需加载，§4.1）。keyset 语义：只取 round > fromRound 的升序前 limit 条，
+    不用 OFFSET（§1 大表查询）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid, code):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        stock = Stock.objects.filter(code=code).first()
+        if stock is None:
+            return _error('股票不存在', 404)
+        try:
+            from_round = int(request.query_params.get('fromRound') or 0)
+        except (TypeError, ValueError):
+            return _error('fromRound 不是合法整数')
+        try:
+            limit = int(request.query_params.get('limit') or 200)
+        except (TypeError, ValueError):
+            limit = 200
+        limit = max(1, min(2000, limit))
+
+        qs = StockCandle.objects.filter(stock_id=stock.id, round__gt=from_round).order_by('round')
+        rows = list(qs[:limit + 1])
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return Response({
+            'items': [serialize_candle(c, stock_code=stock.code) for c in rows],
+            'hasMore': has_more,
+            'nextFromRound': rows[-1].round if rows else from_round,
+        })
+
+
+class MarketView(APIView):
+    """GET /stock/market —— 市场概览：{round, stockCount, updatedAt}（轻量心跳，§4.1）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        from django.db.models import Max
+
+        agg = Stock.objects.aggregate(m=Max('round'), u=Max('updated_at'))
+        return Response({
+            'round': agg['m'] or 0,
+            'stockCount': Stock.objects.count(),
+            'updatedAt': agg['u'].isoformat() if agg['u'] else None,
+        })
+
+
+# ---------------------------------------------------------------- 我的账户与持仓
+
+
+def _visible_accounts_q(user, cid):
+    owner_q, _ = owner_account_q(user, cid)
+    return owner_q
+
+
+class BookView(APIView):
+    """GET /stock/book —— 我的持仓 + 资金账户（owner 匹配 user 或本队/所辖公司，§4.1）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        owner_q = _visible_accounts_q(request.user, cid)
+        accounts = list(StockFundsAccount.objects.filter(owner_q).order_by('id'))
+        account_data = []
+        for a in accounts:
+            field_balance = None
+            if a.bind_field_id is not None and a.company_id is not None:
+                field_balance = resolve_field_value_or_default(a.company_id, a.bind_field_id)
+            account_data.append(serialize_account(a, field_balance=field_balance))
+
+        holdings = list(
+            StockHolding.objects.select_related('stock')
+            .filter(funds_account__in=[a.id for a in accounts] or [-1])
+            .order_by('id')
+        )
+        holding_data = [
+            serialize_holding(
+                h,
+                stock_code=h.stock.code,
+                stock_name=h.stock.name,
+                current_price=h.stock.current_price,
+            )
+            for h in holdings
+        ]
+        return Response({'accounts': account_data, 'holdings': holding_data})
+
+
+# ---------------------------------------------------------------- 委托
+
+
+def _resolve_order_account(user, cid, stock, explicit_id):
+    """解析下单资金账户（契约 §4.1 下单体只有 {code, side, price, quantity}）。
+
+    1. 显式 fundsAccountId → 直接用（仍校验归属）；
+    2. 否则优先股票所属公司的 COMPANY 账户（can_act_for_company 可操作时）；
+    3. 否则本人 USER 账户。
+    """
+    if explicit_id is not None:
+        account = StockFundsAccount.objects.filter(pk=explicit_id).first()
+        if account is None:
+            raise StockError('资金账户不存在', code=404, status_code=404)
+        return account
+    company_ids = user_company_ids(user, cid)
+    if stock.company_id and can_act_for_company(user, stock.company_id, cid):
+        account = (
+            StockFundsAccount.objects
+            .filter(owner_type='COMPANY', company_id=stock.company_id)
+            .order_by('id').first()
+        )
+        if account is not None:
+            return account
+    account = (
+        StockFundsAccount.objects
+        .filter(owner_type='USER', user_id=user.id)
+        .order_by('id').first()
+    )
+    if account is not None:
+        return account
+    raise StockError('没有可用的资金账户')
+
+
+class OrderListCreateView(APIView):
+    """GET /stock/orders —— 我的委托（?status，分页，§4.1）；
+    POST /stock/orders —— 下单 {code, side, price, quantity}（校验现金/持仓）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        owner_q, _ = owner_account_q(request.user, cid)
+        qs = StockOrder.objects.select_related('stock').filter(
+            funds_account__in=StockFundsAccount.objects.filter(owner_q),
+        )
+        status_filter = (request.query_params.get('status') or '').strip().upper()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        page, page_size, offset = _pagination(request)
+        total = qs.count()
+        rows = list(qs.order_by('-updated_at', '-id')[offset:offset + page_size])
+        items = [serialize_order(o, stock_code=o.stock.code) for o in rows]
+        return Response(_page_envelope(items, total, page, page_size))
+
+    def post(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        code = (request.data.get('code') or '').strip()
+        side = (request.data.get('side') or '').strip().upper()
+        if side not in ('BUY', 'SELL'):
+            return _error('side 必须是 BUY 或 SELL')
+        stock = Stock.objects.filter(code=code).first()
+        if stock is None:
+            return _error('股票不存在', 404)
+
+        try:
+            price = _parse_decimal(request.data.get('price'), 'price', min_value=DECIMAL_MIN)
+            quantity = _parse_decimal(request.data.get('quantity'), 'quantity', min_value=DECIMAL_MIN)
+            explicit_id = request.data.get('fundsAccountId')
+            if explicit_id is not None and explicit_id != '':
+                explicit_id = int(explicit_id)
+            else:
+                explicit_id = None
+            account = _resolve_order_account(request.user, cid, stock, explicit_id)
+        except StockError as exc:
+            return _error(str(exc), exc.code)
+        except (TypeError, ValueError):
+            return _error('fundsAccountId 不是合法整数')
+
+        if not account_owned_by_user(account, request.user, user_company_ids(request.user, cid)):
+            return _error('无权操作该资金账户', 403)
+
+        try:
+            order = _create_order(request.user, cid, stock, account, side, price, quantity)
+        except StockError as exc:
+            return _error(str(exc), exc.code)
+        audit_services.log_action(
+            'STOCK_ORDER_CREATE', actor=request.user, target=str(order.id),
+            payload={'code': code, 'side': side, 'price': str(price), 'quantity': str(quantity)},
+        )
+        return Response(
+            serialize_order(order, stock_code=stock.code), status=status.HTTP_201_CREATED,
+        )
+
+
+def _create_order(user, cid, stock, account, side, price, quantity):
+    """下单事务（旧 OrderCollectionView.post 语义）：
+
+    - 委托价限制：不得超过当前价 ±10%（Decimal 域）；
+    - select_for_update 锁账户行防并发超买超卖；
+    - 已挂未成交占用：买占用现金、卖占用持仓（同一账户多笔挂单合计校验）；
+    - 单事务创建 PENDING 委托（契约 §1 并发写：撮合/落账单事务 + 行锁）。
+    """
+    from .engine import comp_atomic
+
+    price_limit = stock.current_price * Decimal('0.1')
+    upper_limit = (stock.current_price + price_limit).quantize(Decimal('0.01'))
+    lower_limit = (stock.current_price - price_limit).quantize(Decimal('0.01'))
+    if price > upper_limit + Decimal('0.001'):
+        raise StockError(f'委托价不能超过 ￥{upper_limit}（当前价 ￥{stock.current_price} 的 +10%）')
+    if price < lower_limit - Decimal('0.001'):
+        raise StockError(f'委托价不能低于 ￥{lower_limit}（当前价 ￥{stock.current_price} 的 -10%）')
+
+    with comp_atomic():
+        locked_account = StockFundsAccount.objects.select_for_update().get(pk=account.id)
+
+        available_balance = locked_account.cash_balance
+        if locked_account.bind_field_id and locked_account.company_id:
+            v = resolve_field_value_or_default(
+                locked_account.company_id, locked_account.bind_field_id,
+            )
+            if v is not None:
+                available_balance = v
+
+        pending = StockOrder.objects.filter(
+            funds_account_id=locked_account.id, stock_id=stock.id, status='PENDING',
+        )
+        pending_buy_cost = Decimal('0')
+        pending_sell_shares = Decimal('0')
+        for o in pending:
+            if o.side == 'BUY':
+                pending_buy_cost += Decimal(str(o.price)) * Decimal(str(o.quantity))
+            else:
+                pending_sell_shares += Decimal(str(o.quantity))
+
+        if side == 'BUY':
+            need = price * quantity
+            if Decimal(str(available_balance)) < need + pending_buy_cost - Decimal('0.000001'):
+                raise StockError('现金余额不足')
+        else:
+            holding = StockHolding.objects.filter(
+                funds_account_id=locked_account.id, stock_id=stock.id,
+            ).first()
+            available_shares = Decimal(str(holding.shares if holding else 0)) - pending_sell_shares
+            if available_shares < quantity - Decimal('0.000001'):
+                raise StockError('持仓不足')
+
+        return StockOrder.objects.create(
+            stock_id=stock.id,
+            funds_account_id=locked_account.id,
+            side=side,
+            price=price,
+            quantity=quantity,
+            amount=round2(price * quantity),
+            status='PENDING',
+            round=stock.round,
+        )
+
+
+class OrderItemView(APIView):
+    """DELETE /stock/orders/{id} —— 撤单（仅 PENDING 且本人/所辖公司，§4.1）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, cid, pk):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        from .engine import comp_atomic
+
+        with comp_atomic():
+            # P0-#1: select_for_update 锁定订单行，防止撤单与撮合引擎并发竞态
+            order = StockOrder.objects.select_for_update().filter(pk=pk).first()
+            if order is None:
+                return _error('订单不存在', 404)
+            account = StockFundsAccount.objects.filter(pk=order.funds_account_id).first()
+            if account is None:
+                return _error('资金账户不存在', 404)
+            if not account_owned_by_user(
+                account, request.user, user_company_ids(request.user, cid),
+            ):
+                return _error('无权操作该资金账户', 403)
+            if order.status != 'PENDING':
+                return _error('仅可撤销挂单')
+            order.status = 'CANCELLED'
+            order.save(update_fields=['status'])
+        audit_services.log_action(
+            'STOCK_ORDER_CANCEL', actor=request.user, target=str(order.id),
+        )
+        return Response({'id': order.id, 'status': order.status})
+
+
+# ---------------------------------------------------------------- 推进轮次（§4.1）
+
+
+class AdvanceRoundView(APIView):
+    """POST /stock/round/advance —— 推进轮次（超管，can_manage_competition，§4.1）。
+
+    撮合 + 定价 + K 线 + 做市商报价，单事务（engine.advance_round，§3）；
+    成功后由 engine 广播 stock-updated 推送信号（§4.3）。
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, cid):
+        if not can_manage_competition(request.user, cid):
+            return _error('需要超级管理员权限', 403)
+        data = request.data or {}
+        stock_ids = data.get('stockIds')
+        if stock_ids is not None:
+            try:
+                stock_ids = [int(x) for x in stock_ids]
+            except (TypeError, ValueError):
+                return _error('stockIds 不是合法整数列表')
+        try:
+            result = advance_round(
+                competition_id=cid,
+                stock_ids=stock_ids,
+                market_maker=data.get('marketMaker'),
+                stock_config=data.get('stockConfig'),
+                operator=request.user,
+            )
+        except StockError as exc:
+            return _error(str(exc), exc.code)
+        # 审计已在 engine.advance_round 内以 operator=request.user 记录（STOCK_ADVANCE_ROUND）
+        return Response(result)
+
+
+# ---------------------------------------------------------------- 同步协议（§4.2）
+
+
+class SyncView(APIView):
+    """GET /stock/sync —— 快照 + 增量同步（契约 §4.2，核心性能项）。
+
+    - ``?since=<ISO时间|空>&limit=<默认500>``：since 空 → snapshot（全量薄字段，
+      仍分页 limit）；带 since → delta（各集合 updated_at > since，
+      ORDER BY updated_at, id keyset，limit 截断置 hasMore）；
+    - 响应：{mode, serverTime, round, hasMore, stocks, candles, orders, holdings, accounts}；
+      游标永远用上一响应的 serverTime（规避客户端时钟偏差）；
+    - 可见性裁剪：orders/holdings/accounts 只返回我的（user 或所辖公司）；
+      stocks/candles 全员可见。
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('需要比赛成员身份', 403)
+        payload = build_sync_payload(
+            user=request.user,
+            since_raw=request.query_params.get('since'),
+            limit_raw=request.query_params.get('limit'),
+            competition_id=cid,
+        )
+        return Response(payload)

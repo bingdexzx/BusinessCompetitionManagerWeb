@@ -42,6 +42,15 @@
           <el-icon><Files /></el-icon>
           <span>合同工作台</span>
         </el-menu-item>
+        <!-- 股票市场：行情看板 / 交易管理 -->
+        <el-sub-menu index="stocks-group" class="sidebar-group">
+          <template #title>
+            <el-icon><TrendCharts /></el-icon>
+            <span>股票市场</span>
+          </template>
+          <el-menu-item :index="`/competitions/${activeCid}/stocks`">行情看板</el-menu-item>
+          <el-menu-item :index="`/competitions/${activeCid}/stocks/manage`">交易管理</el-menu-item>
+        </el-sub-menu>
         <el-menu-item :index="`/competitions/${activeCid}/fiscal`">
           <el-icon><Calendar /></el-icon>
           <span>财年与补录</span>

@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'apps.competition.messages',
     'apps.competition.audit',
     'apps.competition.settlement',
+    'apps.competition.stock',  # 股票模块（契约：股票模块与同步优化.md §2）
     # 第三方 / Django 内建
     'corsheaders',
     'rest_framework',
@@ -61,6 +62,9 @@ INSTALLED_APPS = [
 AUTH_USER_MODEL = 'accounts.User'
 
 MIDDLEWARE = [
+    # 数据库背压（限流）：多库路由下每请求最多占 全局库+比赛库 两条连接，
+    # 并发过高先排队再服务，防止打爆 PostgreSQL max_connections（docs/数据库优化.md）
+    'apps.common.middleware.DatabaseBackpressureMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
@@ -184,6 +188,14 @@ LOG_REDACTED_KEYS = {
 
 # 请求/响应脱敏摘要最大长度
 LOG_DIGEST_MAX_LENGTH = 2000
+
+# ---------------------------------------------------------------- 数据库背压（过载保护）
+
+# 同时处理的请求数上限（多库路由下 DB 连接峰值 ≈ 该值 × 2 + 后台）：
+# 经验值 DB_MAX_CONCURRENT_REQUESTS × 2 + 后台 < PostgreSQL max_connections
+DB_MAX_CONCURRENT_REQUESTS = int(os.getenv('DB_MAX_CONCURRENT_REQUESTS', '32'))
+# 超出并发的请求最长排队秒数；超时返回 503 + Retry-After（快速失败，前端退避重试）
+DB_BACKPRESSURE_TIMEOUT = float(os.getenv('DB_BACKPRESSURE_TIMEOUT', '10'))
 
 # 日志留存（决策 D20：默认 3 年，只增不删；到期冷归档由运维脚本处理）
 LOG_RETENTION_DAYS = 365 * 3

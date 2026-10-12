@@ -1,19 +1,59 @@
-"""中间件：比赛上下文解析 + 网络日志（§14.3）。"""
+"""中间件：比赛上下文解析 + 网络日志（§14.3）+ 数据库背压（过载保护）。"""
 
+import re
+import threading
 import time
 import uuid
 
 from django.conf import settings
+from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
 
 from apps.common import context as ctx
 from apps.common.devices import device_snapshot, client_ip
 from apps.common.redaction import digest
 
-# 从 URL 解析比赛 id：/api/competitions/<cid>/...
-import re
-
 _COMPETITION_URL_RE = re.compile(r'^/api/competitions/(\d+)(?:/|$)')
+
+
+class DatabaseBackpressureMiddleware(MiddlewareMixin):
+    """数据库背压（限流）：并发请求先排队再服务，防止打爆 PostgreSQL 连接数。
+
+    - 多库路由下每个请求最多同时占 **全局库 + 比赛库** 两条连接；
+      60 并发账号 × 2 ≈ 120 连接 > PG 默认 max_connections=100 → `too many clients`；
+    - 信号量把「同时处理中的请求」封顶在 DB_MAX_CONCURRENT_REQUESTS（默认 32），
+      连接峰值 ≈ 64 + 后台任务，安全落在 100 以内；
+    - 超出并发的请求最多排队 DB_BACKPRESSURE_TIMEOUT 秒，超时 503（快速失败 +
+      Retry-After，前端有退避重试；总比整机假死好——这正是「后期卡死」的根源之一）。
+    """
+
+    _semaphore = None  # 进程级共享
+
+    @classmethod
+    def _sem(cls):
+        if cls._semaphore is None:
+            cls._semaphore = threading.BoundedSemaphore(
+                max(1, getattr(settings, 'DB_MAX_CONCURRENT_REQUESTS', 32)))
+        return cls._semaphore
+
+    def process_request(self, request):
+        if not request.path.startswith('/api/'):
+            return None
+        timeout = getattr(settings, 'DB_BACKPRESSURE_TIMEOUT', 10.0)
+        if not self._sem().acquire(timeout=timeout):
+            return JsonResponse(
+                {'code': 503, 'message': '服务器繁忙，请稍后重试', 'details': ''},
+                status=503, headers={'Retry-After': '2'})
+        request._gipfel_backpressure = True
+        return None
+
+    def process_response(self, request, response):
+        if getattr(request, '_gipfel_backpressure', False):
+            try:
+                self._sem().release()
+            except ValueError:  # pragma: no cover —— 防御性
+                pass
+        return response
 
 
 class CompetitionContextMiddleware(MiddlewareMixin):

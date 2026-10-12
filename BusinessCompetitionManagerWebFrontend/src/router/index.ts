@@ -41,6 +41,19 @@ const router = createRouter({
       props: true,
     },
     {
+      path: '/competitions/:cid/stocks',
+      name: 'competition-stocks',
+      component: () => import('../views/StockMarketView.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/stocks/manage',
+      name: 'competition-stocks-manage',
+      component: () => import('../views/StockManageView.vue'),
+      props: true,
+      meta: { participant: true }, // 交易管理需参赛身份
+    },
+    {
       path: '/competitions/:cid/contracts/:id',
       name: 'contract-detail',
       component: () => import('../views/ContractDetailView.vue'),
@@ -122,6 +135,15 @@ router.beforeEach((to) => {
       (m) => String(m.id) === cid && m.identity === 'COMP_SUPER_ADMIN',
     )
     if (!auth.isSuperuser && !isCompSuperAdmin) {
+      return { name: 'competitions' }
+    }
+  }
+
+  // 参赛页（股票交易管理）：本比赛成员（参赛身份）或 系统超管
+  if (to.meta.participant) {
+    const cid = String(to.params.cid ?? '')
+    const isMember = auth.memberships.some((m) => String(m.id) === cid)
+    if (!auth.isSuperuser && !isMember) {
       return { name: 'competitions' }
     }
   }

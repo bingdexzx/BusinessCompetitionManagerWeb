@@ -18,6 +18,7 @@ dependencies = [
     "psycopg2-binary>=2.9.13",
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
+    "waitress>=3.0.2",
 ]
 
 # 本项目是应用（Django 站点），不是可安装的库/包，

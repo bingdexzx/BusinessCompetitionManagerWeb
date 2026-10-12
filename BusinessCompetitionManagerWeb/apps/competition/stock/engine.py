@@ -1,0 +1,2107 @@
+"""股票撮合 / 定价引擎（契约 §3 引擎：从旧系统 backend/apps/stock/engine.py 忠实移植）。
+
+纯函数部分（compute_match / compute_price / build_candle / compute_init_price）
+严格对齐原 engine.ts；advance_round 为 ORM 依赖的推进轮次编排器，对齐
+stock.service.ts 的 advanceRound / advanceOneStock / generateMarketMakerOrders。
+
+逻辑要点（与原 engine.ts 注释一致）：
+- 撮合：最高买价=MAX(买入价)，最低卖价=MIN(卖出价)，成交价=(最高买+最低卖)/2，
+  是否成交=最高买>=最低卖。
+- 定价（消除一字板）：净买压力 pressure=(买量-卖量)/(买量+卖量+1)∈(-1,1)；
+  趋势偏置 drift=happinessImpact*(幸福度-50)/50 + carbonImpact*clamp((均值-碳排)/均值,-1,1)；
+  理论价=上轮收盘×(1+pressure*maxMovePct+drift*maxMovePct)；
+  成交价参与定价 final=限幅(tradePriceWeight*tradePrice+(1-weight)*理论价, 上轮×(1±limitPct))；
+  未成交(单边无对手盘)→平盘：价格不动，但轮次照常推进（round 全局同步）并生成平盘 K 线，
+  保证 K 线序列无空洞（与 StockCandle「每轮每股票一根」的模型约束一致）。
+- K线：开盘=上轮收盘；收盘=最终价；盘高/盘低叠加确定性盘中波动（上下影线）。
+- 做市商（S11 增强）：波动自适应价差（波动越大价差越宽，封顶 2 倍）+
+  反向动量偏置（涨 → 报价下移逢高派发，跌 → 上移逢低承接；封板次轮加倍）
+  + 分级回归锚干预（连续封板 ≥2 轮，量随连续轮数放大）。
+- 防连板硬约束（S10）：上一轮封板时本轮同侧限幅收紧（96% 且不超过 9.6%），
+  连续涨停/跌停在数学上不可能；定价与 K 线上下界同步生效。
+
+多库适配点（§3「适配点」；对比旧 engine.py）：
+1. ``BusinessError`` → 本地 :class:`StockError`；
+2. 事务一律 ``transaction.atomic(using=get_competition_alias() or 'default')``
+   （:func:`comp_atomic`，多库下事务落比赛库连接，参考 contracts/engine.comp_atomic）；
+3. 旧 FK/表引用 → 本应用模型；``competition_id`` 仅保留为对外参数（推送/审计用），
+   ORM 不再按 competition 过滤——一个比赛一个库（comp_<id>），比赛归属即库归属；
+4. 旧 ``apps.companies.CompanyFieldValue`` / ``apps.industry_types.IndustryField``
+   → 新 ``apps.competition.industries.models``（field_key 口径，industry_field_id
+   经 IndustryField pk 解析 field_key）；``apps.company_fields.calc.recompute_calc_fields``
+   → ``industries.services.recompute_company_fields``；
+5. 旧 ``apps.realtime.emit.emit_resource_changed`` 逐条广播 → 按契约 §4.3
+   「推送只当信号」：advance_round 结束后由 services.broadcast_stock_updated
+   发一次 ``{'type':'stock-updated'}`` 信号；
+6. 旧 ``apps.common.signals.suppress_signals`` 屏蔽 per-row 信号 → 新系统无该机制，移除；
+7. 旧 ``apps.common.audit.log_write`` → ``apps.competition.audit.services.log_action``；
+8. Decimal 精度处理（round2 / localcontext prec=70 / EPS / 6 位微调）原样保留。
+"""
+from __future__ import annotations
+
+import importlib
+import json
+import logging
+import math
+import random
+import threading
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
+from typing import Any, Iterable
+
+from django.db import connection, transaction
+
+from apps.common.context import get_competition_alias
+
+logger = logging.getLogger("gipfel")
+
+EPS = Decimal("1e-9")
+
+
+class StockError(Exception):
+    """股票业务错误（契约 §3：旧系统 BusinessError 的本地替代）。
+
+    旧 BusinessError(message, code=..., status_code=...) 语义保留：
+    code/HTTP status 由视图层的统一错误包装（{'code','message','details'}）使用。
+    """
+
+    def __init__(self, message, code=400, status_code=None):
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code or code
+
+
+def comp_atomic():
+    """比赛库事务（契约 §3 适配点 2：多库下事务必须落比赛库连接）。"""
+    return transaction.atomic(using=(get_competition_alias() or 'default'))
+
+
+# ==================== 基础数值工具 ====================
+def round2(v) -> Decimal:
+    """保留 2 位小数（股价精度），用 Decimal 避免 float 累计误差。
+
+    接受 Decimal/float/int/str 输入，统一转 Decimal 后四舍五入到 0.01。
+    返回 Decimal（写入 DecimalField 时无需再转 float）。
+    大数安全：quantize 在 localcontext(prec=70) 下执行——默认 context 28 位
+    对 10^26 以上数值会 InvalidOperation，曾被 except 吞成 0（现金清零事故）。
+    """
+    if isinstance(v, Decimal):
+        d = v
+    else:
+        try:
+            d = Decimal(str(v))
+        except (ValueError, ArithmeticError, TypeError):
+            return Decimal("0")
+    with localcontext() as ctx:
+        ctx.prec = 70
+        try:
+            return d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
+            return Decimal("0")
+
+
+def clamp(v: float, lo: float, hi: float) -> float:
+    """限幅辅助：把 v 截断到 [lo, hi]。"""
+    return max(lo, min(hi, v))
+
+
+def add_fluctuation(value: float, fluctuation_pct: float = 0.2) -> float:
+    """给参数添加随机波动（±fluctuation_pct）。
+
+    提取为模块级函数，避免每次调用做市商时重新定义。
+    """
+    return value * (1 + random.uniform(-fluctuation_pct, fluctuation_pct))
+
+
+def candle_noise(seed_a: float, seed_b: float) -> float:
+    """确定性伪随机：由两个种子派生 [0,1) 的伪随机数（正弦哈希，可复现）。
+
+    输入可能是 Decimal/float/int，内部统一转 float（这是图形指标，非账目）。
+    """
+    x = math.sin(float(seed_a) * 127.1 + float(seed_b) * 311.7) * 43758.5453
+    return x - math.floor(x)
+
+
+# ==================== 撮合（纯函数） ====================
+def compute_match(orders: Iterable[dict]) -> dict:
+    """撮合预检：判断是否可成交 + 计算参考成交价。
+
+    注意：此函数仅做「全局预检」，返回的 tradePrice 是参考价（最高买与最低卖的中点）。
+    实际逐笔撮合时，每对成交价会被夹到 [sell.price, buy.price] 区间内，
+    确保不违反任何一方的限价委托语义。详见 advance_one_stock 中的逐笔撮合循环。
+
+    orders: [{side:"BUY"|"SELL", price, quantity}, ...]
+    返回 {highestBuy, lowestSell, totalBuyQty, totalSellQty,
+          totalBuyAmount, totalSellAmount, matched, tradePrice}
+    """
+    orders = list(orders)
+    buys = [o for o in orders if o["side"] == "BUY"]
+    sells = [o for o in orders if o["side"] == "SELL"]
+
+    highest_buy = max((o["price"] for o in buys), default=0)
+    lowest_sell = min((o["price"] for o in sells), default=0)
+
+    total_buy_qty = sum(o["quantity"] for o in buys)
+    total_sell_qty = sum(o["quantity"] for o in sells)
+    total_buy_amount = sum(o["price"] * o["quantity"] for o in buys)
+    total_sell_amount = sum(o["price"] * o["quantity"] for o in sells)
+
+    matched = len(buys) > 0 and len(sells) > 0 and highest_buy >= lowest_sell
+    trade_price = (highest_buy + lowest_sell) / 2 if matched else None
+
+    return {
+        "highestBuy": highest_buy,
+        "lowestSell": lowest_sell,
+        "totalBuyQty": total_buy_qty,
+        "totalSellQty": total_sell_qty,
+        "totalBuyAmount": total_buy_amount,
+        "totalSellAmount": total_sell_amount,
+        "matched": matched,
+        "tradePrice": trade_price,
+    }
+
+
+# ==================== 定价（纯函数） ====================
+def compute_pressure(buy_qty: float, sell_qty: float) -> float:
+    """净买压力：∈ (-1, 1)，分母 +1 防除零。"""
+    denom = buy_qty + sell_qty + 1
+    return (buy_qty - sell_qty) / denom
+
+
+def compute_carbon_drift(
+    current_carbon: float,
+    industry_avg_carbon: float,
+    carbon_saturate_ratio: float = 2,
+) -> float:
+    """碳排趋势偏置分量（对数压缩）。
+
+    - 碳排=均值 → 0；碳排=R 倍均值 → -1；零碳排 → +1
+    - 行业均值≤0 无法归一 → 0
+    """
+    if industry_avg_carbon <= 0:
+        return 0
+    if current_carbon <= 0:
+        return 1
+    r = current_carbon / industry_avg_carbon
+    k = math.log(carbon_saturate_ratio if carbon_saturate_ratio > 1 else 2)
+    return min(1, -math.log(r) / k)
+
+
+def compute_drift(
+    happiness: float,
+    current_carbon: float,
+    industry_avg_carbon: float,
+    happiness_impact: float,
+    carbon_impact: float,
+    carbon_saturate_ratio: float = 2,
+) -> float:
+    """趋势偏置：幸福度/碳排压缩为长期趋势偏置。"""
+    h = (happiness - 50) / 50
+    c = compute_carbon_drift(current_carbon, industry_avg_carbon, carbon_saturate_ratio)
+    return happiness_impact * h + carbon_impact * c
+
+
+def compute_theoretical(
+    last_close: float,
+    pressure: float,
+    drift: float,
+    max_move_pct: float,
+) -> float:
+    """理论价：上轮收盘 × (1 + 压力×maxMovePct + 偏置×maxMovePct)。"""
+    return last_close * (1 + pressure * max_move_pct + drift * max_move_pct)
+
+
+def compute_price(factors: dict, config: dict) -> dict:
+    """最终价（限幅后，2 位小数）。
+
+    factors: {lastClose, buyQty, sellQty, matched, tradePrice, happiness,
+              currentCarbon, industryAvgCarbon}
+    config: StockConfig dict
+    返回 {pressure, drift, theoretical, final, usedTradePrice}
+    """
+    pressure = compute_pressure(factors["buyQty"], factors["sellQty"])
+    drift = compute_drift(
+        factors["happiness"],
+        factors["currentCarbon"],
+        factors["industryAvgCarbon"],
+        config["happinessImpact"],
+        config["carbonImpact"],
+        config["carbonSaturateRatio"],
+    )
+    theoretical = compute_theoretical(
+        factors["lastClose"], pressure, drift, config["maxMovePct"]
+    )
+
+    # 非对称限幅（防连板 S10）：upperLimitPct / lowerLimitPct 可分别覆盖涨/跌侧
+    # 限幅；未设置时回落到对称的 limitPct。
+    upper_pct = config.get("upperLimitPct", config["limitPct"])
+    lower_pct = config.get("lowerLimitPct", config["limitPct"])
+    upper = factors["lastClose"] * (1 + upper_pct)
+    lower = factors["lastClose"] * (1 - lower_pct)
+
+    trade_price = factors.get("tradePrice")
+    if factors["matched"] and trade_price is not None and math.isfinite(trade_price):
+        w = config["tradePriceWeight"]
+        blended = w * trade_price + (1 - w) * theoretical
+        final = clamp(blended, lower, upper)
+        used_trade_price = True
+    else:
+        final = clamp(factors["lastClose"], lower, upper)
+        used_trade_price = False
+
+    final = round2(final)
+    return {
+        "pressure": pressure,
+        "drift": drift,
+        "theoretical": theoretical,
+        "final": final,
+        "usedTradePrice": used_trade_price,
+    }
+
+
+def build_candle(
+    open_: float,
+    close: float,
+    round_: int,
+    theoretical: float | None = None,
+    limit_pct: float = 0.1,
+    upper_pct: float | None = None,
+    lower_pct: float | None = None,
+    trade_high: float | None = None,
+    trade_low: float | None = None,
+) -> dict:
+    """构建 K 线数据。
+
+    内部保持 float 运算（影线是图形指标，精度足够），
+    仅在最后用 round2 截断到 0.01。
+    upper_pct / lower_pct：非对称限幅（防连板 S10），缺省回落 limit_pct。
+    trade_high / trade_low：本轮实际成交价的最高/最低——真实挂单成交
+    可能超出「body + 理论价 + 噪声影线」的合成范围（如买卖单挂价贴限价），
+    K 线必须如实反映（仍夹在涨跌停限幅内）。
+    """
+    # 确保 open_ 和 close 是 float 类型（避免 Decimal 和 float 混合运算）
+    open_ = float(open_)
+    close = float(close)
+
+    up_pct = upper_pct if upper_pct is not None else limit_pct
+    dn_pct = lower_pct if lower_pct is not None else limit_pct
+    upper = float(round2(Decimal(str(open_)) * (Decimal("1") + Decimal(str(up_pct)))))
+    lower = float(round2(Decimal(str(open_)) * (Decimal("1") - Decimal(str(dn_pct)))))
+    range_ = upper - lower
+
+    # body_high/low 可能是 Decimal（来自 ORM/price["final"]），统一转 float 后再计算
+    body_high = float(max(open_, close))
+    body_low = float(min(open_, close))
+
+    high = body_high
+    low = body_low
+    if theoretical is not None and math.isfinite(theoretical):
+        t = float(min(max(theoretical, lower), upper))
+        high = max(high, t)
+        low = min(low, t)
+    # 实际成交价并入影线（夹在限幅内）
+    if trade_high is not None and math.isfinite(trade_high):
+        high = max(high, float(min(max(trade_high, lower), upper)))
+    if trade_low is not None and math.isfinite(trade_low):
+        low = min(low, float(min(max(trade_low, lower), upper)))
+
+    # 影线长度控制：基于真实订单数据和股价百分比
+    # 优先使用真实成交价范围，其次使用理论价，最后使用噪声
+    price = float(open_)
+    if price > 0:
+        # 计算基于真实订单的影线范围
+        if trade_high is not None and trade_low is not None:
+            # 有真实成交：影线基于成交价范围
+            trade_range = float(trade_high) - float(trade_low)
+            # 影线基础长度 = 成交价范围的30%~70%（确保影线能覆盖成交价）
+            base_wick = trade_range * (0.3 + 0.4 * candle_noise(round_, open_))
+        elif theoretical is not None and math.isfinite(theoretical):
+            # 无成交但有理论价：影线基于理论价与收盘价的差异
+            theory_diff = abs(float(theoretical) - close)
+            base_wick = theory_diff * (0.5 + 0.5 * candle_noise(round_, open_))
+        else:
+            # 无成交无理论价：使用股价百分比
+            change_pct_abs = abs(close - open_) / price if price > 0 else 0
+            base_wick_pct = 0.003 + min(0.007, change_pct_abs * 0.3)
+            base_wick = price * base_wick_pct
+
+        # 添加随机性：基础长度的0.6~1.4倍
+        random_factor_a = 0.6 + 0.8 * candle_noise(round_, open_)
+        random_factor_b = 0.6 + 0.8 * candle_noise(round_ * 3 + 7, open_)
+
+        up_wick = base_wick * random_factor_a
+        down_wick = base_wick * random_factor_b
+    else:
+        # 股价为0时的fallback
+        wick = range_ * 0.05  # 5%的涨跌停区间
+        up_wick = wick * candle_noise(round_, open_)
+        down_wick = wick * candle_noise(round_ * 3 + 7, open_)
+
+    high = float(round2(min(upper, high + up_wick)))
+    low = float(round2(max(lower, low - down_wick)))
+
+    change_pct = (
+        float(
+            (Decimal(str(close - open_)) / Decimal(str(open_)) * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        )
+        if open_ != 0
+        else 0
+    )
+    return {
+        "round": round_,
+        "open": open_,
+        "high": high,
+        "low": low,
+        "close": close,
+        "changePct": change_pct,
+    }
+
+
+def compute_init_price(
+    init_net_profit: float, total_shares: float, industry_pe: float
+) -> float:
+    """初始价公式：ROUND(initNetProfit*10000/totalShares/industryPE, 2)。"""
+    if industry_pe <= 0 or total_shares <= 0:
+        # 非法参数（行业 PE / 股本非正）不再静默返回 0，改为告警便于排查配置错误
+        logger.warning(
+            "compute_init_price 非法参数 industry_pe=%s total_shares=%s，返回 0",
+            industry_pe,
+            total_shares,
+        )
+        return 0
+    price = (
+        Decimal(str(init_net_profit))
+        * 10000
+        / Decimal(str(total_shares))
+        / Decimal(str(industry_pe))
+    )
+    return float(price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+# ==================== StockConfig ====================
+DEFAULT_STOCK_CONFIG: dict = {
+    "limitPct": 0.1,
+    "maxMovePct": 0.08,    # 增大最大移动：从0.05升到0.08（允许更大波动）
+    "happinessImpact": 0.3, # 增大幸福度影响：从0.2升到0.3
+    "carbonImpact": 0.3,   # 增大碳排放影响：从0.2升到0.3
+    "mmDepthPct": 0.0005,
+    "mmMinQty": 500,
+    "mmMaxQty": 50000,
+    "mmSpreadPct": 0.02,   # 增大点差：从0.015升到0.02
+    "mmSkewPct": 0.02,     # 增大偏置：从0.015升到0.02
+    "interventionMode": "regression",
+    "regressionPct": 0.02,  # 增大回归偏移：从0.015升到0.02
+    "tradePriceWeight": 0.7,
+    "carbonSaturateRatio": 2,
+    # 做市商自成交配置
+    "mmSelfTradeEnabled": True,
+    "mmSelfTradePct": 0.005,    # 增大自成交偏移：从0.003升到0.005
+    "mmSelfTradeQtyPct": 0.05,
+    # 做市商随机事件配置
+    "mmBadNewsProb": 0.05,      # 增大利空概率：从0.03升到0.05
+    "mmGoodNewsProb": 0.04,     # 增大利好概率：从0.02升到0.04
+    "mmBadNewsImpact": 0.08,    # 增大利空影响：从0.06升到0.08
+    "mmGoodNewsImpact": 0.06,   # 增大利好影响：从0.04升到0.06
+    # 估值回归配置
+    "mmRegressionThreshold": 0.3, # 提高回归阈值：从0.25升到0.3（更晚触发回归）
+    "mmRegressionStrength": 0.2,  # 降低回归强度：从0.3降到0.2（回归更温和）
+    # 市场自然波动配置
+    "mmCallbackEnabled": True,
+}
+
+# 防连板因子：上一轮已封板时，本轮同侧限幅收紧（更宽松口径取 96%）。
+# 默认 10% × 0.96 = 9.6% < 9.9%（封板判定线），连续封板在数学上不可能。
+_ANTI_STREAK_FACTOR = 0.96
+# 防连板绝对上限：与封板判定线（advance_round 中 |change_pct| ≥ 9.9 判板）挂钩。
+# 对 limitPct > 10.5% 的高限幅配置，仅按 96% 收缩仍可能 ≥ 9.9%（如 15%×0.96=14.4%），
+# 故同侧限幅取 min(limitPct×0.96, 9.6%)，保证任意配置下连板都不可能。
+_ANTI_STREAK_CAP_PCT = 0.096
+
+
+def resolve_stock_config(input_: dict | None) -> dict:
+    """将未知/缺失字段合并回默认值，保证运行期类型完整。"""
+    if not input_ or not isinstance(input_, dict):
+        return dict(DEFAULT_STOCK_CONFIG)
+    merged = dict(DEFAULT_STOCK_CONFIG)
+    merged.update(input_)
+    return merged
+
+
+# ==================== 字段值解析（ORM 依赖） ====================
+def _parse_exact_number(text) -> "int | Decimal | None":
+    """数字字符串 → 精确数值：整数字符串 → int（任意精度），小数 → Decimal。
+
+    大数安全：绝不 float 化——double 在 2^53 以上丢精度，且 JSON 出站会变成
+    2e+30 科学计数形态，前端正则不识别导致「大数不展示」。
+    解析失败返回 None（与旧 float 路径的 isfinite 拦截语义一致）。
+    """
+    s = str(text).strip() if text is not None else ""
+    if not s:
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        d = Decimal(s)
+    except InvalidOperation:
+        return None
+    return d if d.is_finite() else None
+
+
+_field_key_cache: dict[int, "str | None"] = {}
+
+
+def _field_key_of(industry_field_id) -> "str | None":
+    """产业字段 ID（IndustryField pk，pb_field_id/bind_field_id 的口径）→ field_key。
+
+    多库适配点 4：旧系统字段值按 (company_id, industry_field_id) 存取，
+    新系统 CompanyFieldValue 按 (company, field_key, fiscal_year) 存取。
+    """
+    try:
+        fid = int(industry_field_id)
+    except (TypeError, ValueError):
+        return None
+    if fid in _field_key_cache:
+        return _field_key_cache[fid]
+    from apps.competition.industries.models import IndustryField
+
+    key = IndustryField.objects.filter(pk=fid).values_list("field_key", flat=True).first()
+    _field_key_cache[fid] = key
+    return key
+
+
+def resolve_field_value_or_default(
+    company_id: int, industry_field_id: int
+) -> "int | Decimal | None":
+    """读取公司产业字段的当前值；无记录时回退字段 defaultValue。
+
+    返回 int | Decimal | None（精确值，不 float 化；解析失败 None）。
+    调用方注意：与 float 混算会 TypeError——撮合/求和侧统一 Decimal(str(v))。
+    多库适配点 4：旧 (company_id, industry_field_id) → 新 CompanyFieldValue
+    （company, field_key, fiscal_year=None 实体信息表行），字段定义缺省值取
+    IndustryField.default_value（JSON）。
+    """
+    from apps.competition.industries.models import CompanyFieldValue, IndustryField
+
+    field_key = _field_key_of(industry_field_id)
+    if not field_key:
+        return None
+    fv = CompanyFieldValue.objects.filter(
+        company_id=company_id, field_key=field_key, fiscal_year__isnull=True
+    ).first()
+    if fv is not None and fv.value is not None:
+        n = _parse_exact_number(fv.value)
+        if n is not None:
+            return n
+    try:
+        field = IndustryField.objects.get(pk=industry_field_id)
+    except IndustryField.DoesNotExist:
+        return None
+    if field.default_value is not None:
+        n = _parse_exact_number(field.default_value)
+        if n is not None:
+            return n
+    return None
+
+
+# 区域总览数据源候选（旧系统 apps.regions.views._get_map_overview）。
+# 多库适配点：新系统暂无「区域总览卡片」服务，找不到可调用入口时回退空映射
+# （effective_* 直接回落 stock 静态值，与旧系统「区域服务不可用」分支语义一致）。
+_MAP_OVERVIEW_SOURCES = (
+    "apps.competition.basedata.services.get_map_overview",
+    "apps.competition.basedata.views.get_map_overview",
+)
+
+
+def _load_map_overview(competition_id: int) -> list:
+    """解析区域总览数据源（可插拔），不可用返回 []。"""
+    for dotted in _MAP_OVERVIEW_SOURCES:
+        module_path, _, name = dotted.rpartition(".")
+        try:
+            fn = getattr(importlib.import_module(module_path), name, None)
+        except Exception:  # noqa: BLE001 - 数据源不可用按旧逻辑回退
+            continue
+        if callable(fn):
+            try:
+                return fn(competition_id) or []
+            except Exception:  # noqa: BLE001
+                logger.warning("resolve_field_value_map 数据源失败 %s", dotted, exc_info=True)
+                return []
+    return []
+
+
+def resolve_field_value_map(competition_id: int) -> dict[str, float | None]:
+    """构建「区域:卡片 -> 实时值」映射，供股票绑定字段实时引用。
+
+    语义来源：旧 engine.resolve_field_value_map（区域总览卡片实时值）；
+    多库适配：数据源改为 _load_map_overview 可插拔入口，其余解析逻辑原样保留。
+    """
+    field_map: dict[str, float | None] = {}
+    if not competition_id:
+        return field_map
+    try:
+        overview = _load_map_overview(competition_id)
+    except Exception:  # noqa: BLE001 - 区域服务不可用时回退空映射
+        logger.warning("resolve_field_value_map 失败 comp=%s", competition_id, exc_info=True)
+        return field_map
+    for r in overview:
+        for card in r.get("cards", []):
+            key = f"{r.get('region')}:{card.get('id')}"
+            val: float | None = None
+            if card.get("valid") and card.get("value") is not None:
+                try:
+                    n = float(card["value"])
+                    val = n if math.isfinite(n) else None
+                except (ValueError, TypeError):
+                    val = None
+            field_map[key] = val
+    return field_map
+
+
+def _parse_field_ref(raw: str | None) -> dict | None:
+    """解析绑定引用字符串（JSON {region, cardId}）。空/非法返回 None。"""
+    if not raw:
+        return None
+    try:
+        v = json.loads(raw)
+        region = v.get("region") if isinstance(v, dict) else None
+        card_id = v.get("cardId") if isinstance(v, dict) else None
+        if isinstance(region, str) and (isinstance(card_id, str) or isinstance(card_id, int)):
+            return {"region": region, "cardId": str(card_id)}
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _parse_field_refs(raw: str | None) -> list[dict]:
+    """解析绑定引用数组字符串（JSON [{region, cardId}, ...]）。空/非法返回 []。"""
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        if not isinstance(v, list):
+            return []
+        result = []
+        for x in v:
+            if not isinstance(x, dict):
+                continue
+            region = x.get("region")
+            card_id = x.get("cardId")
+            if isinstance(region, str) and (isinstance(card_id, str) or isinstance(card_id, int)):
+                result.append({"region": region, "cardId": str(card_id)})
+        return result
+    except (ValueError, TypeError):
+        return []
+
+
+def effective_carbon(stock, field_map: dict) -> float:
+    ref = _parse_field_ref(getattr(stock, "carbon_field_ref", None))
+    if ref:
+        v = field_map.get(f"{ref['region']}:{ref['cardId']}")
+        if isinstance(v, (int, float)):
+            return v
+    return stock.current_carbon
+
+
+def effective_happiness(stock, field_map: dict) -> float:
+    ref = _parse_field_ref(getattr(stock, "happiness_field_ref", None))
+    if ref:
+        v = field_map.get(f"{ref['region']}:{ref['cardId']}")
+        if isinstance(v, (int, float)):
+            return v
+    return stock.happiness
+
+
+def effective_industry_avg_carbon(stock, field_map: dict) -> float:
+    refs = _parse_field_refs(getattr(stock, "industry_avg_carbon_refs", None))
+    vals: list[float] = []
+    for ref in refs:
+        v = field_map.get(f"{ref['region']}:{ref['cardId']}")
+        if isinstance(v, (int, float)):
+            vals.append(v)
+    if vals:
+        avg = sum(vals) / len(vals)
+        return round(avg * 100) / 100
+    return stock.industry_avg_carbon
+
+
+# ==================== PE 联动 / 随机 ====================
+def random_pb() -> float:
+    """生成一个 0~20 的随机 PE（保留两位小数）。"""
+    return round(random.random() * 20 * 100) / 100
+
+
+def clamp_pb(v: float) -> float:
+    """将 PE 值钳制到 [0, 20] 并保留两位小数。"""
+    if not math.isfinite(v):
+        # 非有限值（配置/上游异常）不再静默随机，改为告警后回退随机 PE 便于排查
+        logger.warning("clamp_pb 收到非有限值 %s，回退随机 PE", v)
+        return random_pb()
+    c = min(20, max(0, v))
+    return round2(c)
+
+
+def resolve_effective_pbs(stocks: list) -> dict[int, float]:
+    """批量计算股票的有效 PE。
+
+    与原实现一致：value 非数值或 default 非数值时静默 fallback 到产业 PE；
+    现改为 logger.warning 留据，便于排查"为什么 PE 与公司字段值对不上"。
+    玩家填写垃圾数据时仍按 fallback 行为工作（避免拖崩列表渲染），
+    但后台记录每条非法值供管理员复查。
+    多库适配点 4：字段值查询按 (company_id, field_key)（pb_field_id 经
+    IndustryField pk 解析 field_key）。
+    """
+    result: dict[int, float] = {}
+    linked = [s for s in stocks if getattr(s, "pb_company_id", None) and getattr(s, "pb_field_id", None)]
+    if linked:
+        from apps.competition.industries.models import CompanyFieldValue, IndustryField
+
+        company_ids = list({s.pb_company_id for s in linked})
+        field_ids = list({s.pb_field_id for s in linked})
+        key_of = {fid: _field_key_of(fid) for fid in field_ids}
+        field_keys = [k for k in key_of.values() if k]
+        val_map: dict[tuple[int, str], float] = {}
+        for fv in CompanyFieldValue.objects.filter(
+            company_id__in=company_ids, field_key__in=field_keys, fiscal_year__isnull=True
+        ):
+            if fv.value is None:
+                continue
+            try:
+                n = float(fv.value)
+                if math.isfinite(n):
+                    val_map[(fv.company_id, fv.field_key)] = n
+                else:
+                    logger.warning(
+                        "resolve_effective_pbs: 非有限值 company_id=%s field_key=%s value=%r，回退到 industry_pe",
+                        fv.company_id, fv.field_key, fv.value,
+                    )
+            except (ValueError, TypeError):
+                logger.warning(
+                    "resolve_effective_pbs: value 无法解析为浮点 company_id=%s field_key=%s value=%r",
+                    fv.company_id, fv.field_key, fv.value,
+                )
+        default_map: dict[str, float] = {}
+        for f in IndustryField.objects.filter(pk__in=field_ids):
+            if f.default_value is None:
+                continue
+            try:
+                n = float(f.default_value)
+                if math.isfinite(n):
+                    default_map[f.field_key] = n
+                else:
+                    logger.warning(
+                        "resolve_effective_pbs: IndustryField 非有限默认值 field_id=%s default_value=%r",
+                        f.id, f.default_value,
+                    )
+            except (ValueError, TypeError):
+                logger.warning(
+                    "resolve_effective_pbs: IndustryField default 无法解析 field_id=%s default_value=%r",
+                    f.id, f.default_value,
+                )
+        for s in linked:
+            key = key_of.get(s.pb_field_id)
+            v = val_map.get((s.pb_company_id, key)) if key else None
+            if v is None and key:
+                v = default_map.get(key)
+            result[s.id] = v if v is not None else s.industry_pe
+    for s in stocks:
+        if s.id not in result:
+            result[s.id] = s.industry_pe
+    return result
+
+
+def apply_pb_round(stock, pb_value_map: dict | None = None) -> None:
+    """推进一轮时更新 PE 并据最新有效 PE 实时重算初始价。
+
+    - 联动模式刷新实时字段值；
+    - 随机模式做 ±2 随机游走并钳制到 [0,20]。
+    两种模式下初始价均按 compute_init_price 实时重算。
+
+    pb_value_map：可选，由 _build_pb_value_map 一次性批量构建的
+    {(company_id, field_id): value} 映射。传入后可避免对每只股票逐一查库
+    （原实现每只联动股票都调用 resolve_field_value_or_default，产生 N+1 查询）。
+    """
+    pb_company_id = getattr(stock, "pb_company_id", None)
+    pb_field_id = getattr(stock, "pb_field_id", None)
+    pb_random = getattr(stock, "pb_random", None)
+    if pb_company_id and pb_field_id:
+        if pb_value_map is not None:
+            v = pb_value_map.get((pb_company_id, pb_field_id))
+        else:
+            v = resolve_field_value_or_default(pb_company_id, pb_field_id)
+        industry_pe = v if (v is not None and v > 0) else stock.industry_pe
+        new_pb_random = None
+    else:
+        prev = pb_random if pb_random is not None else random_pb()
+        step = random.random() * 4 - 2  # [-2, 2]
+        nxt = clamp_pb(prev + step)
+        industry_pe = nxt
+        new_pb_random = nxt
+    init_price = compute_init_price(stock.init_net_profit, stock.total_shares, industry_pe)
+    stock.industry_pe = industry_pe
+    stock.init_price = init_price
+    if new_pb_random != pb_random:
+        stock.pb_random = new_pb_random
+    stock.save(update_fields=["industry_pe", "init_price", "pb_random"])
+
+
+def _build_pb_value_map(stocks: list) -> dict[tuple[int, int], float | None]:
+    """批量构建 {(company_id, field_id): 有效PE值} 映射（联动模式用）。
+
+    与 resolve_field_value_or_default 语义一致：优先取 CompanyFieldValue 当前值，
+    缺失则回退 IndustryField.default_value；均不可用为 None。一次性查询供
+    apply_pb_round 复用，消除推进轮次时的 N+1 查库（H4）。
+    多库适配点 4：字段值按 (company_id, field_key) 查询，键仍保持
+    (company_id, pb_field_id) 供 apply_pb_round 原样使用。
+    """
+    linked = [s for s in stocks if getattr(s, "pb_company_id", None) and getattr(s, "pb_field_id", None)]
+    result: dict[tuple[int, int], float | None] = {}
+    if not linked:
+        return result
+    from apps.competition.industries.models import CompanyFieldValue, IndustryField
+
+    company_ids = list({s.pb_company_id for s in linked})
+    field_ids = list({s.pb_field_id for s in linked})
+    key_of = {fid: _field_key_of(fid) for fid in field_ids}
+    field_keys = [k for k in key_of.values() if k]
+    val_map: dict[tuple[int, str], float] = {}
+    for fv in CompanyFieldValue.objects.filter(
+        company_id__in=company_ids, field_key__in=field_keys, fiscal_year__isnull=True
+    ):
+        try:
+            n = float(fv.value) if fv.value is not None else float("nan")
+            if math.isfinite(n):
+                val_map[(fv.company_id, fv.field_key)] = n
+        except (ValueError, TypeError):
+            pass
+    default_map: dict[str, float] = {}
+    for f in IndustryField.objects.filter(pk__in=field_ids):
+        if f.default_value is not None:
+            try:
+                n = float(f.default_value)
+                if math.isfinite(n):
+                    default_map[f.field_key] = n
+            except (ValueError, TypeError):
+                pass
+    for s in linked:
+        key = (s.pb_company_id, s.pb_field_id)
+        field_key = key_of.get(s.pb_field_id)
+        if field_key and (s.pb_company_id, field_key) in val_map:
+            result[key] = val_map[(s.pb_company_id, field_key)]
+        elif field_key and field_key in default_map:
+            result[key] = default_map[field_key]
+        else:
+            result[key] = None
+    return result
+
+
+# ==================== 字段值写入（事务内） ====================
+def write_field_value_in_tx(
+    company_id: int, industry_field_id: int, value: str
+) -> None:
+    """事务内写入单个字段值（乐观锁语义，与旧 company_fields._write_field_value 一致）。
+
+    多库适配点 4：写入新系统 CompanyFieldValue（company, field_key,
+    fiscal_year=None 实体信息表行）；version 乐观锁 + 冲突重试一次的语义原样保留。
+    """
+    from apps.competition.industries.models import CompanyFieldValue
+
+    field_key = _field_key_of(industry_field_id)
+    if not field_key:
+        logger.warning(
+            "[stock] write_field_value_in_tx 字段不存在 industry_field_id=%s", industry_field_id,
+        )
+        return
+    fv = CompanyFieldValue.objects.filter(
+        company_id=company_id, field_key=field_key, fiscal_year__isnull=True
+    ).first()
+    if fv is None:
+        CompanyFieldValue.objects.create(
+            company_id=company_id,
+            field_key=field_key,
+            fiscal_year=None,
+            value=value,
+            version=1,
+        )
+        return
+    # 乐观锁：WHERE 含 version（与旧 company_fields._write_field_value 一致），
+    # 避免并发手动编辑/定时器写入被静默覆盖，也避免 version 计数写歪导致后续编辑永久 409。
+    updated = CompanyFieldValue.objects.filter(
+        pk=fv.pk, version=fv.version
+    ).update(value=value, version=fv.version + 1)
+    if not updated:
+        # 版本冲突：重新读取最新版本后重试一次（竞争中已提交的并发写入优先）
+        fv = CompanyFieldValue.objects.filter(
+            company_id=company_id, field_key=field_key, fiscal_year__isnull=True
+        ).first()
+        if fv is not None:
+            updated = CompanyFieldValue.objects.filter(
+                pk=fv.pk, version=fv.version
+            ).update(value=value, version=fv.version + 1)
+        if not updated:
+            # 极端情况下仍冲突：记录告警并跳过本次写入，避免静默覆盖也不阻断整轮推进
+            logger.warning(
+                "[stock] write_field_value_in_tx 乐观锁冲突重试失败 company=%s field=%s",
+                company_id, field_key,
+            )
+
+
+def _recompute_calc_after_cash_write(company_ids) -> None:
+    """结算写入绑定字段后，重算这些公司的计算字段（失败不拖垮整轮结算）。
+
+    每家公司套一个独立保存点：重算异常时只回滚该公司的这部分写入，外层
+    advance_one_stock 事务仍能正常提交。若不加保存点，except 之后当前事务已被
+    标记为「需回滚」，后续任何查询都会直接抛 TransactionManagementError。
+    多库适配点 4：旧 apps.company_fields.calc.recompute_calc_fields →
+    apps.competition.industries.services.recompute_company_fields。
+    """
+    from apps.competition.companies.models import Company
+    from apps.competition.industries.services import recompute_company_fields
+
+    for cid in company_ids:
+        try:
+            company = Company.objects.filter(pk=cid).first()
+            if company is None:
+                continue
+            with comp_atomic():
+                recompute_company_fields(company)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[stock] 结算后重算公司 #%s 计算字段失败：%s", cid, exc
+            )
+
+
+# ==================== 做市商 ====================
+def calculate_raw_fundamental_score(stock) -> float:
+    """计算股票的原始基本面评分（用于相对排名）。
+
+    返回0-100之间的分数，分数越高基本面越好。
+    """
+    score = 50.0  # 基础分50
+
+    # 1. PE评分：PE越低，估值越有吸引力
+    pe = getattr(stock, 'industry_pe', None)
+    if pe and pe > 0:
+        pe_float = float(pe)
+        # PE在5-25之间评分
+        if pe_float <= 10:
+            score += 20  # 低PE加分
+        elif pe_float <= 15:
+            score += 10  # 合理PE加分
+        elif pe_float <= 20:
+            score += 0   # 中性
+        else:
+            score -= 10  # 高PE减分
+
+    # 2. 碳排评分：碳排越低越好
+    carbon = getattr(stock, 'current_carbon', None)
+    avg_carbon = getattr(stock, 'industry_avg_carbon', None)
+    if carbon is not None and avg_carbon and avg_carbon > 0:
+        carbon_float = float(carbon)
+        avg_carbon_float = float(avg_carbon)
+        carbon_ratio = carbon_float / avg_carbon_float
+        if carbon_ratio < 0.7:
+            score += 15  # 碳排明显优于行业平均
+        elif carbon_ratio < 0.9:
+            score += 5   # 碳排略优于行业平均
+        elif carbon_ratio > 1.3:
+            score -= 15  # 碳排明显高于行业平均
+        elif carbon_ratio > 1.1:
+            score -= 5   # 碳排略高于行业平均
+
+    # 3. 幸福度评分：幸福度越高越好
+    happiness = getattr(stock, 'happiness', None)
+    if happiness is not None:
+        happiness_float = float(happiness)
+        if happiness_float >= 80:
+            score += 15  # 高幸福度
+        elif happiness_float >= 60:
+            score += 5   # 中等幸福度
+        elif happiness_float < 40:
+            score -= 10  # 低幸福度
+
+    # 4. 股本规模评分：适中股本更受欢迎
+    total_shares = getattr(stock, 'total_shares', None)
+    if total_shares and total_shares > 0:
+        shares_billion = float(total_shares) / 10000
+        if 2 <= shares_billion <= 8:
+            score += 10  # 适中股本
+        elif shares_billion < 1:
+            score -= 5   # 小盘股风险
+        elif shares_billion > 15:
+            score -= 5   # 超大盘股流动性
+
+    return clamp(score, 0, 100)
+
+
+def calculate_relative_fundamental_score(stock, all_stocks: list) -> float:
+    """基于相对排名计算基本面评分（-0.5到0.5之间）。
+
+    关键改进：通过横向比较所有股票，避免同涨同跌。
+    只有基本面排名靠前的股票才能获得正面评分。
+    """
+    # 当股票数量太少时，使用绝对评分兜底
+    if not all_stocks or len(all_stocks) <= 2:
+        raw_score = calculate_raw_fundamental_score(stock)
+        # 将0-100转换为-0.3到0.3之间
+        return clamp((raw_score - 50) / 100.0, -0.3, 0.3)
+
+    # 计算所有股票的原始评分
+    raw_scores = []
+    for s in all_stocks:
+        raw_scores.append(calculate_raw_fundamental_score(s))
+
+    # 计算当前股票的排名（百分位）
+    # 使用 (rank + 0.5) / len 避免所有股票基本面相同时全部得最低分
+    current_score = calculate_raw_fundamental_score(stock)
+    rank = sum(1 for s in raw_scores if s < current_score)
+    # 使用标准百分位公式：比当前分数低的个数 + 0.5（处理并列情况）
+    percentile = (rank + 0.5) / len(raw_scores)  # 0到1之间
+
+    # 将百分位转换为评分：只有前30%得正分，后30%得负分
+    if percentile >= 0.7:
+        # 前30%：正面评分，越靠前评分越高
+        score = (percentile - 0.7) * 1.67  # 0到0.5
+    elif percentile <= 0.3:
+        # 后30%：负面评分，越靠后评分越低
+        score = (percentile - 0.3) * 1.67  # -0.5到0
+    else:
+        # 中间40%：中性评分
+        score = 0.0
+
+    # 添加随机波动，增加市场不确定性
+    random_factor = random.uniform(-0.1, 0.1)
+    score += random_factor
+
+    return clamp(score, -0.5, 0.5)
+
+
+def calculate_fundamental_score(stock, all_stocks: list | None = None) -> float:
+    """计算股票的基本面评分。
+
+    评分策略：
+    - 股票数量≤2时：使用绝对评分，避免极端分化
+    - 股票数量>2时：使用相对排名评分，实现市场分化
+    """
+    # 当股票数量太少时，使用绝对评分兜底
+    if not all_stocks or len(all_stocks) <= 2:
+        raw_score = calculate_raw_fundamental_score(stock)
+        # 将0-100转换为-0.3到0.3之间（缩小范围，避免极端）
+        return clamp((raw_score - 50) / 100.0, -0.3, 0.3)
+    else:
+        # 股票数量足够时，使用相对排名评分
+        return calculate_relative_fundamental_score(stock, all_stocks)
+
+
+def generate_market_maker_orders(
+    stock,
+    competition_id: int,
+    stock_config: dict,
+    mm_override: dict | None = None,
+    consecutive_up: int = 0,
+    consecutive_down: int = 0,
+    last_change: float = 0.0,
+    field_map: dict | None = None,
+    all_stocks: list | None = None,
+) -> tuple[int, bool]:
+    """AI 做市商：为指定股票自动生成买卖挂单，提供流动性。
+
+    报价算法（基于根源数据的智能调控）：
+    1. 基本面驱动：PE、碳排、幸福度、股本等根源数据影响报价中心
+    2. 相对排名评分：基于所有股票的横向比较，避免同涨同跌
+    3. 波动自适应价差：近期波动越大，买卖档位价差越宽
+    4. 反向动量偏置：涨 → 报价下移，跌 → 上移，抑制追涨杀跌
+    5. 智能干预：连续封板时根据基本面评分决定干预方向和力度
+    6. 自成交机制：无人交易时主动制造价格波动
+
+    返回 (生成订单数, 是否干预)。
+    多库适配：competition_id 仅作兼容参数（比赛归属即库归属，ORM 不再过滤）。
+    """
+    from .models import StockFundsAccount, StockHolding, StockOrder
+
+    enabled = (mm_override or {}).get("enabled", True)
+    if not enabled:
+        return 0, False
+
+    # 获取干预强度因子（用户交易越活跃，做市商干预越少）
+    mm_intensity = (mm_override or {}).get("intensity", 1.0)
+
+    # 自动生成参数并带有波动
+    # 基础参数从配置获取
+    base_spread_pct = stock_config.get("mmSpreadPct", 0.02)
+    base_levels = stock_config.get("mmLevels", 3)
+    base_skew_pct = stock_config.get("mmSkewPct", 0.02)
+    base_depth_pct = stock_config.get("mmDepthPct", 0.001)
+
+    # 问题10: 应用波动并 clamp 到合理范围（防止多次叠加后偏离过大）
+    spread_pct = clamp(add_fluctuation(base_spread_pct, 0.15), base_spread_pct * 0.7, base_spread_pct * 1.3)
+    levels = max(1, min(10, int(round(add_fluctuation(base_levels, 0.1)))))
+    skew_pct = clamp(add_fluctuation(base_skew_pct, 0.2), base_skew_pct * 0.7, base_skew_pct * 1.3)
+    depth_pct = clamp(add_fluctuation(base_depth_pct, 0.25), base_depth_pct * 0.7, base_depth_pct * 1.3)
+
+    # 计算基础数量（带波动）
+    override_base = (mm_override or {}).get("baseQuantity")
+    if override_base is not None:
+        base_quantity = override_base
+    else:
+        # 根据股本和深度比例计算，并添加波动
+        calculated_quantity = int(round(Decimal(str(stock.total_shares or 0)) * 10000 * Decimal(str(depth_pct))))
+        base_quantity = max(
+            stock_config["mmMinQty"],
+            min(
+                stock_config["mmMaxQty"],
+                int(round(add_fluctuation(float(calculated_quantity), 0.2))),  # 数量波动±20%
+            ),
+        )
+
+    # 其他参数也添加波动
+    mm_self_trade_pct = add_fluctuation(stock_config.get("mmSelfTradePct", 0.005), 0.3)  # 自成交偏移波动±30%
+    mm_self_trade_qty_pct = add_fluctuation(stock_config.get("mmSelfTradeQtyPct", 0.1), 0.2)  # 自成交数量波动±20%
+
+    base_price = stock.current_price
+    if base_price <= 0:
+        return 0, False
+
+    # 1. 计算基本面评分（基于相对排名）
+    fundamental_score = calculate_fundamental_score(stock, all_stocks)
+
+    # 2. 波动自适应价差：|上轮涨跌| 越大价差越宽（封顶 2 倍）
+    vol_scale = 1 + min(1.0, abs(last_change) / 10.0)
+    spread_eff = spread_pct * vol_scale
+
+    # 3. 综合偏置：动量偏置 + 基本面偏置 + 估值回归
+    # 动量偏置：涨 → 报价下移，跌 → 上移（反向操作，抑制追涨杀跌）
+    momentum_skew = clamp(last_change / 10.0, -1.0, 1.0) * skew_pct
+    if consecutive_up >= 1 or consecutive_down >= 1:
+        momentum_skew *= 1.5  # 减小封板时的偏置倍数：从2降到1.5
+
+    # 基本面偏置：评分高 → 报价上移，评分低 → 下移
+    fundamental_skew = fundamental_score * skew_pct * 0.2  # 进一步降低基本面权重：从30%降到20%
+
+    # 估值回归偏置：当价格偏离初始价过远时，产生回归力量
+    init_price = float(getattr(stock, 'init_price', 0))
+    current_price_float = float(stock.current_price)
+    if init_price > 0:
+        price_deviation = (current_price_float - init_price) / init_price
+        # 从配置获取回归参数
+        regression_threshold = stock_config.get("mmRegressionThreshold", 0.25)
+        regression_strength = stock_config.get("mmRegressionStrength", 0.3)
+
+        # 偏离超过阈值时产生回归力量
+        if abs(price_deviation) > regression_threshold:
+            regression_skew = -price_deviation * skew_pct * regression_strength
+        else:
+            regression_skew = 0.0
+    else:
+        regression_skew = 0.0
+
+    # 综合偏置（动量权重60%，基本面权重20%，估值回归权重20%）
+    skew = momentum_skew * 0.6 + fundamental_skew * 0.2 + regression_skew * 0.2
+
+    # 限制偏置范围，避免过度偏移
+    skew = clamp(skew, -skew_pct * 1.2, skew_pct * 1.2)  # 减小偏置限制：从1.5降到1.2
+
+    # 4. 随机利空因素：模拟真实市场的不确定性
+    # 从配置获取参数
+    bad_news_prob = stock_config.get("mmBadNewsProb", 0.03)
+    good_news_prob = stock_config.get("mmGoodNewsProb", 0.02)
+    bad_news_impact = stock_config.get("mmBadNewsImpact", 0.06)
+    good_news_impact = stock_config.get("mmGoodNewsImpact", 0.04)
+
+    # 利空事件（独立概率）
+    if random.random() < bad_news_prob:
+        impact = random.uniform(bad_news_impact * 0.3, bad_news_impact * 1.2)
+        skew -= impact * skew_pct
+        logger.info(f"[stock] 做市商利空事件: stock={stock.code}, impact={impact:.3f}")
+
+    # 利好事件（独立概率，与利空不互斥）
+    if random.random() < good_news_prob:
+        impact = random.uniform(good_news_impact * 0.3, good_news_impact * 1.2)
+        skew += impact * skew_pct
+        logger.info(f"[stock] 做市商利好事件: stock={stock.code}, impact={impact:.3f}")
+
+    # 查找或创建做市商资金账户（多库适配：比赛归属即库归属，不再传 competition_id）
+    mm_account, _ = StockFundsAccount.objects.get_or_create(
+        name="AI做市商",
+        defaults={"owner_type": "COMPANY", "cash_balance": 1_000_000_000},
+    )
+
+    current_round = stock.round
+
+    # 问题4: 只取消做市商的旧轮订单（本轮订单保留，旧轮价格仍在范围内的也保留）
+    # 跨轮有效的做市商旧单在 advance_one_stock 中统一按价格范围筛选
+    StockOrder.objects.filter(
+        stock_id=stock.id,
+        status="PENDING",
+        funds_account_id=mm_account.id,
+        round__lt=current_round,
+    ).update(status="CANCELLED")
+
+    # 回归锚干预（连续封板 ≥ 3 轮）：挂大单对冲，量随连续轮数放大
+    # 提高干预门槛：从2轮提高到3轮
+    consec = max(consecutive_up, consecutive_down)
+    need_intervene = (
+        stock_config["interventionMode"] == "regression" and consec >= 3
+    )
+    # 减小干预数量：从3倍降到2倍
+    intervention_qty = base_quantity * 2 * min(consec, 2) if need_intervene else 0
+
+    # 计算总卖量，确保持仓足够
+    total_sell_qty = sum(base_quantity * i for i in range(1, levels + 1))
+    total_sell_qty += intervention_qty
+
+    # 做市商自成交：当没有人工订单时，做市商主动制造价格波动
+    self_trade_enabled = stock_config.get("mmSelfTradeEnabled", True)
+    # 使用已经波动过的参数
+    self_trade_pct = mm_self_trade_pct
+    self_trade_qty_pct = mm_self_trade_qty_pct
+
+    mm_holding = StockHolding.objects.filter(
+        funds_account_id=mm_account.id, stock_id=stock.id
+    ).first()
+    current_shares = mm_holding.shares if mm_holding else 0
+    need_shares = total_sell_qty - current_shares
+
+    orders: list[StockOrder] = []
+
+    # 持仓不足则先建仓
+    if need_shares > 0:
+        # P0-#4: 检查做市商现金是否足够，不够则缩减建仓数量
+        cost_per_share = round2(Decimal(str(base_price)))
+        total_cost = cost_per_share * Decimal(str(need_shares))
+        available_cash = Decimal(str(mm_account.cash_balance))
+        if available_cash < total_cost and cost_per_share > 0:
+            need_shares = int((available_cash / cost_per_share).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            total_sell_qty = min(total_sell_qty, Decimal(str(current_shares)) + Decimal(str(need_shares)))
+        if need_shares > 0:
+            if mm_holding is None:
+                StockHolding.objects.create(
+                    funds_account_id=mm_account.id,
+                    stock_id=stock.id,
+                    shares=round2(total_sell_qty),
+                    cost_price=round2(base_price),
+                )
+            else:
+                mm_holding.shares = Decimal(str(mm_holding.shares)) + Decimal(str(need_shares))
+                mm_holding.save(update_fields=["shares"])
+            actual_cost = round2(Decimal(str(base_price)) * Decimal(str(need_shares)))
+            mm_account.cash_balance = Decimal(str(mm_account.cash_balance)) - actual_cost
+            mm_account.save(update_fields=["cash_balance"])
+
+    # 回归锚干预（根据干预强度因子调整）
+    if need_intervene and mm_intensity > 0.3:  # 用户交易不活跃时才干预
+        is_up = consecutive_up >= 2
+        intervention_price = round2(
+            base_price * (1 + (stock_config["regressionPct"] if is_up else -stock_config["regressionPct"]))
+        )
+        # 根据干预强度因子调整干预数量
+        adjusted_intervention_qty = int(round(intervention_qty * mm_intensity))
+        if adjusted_intervention_qty > 0:
+            orders.append(StockOrder(
+                stock_id=stock.id,
+                funds_account_id=mm_account.id,
+                side="SELL" if is_up else "BUY",
+                price=intervention_price,
+                quantity=adjusted_intervention_qty,
+                amount=round2(intervention_price * adjusted_intervention_qty),
+                status="PENDING",
+                round=current_round,
+            ))
+
+    # 报价中心：按反向动量偏置整体平移（涨 → 下移，跌 → 上移）
+    quote_center = round2(Decimal(str(base_price)) * (Decimal("1") - Decimal(str(skew))))
+    # 问题7: 防止 quote_center 极端值
+    min_center = round2(base_price * Decimal("0.5"))
+    max_center = round2(base_price * Decimal("2.0"))
+    quote_center = max(min_center, min(max_center, quote_center))
+
+    # 问题2: 跟踪做市商可用持仓，卖单不超持仓
+    mm_holding_refresh = StockHolding.objects.filter(
+        funds_account_id=mm_account.id, stock_id=stock.id
+    ).first()
+    available_shares = Decimal(str(mm_holding_refresh.shares)) if mm_holding_refresh else Decimal("0")
+
+    # 根据干预强度因子调整做市商挂单数量
+    adjusted_base_quantity = int(round(base_quantity * mm_intensity))
+
+    for i in range(1, levels + 1):
+        offset = Decimal(str(spread_eff * i))
+        sell_price = round2(quote_center * (Decimal("1") + offset))
+        sell_qty = adjusted_base_quantity * i
+        sell_amount = round2(sell_price * Decimal(str(sell_qty)))
+        buy_price = round2(quote_center * (Decimal("1") - offset))
+        if buy_price > 0:
+            buy_qty_raw = (Decimal(str(sell_amount)) / Decimal(str(buy_price)))
+            buy_qty = (buy_qty_raw * Decimal("1000000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) / Decimal("1000000")
+        else:
+            buy_qty = Decimal("0")
+        if buy_price > 0 and buy_qty > 0:
+            orders.append(StockOrder(
+                stock_id=stock.id,
+                funds_account_id=mm_account.id,
+                side="BUY",
+                price=buy_price,
+                quantity=buy_qty,
+                amount=round2(Decimal(str(buy_price)) * buy_qty),
+                status="PENDING",
+                round=current_round,
+            ))
+        # 问题2: 卖单检查持仓是否足够，不够则缩减或跳过
+        actual_sell_qty = min(Decimal(str(sell_qty)), available_shares)
+        if actual_sell_qty > 0:
+            orders.append(StockOrder(
+                stock_id=stock.id,
+                funds_account_id=mm_account.id,
+                side="SELL",
+                price=sell_price,
+                quantity=actual_sell_qty,
+                amount=round2(sell_price * actual_sell_qty),
+                status="PENDING",
+                round=current_round,
+            ))
+            available_shares -= actual_sell_qty
+
+    # 问题5: 自成交放在建仓和报价之后，确保持仓已补充
+    if self_trade_enabled and not need_intervene and mm_intensity > 0.5:
+        base_self_qty = max(1, int(round(base_quantity * self_trade_qty_pct * mm_intensity)))
+        self_sell_qty = min(base_self_qty, int(available_shares))
+        self_buy_qty = base_self_qty
+
+        # 价格偏移方向：基于动量
+        if last_change > 1.0:
+            direction = -1 if random.random() < 0.7 else 1
+        elif last_change < -1.0:
+            direction = 1 if random.random() < 0.7 else -1
+        else:
+            direction = random.choice([-1, 1])
+
+        price_offset_pct = self_trade_pct * min(2.0, abs(last_change) / 5.0 + 0.5)
+        price_offset = direction * price_offset_pct
+
+        self_trade_price = round2(Decimal(str(base_price)) * (Decimal("1") + Decimal(str(float(price_offset)))))
+        st_buy_price = round2(self_trade_price * (Decimal("1") + Decimal("0.001")))
+        st_sell_price = round2(self_trade_price * (Decimal("1") - Decimal("0.001")))
+
+        # 生成买单
+        if self_buy_qty > 0:
+            orders.append(StockOrder(
+                stock_id=stock.id,
+                funds_account_id=mm_account.id,
+                side="BUY",
+                price=st_buy_price,
+                quantity=self_buy_qty,
+                amount=round2(st_buy_price * Decimal(str(self_buy_qty))),
+                status="PENDING",
+                round=current_round,
+            ))
+
+        # 生成卖单（持仓不足时跳过）
+        if self_sell_qty > 0:
+            orders.append(StockOrder(
+                stock_id=stock.id,
+                funds_account_id=mm_account.id,
+                side="SELL",
+                price=st_sell_price,
+                quantity=self_sell_qty,
+                amount=round2(st_sell_price * Decimal(str(self_sell_qty))),
+                status="PENDING",
+                round=current_round,
+            ))
+            available_shares -= Decimal(str(self_sell_qty))
+
+    if orders:
+        StockOrder.objects.bulk_create(orders)
+
+        logger.info("[stock] 做市商参数自动生成: stock=%s, spread_pct=%.4f, levels=%s, "
+                    "skew_pct=%.4f, depth_pct=%.6f, base_quantity=%s, "
+                    "self_trade_pct=%.4f, self_trade_qty_pct=%.4f",
+                    stock.code, spread_pct, levels, skew_pct, depth_pct,
+                    base_quantity, mm_self_trade_pct, mm_self_trade_qty_pct)
+
+    return len(orders), need_intervene
+
+
+# ==================== 平盘推进（辅助） ====================
+def _advance_round_flat(
+    stock, competition_id: int, limit_pct: float,
+    drift_data: dict | None = None,
+) -> tuple[int, dict]:
+    """平盘推进：轮次 +1、生成 K 线、作废旧轮订单。
+
+    用于「无任何订单」或「撮合不成交」两种情形，保证各股票
+    round 全局同步、K 线序列无空洞。
+
+    drift_data: 可选的趋势漂移参数 {happiness, currentCarbon, industryAvgCarbon,
+                happinessImpact, carbonImpact, carbonSaturateRatio, maxMovePct}。
+                提供时会根据幸福度/碳排放计算价格漂移，否则价格不动。
+
+    返回 (新轮次, K 线 dict)。调用方须处于 comp_atomic() 内。
+    多库适配：competition_id 仅作兼容参数（比赛归属即库归属）。
+    """
+    from .models import Stock, StockCandle, StockOrder
+    from decimal import Decimal as D
+
+    new_round = stock.round + 1
+    old_price = stock.current_price
+
+    # 计算趋势漂移（即使无交易，股价也应随幸福度/碳排放自然波动）
+    if drift_data:
+        drift = compute_drift(
+            drift_data["happiness"],
+            drift_data["currentCarbon"],
+            drift_data["industryAvgCarbon"],
+            drift_data["happinessImpact"],
+            drift_data["carbonImpact"],
+            drift_data["carbonSaturateRatio"],
+        )
+        max_move = drift_data["maxMovePct"]
+        # 趋势漂移：drift 方向确定，幅度有 ±60% 随机波动（增加随机性）
+        trend_drift = drift * (1 + random.uniform(-0.6, 0.6))
+        # 基础随机波动：直接作用于价格，±0.5% ~ ±2%（增加波动幅度）
+        # 不乘以 maxMovePct，确保即使 drift 接近 0 也有明显波动
+        base_noise_pct = random.uniform(-0.02, 0.02)
+        # 计算新价格：趋势漂移（通过 maxMovePct 缩放）+ 基础噪声（直接作用）
+        theoretical = float(old_price) * (1 + trend_drift * max_move + base_noise_pct)
+        # 限幅
+        upper = float(old_price) * (1 + limit_pct)
+        lower = float(old_price) * (1 - limit_pct)
+        new_price = round2(max(lower, min(upper, theoretical)))
+        # 确保价格不为 0
+        if new_price < Decimal("0.01"):
+            new_price = Decimal("0.01")
+    else:
+        drift = 0.0
+        new_price = old_price
+
+    candle = build_candle(
+        float(old_price), float(new_price), new_round, None, limit_pct
+    )
+    StockCandle.objects.create(
+        stock_id=stock.id,
+        open=candle["open"],
+        high=candle["high"],
+        low=candle["low"],
+        close=candle["close"],
+        change_pct=candle["changePct"],
+        round=candle["round"],
+    )
+    Stock.objects.filter(pk=stock.id).update(
+        current_price=new_price, round=new_round
+    )
+    # 轮次推进后处理旧轮订单：批量更新（避免逐个 save 的性能问题）
+    old_orders = StockOrder.objects.filter(
+        stock_id=stock.id,
+        status="PENDING",
+        round__lt=new_round,
+    )
+
+    if old_orders.exists():
+        # 获取当前价格和涨跌幅限制
+        current_price = new_price
+        upper_limit = current_price * (1 + D(str(limit_pct)))
+        lower_limit = current_price * (1 - D(str(limit_pct)))
+
+        # 批量筛选需要撤销的订单（价格超出限制）
+        cancel_ids = []
+        keep_ids = []
+        for order in old_orders:
+            order_price = D(str(order.price))
+            if order_price < lower_limit or order_price > upper_limit:
+                cancel_ids.append(order.id)
+            else:
+                keep_ids.append(order.id)
+
+        # 批量撤销（多库适配点 5：旧 emit_resource_changed('stock-orders', ...) 广播
+        # 改为契约 §4.3 推送只当信号——advance_round 结束统一发 stock-updated）
+        if cancel_ids:
+            StockOrder.objects.filter(id__in=cancel_ids).update(status="CANCELLED")
+
+        # 批量更新轮次
+        if keep_ids:
+            StockOrder.objects.filter(id__in=keep_ids).update(round=new_round)
+
+    return new_round, candle
+
+
+# ==================== 单只股票推进 ====================
+def advance_one_stock(
+    stock,
+    competition_id: int,
+    field_map: dict,
+    stock_config: dict,
+    consecutive_up: int = 0,
+    consecutive_down: int = 0,
+    mm_config: dict | None = None,
+    last_change: float = 0.0,
+    all_stocks: list | None = None,
+) -> dict | None:
+    """推进单只股票一轮：撮合、定价、写持仓/现金/订单状态、生成 K 线。
+
+    last_change：上一根 K 线的涨跌%（做市商反向偏置与波动自适应价差输入）。
+    all_stocks：所有股票列表，用于相对排名评分。
+    返回结果 dict（skipped=True 表示平盘轮：无成交，价格不动但 round 照常推进）或 None。
+    多库适配：competition_id 仅作兼容参数（比赛归属即库归属，ORM 不再过滤）。
+    """
+    from .models import Stock, StockCandle, StockFundsAccount, StockHolding, StockOrder
+
+    with comp_atomic():
+        # 分析用户交易活跃度，决定做市商干预程度
+        # 统计本轮用户订单数量（非做市商订单）
+        user_orders_count = StockOrder.objects.filter(
+            stock_id=stock.id,
+            round=stock.round,
+            status="PENDING",
+        ).exclude(funds_account__name="AI做市商").count()
+
+        # 计算做市商干预强度因子（用户交易越活跃，做市商干预越少）
+        # 用户订单0个：干预强度1.0（完全干预）
+        # 用户订单1-2个：干预强度0.7（减少干预）
+        # 用户订单3-5个：干预强度0.4（大幅减少干预）
+        # 用户订单5个以上：干预强度0.1（几乎不干预）
+        if user_orders_count == 0:
+            mm_intensity = 1.0
+        elif user_orders_count <= 2:
+            mm_intensity = 0.7
+        elif user_orders_count <= 5:
+            mm_intensity = 0.4
+        else:
+            mm_intensity = 0.1
+
+        # 将干预强度传递给做市商函数
+        mm_config_with_intensity = dict(mm_config or {})
+        mm_config_with_intensity["intensity"] = mm_intensity
+
+        # 做市商挂单（建仓/扣款/挂单与撮合同一事务）
+        mm_count, mm_intervened = generate_market_maker_orders(
+            stock, competition_id, stock_config, mm_config_with_intensity,
+            consecutive_up, consecutive_down, last_change, field_map, all_stocks,
+        )
+
+        # 读取本事务内刚生成的 PENDING 订单（包括当前轮和旧轮有效订单）
+        # 旧轮订单如果价格仍在有效范围内，应继续参与撮合
+        all_orders = list(
+            StockOrder.objects.select_related("funds_account").filter(
+                stock_id=stock.id,
+                status="PENDING",
+                round__lte=stock.round,  # 包括当前轮和旧轮
+            ).order_by("created_at")
+        )
+
+        # 验证旧轮订单价格是否在当前轮次有效范围内
+        from decimal import Decimal as D
+        current_price = stock.current_price
+        upper_limit = current_price * (1 + D(str(stock_config["limitPct"])))
+        lower_limit = current_price * (1 - D(str(stock_config["limitPct"])))
+
+        orders = []
+        cancel_ids = []
+        for order in all_orders:
+            if order.round == stock.round:
+                # 当前轮订单直接保留
+                orders.append(order)
+            else:
+                # 旧轮订单需要验证价格是否在有效范围内
+                order_price = D(str(order.price))
+                if lower_limit <= order_price <= upper_limit:
+                    orders.append(order)
+                else:
+                    # 价格超出限制，标记为撤销
+                    cancel_ids.append(order.id)
+
+        # 批量撤销超出限制的订单
+        if cancel_ids:
+            StockOrder.objects.filter(id__in=cancel_ids).update(status="CANCELLED")
+        # 无任何订单（做市商关闭且无玩家委托）→ 趋势漂移推进：
+        # 即使无交易，股价也应随幸福度/碳排放自然波动，避免平盘。
+        if not orders:
+            drift_data = {
+                "happiness": float(effective_happiness(stock, field_map)),
+                "currentCarbon": float(effective_carbon(stock, field_map)),
+                "industryAvgCarbon": float(effective_industry_avg_carbon(stock, field_map)),
+                "happinessImpact": stock_config["happinessImpact"],
+                "carbonImpact": stock_config["carbonImpact"],
+                "carbonSaturateRatio": stock_config["carbonSaturateRatio"],
+                "maxMovePct": stock_config["maxMovePct"],
+            }
+            new_round, candle = _advance_round_flat(
+                stock, competition_id, stock_config["limitPct"], drift_data
+            )
+            return {
+                "stockId": stock.id,
+                "code": stock.code,
+                "round": new_round,
+                "skipped": True,
+                "matched": False,
+                "finalPrice": float(candle["close"]),
+                "pressure": 0.0,
+                "drift": drift_data["happiness"] * stock_config["happinessImpact"],
+                "theoretical": float(candle["close"]),
+                "buyQty": 0,
+                "sellQty": 0,
+                "buyAmount": 0,
+                "sellAmount": 0,
+                "candle": candle,
+            }
+
+        # 撮合
+        match = compute_match(
+            [{"side": o.side, "price": o.price, "quantity": o.quantity} for o in orders]
+        )
+
+        # expand-limit 模式：连续封板 ≥ 2 轮时临时放宽限幅
+        # （注意：下方防连板硬约束会把同侧限幅收紧到 9.6%，连续封板不再可能，
+        #   该模式实际只在「干预模式=扩板」且刻意配置更高封板判定时才有差异，保留兼容）
+        limit_pct = stock_config["limitPct"]
+        if stock_config["interventionMode"] == "expand-limit":
+            consec = max(consecutive_up, consecutive_down)
+            if consec >= 2:
+                limit_pct = min(0.2, stock_config["limitPct"] * (1 + 0.5 * (consec - 1)))
+        cfg = dict(stock_config)
+        cfg["limitPct"] = limit_pct
+
+        # 防连板硬约束（S10）：上一轮已封板（|涨跌| ≥ 9.9%）时，本轮同侧限幅
+        # 收紧（96% 且不超过 9.6%）—— 单轮最大变动 < 9.9% 封板判定线，
+        # 无论玩家如何挂单、无论 limitPct 配置多大，连续封板在数学上不可能
+        # （对两侧分别生效）。
+        upper_pct = limit_pct
+        lower_pct = limit_pct
+        if consecutive_up >= 1:
+            upper_pct = min(limit_pct * _ANTI_STREAK_FACTOR, _ANTI_STREAK_CAP_PCT)
+        if consecutive_down >= 1:
+            lower_pct = min(limit_pct * _ANTI_STREAK_FACTOR, _ANTI_STREAK_CAP_PCT)
+        cfg["upperLimitPct"] = upper_pct
+        cfg["lowerLimitPct"] = lower_pct
+
+        # 把所有数值入口转 float（compute_* 内部按 float 接口运行；
+        # price["final"] 再转 Decimal 用于后续 Decimal 化路径）
+        last_close_dec = Decimal(str(stock.current_price))
+        factors_dec = {
+            "lastClose": float(last_close_dec),
+            "buyQty": float(match["totalBuyQty"]),
+            "sellQty": float(match["totalSellQty"]),
+            "matched": match["matched"],
+            "tradePrice": (
+                float(match["tradePrice"]) if match.get("tradePrice") is not None else None
+            ),
+            "happiness": float(effective_happiness(stock, field_map)),
+            "currentCarbon": float(effective_carbon(stock, field_map)),
+            "industryAvgCarbon": float(effective_industry_avg_carbon(stock, field_map)),
+        }
+        price = compute_price(factors_dec, cfg)
+
+        # 市场自然波动机制：模拟真实市场的随机性和趋势性
+        final_price = price["final"]
+
+        # 从配置获取波动参数
+        callback_enabled = stock_config.get("mmCallbackEnabled", True)
+
+        if callback_enabled:
+            # 获取最近K线数据，分析市场状态
+            recent_candles = list(
+                StockCandle.objects.filter(
+                    stock_id=stock.id,
+                ).order_by("-round")[:10]
+            )
+
+            # 计算技术指标
+            if recent_candles:
+                # 计算近期涨跌幅
+                recent_changes = [float(c.change_pct) for c in recent_candles[:5]]
+                avg_change = sum(recent_changes) / len(recent_changes)
+
+                # 计算连续涨跌轮数（用局部变量，不覆盖外部传入的 consecutive_up/down）
+                candle_consec_up = 0
+                candle_consec_down = 0
+                for candle in recent_candles:
+                    if candle.change_pct > 0:
+                        candle_consec_up += 1
+                        candle_consec_down = 0
+                    elif candle.change_pct < 0:
+                        candle_consec_down += 1
+                        candle_consec_up = 0
+                    else:
+                        break
+
+                # 基于多种因素计算回调概率（降低概率，减少压制）
+                base_prob = 0.03  # 基础回调概率3%（从5%降到3%）
+
+                # 因素1：连续上涨轮数（非线性）
+                if candle_consec_up >= 4:  # 提高触发门槛：从3轮提高到4轮
+                    up_factor = min(0.15, (candle_consec_up - 3) * 0.04)
+                    base_prob += up_factor
+
+                # 因素2：近期平均涨幅（涨幅越大，回调概率越大）
+                if avg_change > 1.5:  # 提高触发门槛：从1.0%提高到1.5%
+                    change_factor = min(0.1, (avg_change - 1.5) * 0.04)
+                    base_prob += change_factor
+
+                # 因素3：随机市场情绪（15%概率出现市场情绪变化，增加波动）
+                if random.random() < 0.15:
+                    sentiment = random.choice([-1, 1])
+                    sentiment_pct = random.uniform(0.008, 0.025)  # 0.8%~2.5%
+                    final_price = final_price * (1 + Decimal(str(sentiment * sentiment_pct)))
+                    logger.info(f"[stock] 市场情绪变化: stock={stock.code}, "
+                               f"{'上涨' if sentiment > 0 else '下跌'}{sentiment_pct*100:.1f}%")
+
+                # 因素4：技术性回调（基于概率，降低幅度）
+                if random.random() < base_prob:
+                    if avg_change > 2.0:  # 提高触发门槛
+                        callback_pct = random.uniform(0.01, 0.03)  # 1%~3%（降低）
+                    elif avg_change > 1.5:
+                        callback_pct = random.uniform(0.008, 0.02)  # 0.8%~2%（降低）
+                    else:
+                        callback_pct = random.uniform(0.005, 0.012)  # 0.5%~1.2%（降低）
+
+                    final_price = final_price * (1 - Decimal(str(callback_pct)))
+                    logger.info(f"[stock] 技术性回调: stock={stock.code}, "
+                               f"近期平均涨幅{avg_change:.1f}%, 回调{callback_pct*100:.1f}%")
+
+        # P0-#5: 市场波动后强制限制在涨跌停范围内（使用非对称限幅，防止防连板被绕过）
+        upper_bound = last_close_dec * (Decimal("1") + Decimal(str(cfg.get("upperLimitPct", limit_pct))))
+        lower_bound = last_close_dec * (Decimal("1") - Decimal(str(cfg.get("lowerLimitPct", limit_pct))))
+        final_price = max(lower_bound, min(upper_bound, final_price))
+
+        # 把 final 转 Decimal 用于后续 Decimal 化路径（candle 入库、K 线保存等）
+        price["final"] = final_price
+
+        # 撮合不成交 → 趋势漂移：根据幸福度/碳排放计算价格漂移，
+        # 避免无成交时长期平盘；轮次照常推进，K 线序列无空洞。
+        if not match["matched"]:
+            drift_data = {
+                "happiness": float(effective_happiness(stock, field_map)),
+                "currentCarbon": float(effective_carbon(stock, field_map)),
+                "industryAvgCarbon": float(effective_industry_avg_carbon(stock, field_map)),
+                "happinessImpact": stock_config["happinessImpact"],
+                "carbonImpact": stock_config["carbonImpact"],
+                "carbonSaturateRatio": stock_config["carbonSaturateRatio"],
+                "maxMovePct": stock_config["maxMovePct"],
+            }
+            new_round, candle = _advance_round_flat(stock, competition_id, limit_pct, drift_data)
+            return {
+                "stockId": stock.id,
+                "code": stock.code,
+                "round": new_round,
+                "skipped": True,
+                "matched": False,
+                "finalPrice": float(candle["close"]),
+                "pressure": price["pressure"],
+                "drift": price["drift"],
+                "theoretical": price["theoretical"],
+                "buyQty": match["totalBuyQty"],
+                "sellQty": match["totalSellQty"],
+                "buyAmount": match["totalBuyAmount"],
+                "sellAmount": match["totalSellAmount"],
+                "candle": candle,
+            }
+
+        # 账户现金 / 持仓运行时快照（统一 Decimal，规避 float 累计误差）
+        cash_map: dict[int, Decimal] = {}
+        account_objs: dict[int, StockFundsAccount] = {}
+        for o in orders:
+            if o.funds_account_id not in cash_map:
+                acc = o.funds_account
+                account_objs[o.funds_account_id] = acc
+                if acc.bind_field_id and acc.company_id:
+                    v = resolve_field_value_or_default(acc.company_id, acc.bind_field_id)
+                    cash_map[o.funds_account_id] = (
+                        Decimal(str(v)) if v is not None else Decimal(str(acc.cash_balance))
+                    )
+                else:
+                    cash_map[o.funds_account_id] = Decimal(str(acc.cash_balance))
+
+        account_ids = list(cash_map.keys())
+        holding_map: dict[int, dict] = {}
+        for h in StockHolding.objects.filter(stock_id=stock.id, funds_account_id__in=account_ids):
+            holding_map[h.funds_account_id] = {
+                "shares": Decimal(str(h.shares)),
+                "costPrice": Decimal(str(h.cost_price)),
+            }
+        touched_accounts: set[int] = set()
+
+        # 价格-时间优先撮合
+        buys = sorted(
+            [o for o in orders if o.side == "BUY"],
+            key=lambda o: (-o.price, o.created_at),
+        )
+        sells = sorted(
+            [o for o in orders if o.side == "SELL"],
+            key=lambda o: (o.price, o.created_at),
+        )
+        buy_rem: dict[int, Decimal] = {o.id: Decimal(str(o.quantity)) for o in buys}
+        sell_rem: dict[int, Decimal] = {o.id: Decimal(str(o.quantity)) for o in sells}
+        filled: dict[int, Decimal] = {}
+        trade_price = Decimal(str(match["tradePrice"])) if match.get("tradePrice") is not None else None
+
+        bi = 0
+        si = 0
+        trade_prices: list[Decimal] = []
+        while bi < len(buys) and si < len(sells):
+            buy = buys[bi]
+            sell = sells[si]
+            if buy.price < sell.price:
+                break
+            qty = min(buy_rem[buy.id], sell_rem[sell.id])
+            # 逐对成交价：全市场统一价 tradePrice 是「最高买价与最低卖价的中点」，
+            # 它可能越出某笔委托的限价（例：买单挂 9.2、卖单挂 9，中点 9.5 会让买方
+            # 以高于自己限价的价格买入）。故把成交价夹到 [卖价, 买价] 区间内，
+            # 保证成交不违反任何一方的限价委托语义（此处已确保 sell.price <= buy.price）。
+            pair_price = min(
+                max(trade_price, Decimal(str(sell.price))),
+                Decimal(str(buy.price)),
+            )
+            buy_cash = cash_map[buy.funds_account_id]
+            if qty * pair_price > buy_cash + EPS:
+                qty = buy_cash / pair_price
+                if qty <= EPS:
+                    buy_rem[buy.id] = Decimal("0")
+                    bi += 1
+                    continue
+            sell_hold = holding_map.get(sell.funds_account_id)
+            sell_shares = sell_hold["shares"] if sell_hold else Decimal("0")
+            if qty > sell_shares + EPS:
+                qty = sell_shares
+                if qty <= EPS:
+                    sell_rem[sell.id] = Decimal("0")
+                    si += 1
+                    continue
+            # 6 位小数微调（保留买卖双方分摊精度，不入账）
+            qty = (qty * Decimal("1000000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) / Decimal("1000000")
+            trade_prices.append(pair_price)
+
+            # 买入方：现金减少，持仓增加（加权成本）
+            cash_map[buy.funds_account_id] = cash_map[buy.funds_account_id] - qty * pair_price
+            bh = holding_map.get(buy.funds_account_id, {"shares": Decimal("0"), "costPrice": Decimal("0")})
+            new_shares = bh["shares"] + qty
+            new_cost = (
+                (bh["shares"] * bh["costPrice"] + qty * pair_price) / new_shares
+                if new_shares > 0
+                else pair_price
+            )
+            holding_map[buy.funds_account_id] = {"shares": new_shares, "costPrice": new_cost}
+            # 卖出方：现金增加，持仓减少
+            cash_map[sell.funds_account_id] = cash_map[sell.funds_account_id] + qty * pair_price
+            sh = holding_map.get(sell.funds_account_id, {"shares": Decimal("0"), "costPrice": Decimal("0")})
+            holding_map[sell.funds_account_id] = {
+                "shares": max(Decimal("0"), sh["shares"] - qty),
+                "costPrice": sh["costPrice"],
+            }
+
+            touched_accounts.add(buy.funds_account_id)
+            touched_accounts.add(sell.funds_account_id)
+            filled[buy.id] = filled.get(buy.id, Decimal("0")) + qty
+            filled[sell.id] = filled.get(sell.id, Decimal("0")) + qty
+
+            buy_rem[buy.id] = buy_rem[buy.id] - qty
+            sell_rem[sell.id] = sell_rem[sell.id] - qty
+            if buy_rem[buy.id] <= EPS:
+                bi += 1
+            if sell_rem[sell.id] <= EPS:
+                si += 1
+
+        candle = build_candle(
+            stock.current_price, price["final"], stock.round + 1,
+            price["theoretical"], cfg["limitPct"], upper_pct, lower_pct,
+            trade_high=float(max(trade_prices)) if trade_prices else None,
+            trade_low=float(min(trade_prices)) if trade_prices else None,
+        )
+        new_round = stock.round + 1
+
+        # 现金（绑定字段的账户更新字段值，否则更新账户余额）
+        # touched_field_companies：本次撮合写入了「绑定产业字段」的公司，结算后重算
+        # 让公司详情/仪表盘等引用方拿到绑定字段（如现金）的最新值。
+        touched_field_companies: set[int] = set()
+        for acc_id, cash in cash_map.items():
+            acc = account_objs.get(acc_id)
+            rounded_cash = round2(cash)
+            if acc is not None and acc.bind_field_id and acc.company_id:
+                write_field_value_in_tx(acc.company_id, acc.bind_field_id, str(rounded_cash))
+                touched_field_companies.add(acc.company_id)
+            # 同步账户余额列：绑定字段账户列表展示依赖 cash_balance，否则会显示陈旧值
+            if acc is not None:
+                StockFundsAccount.objects.filter(pk=acc_id).update(cash_balance=rounded_cash)
+        if touched_field_companies:
+            # 绑定字段（现金）常被计算字段引用（如「总资产 = 现金 + 持仓市值」），
+            # 结算改了现金却不重算，公式字段会一直停在上一轮的旧值。
+            # （多库适配点 5：旧 emit_resource_changed("company-field", ...) 广播
+            #   改为契约 §4.3 推送只当信号）
+            _recompute_calc_after_cash_write(touched_field_companies)
+
+        # 持仓（仅被撮合涉及的账户）
+        for acc_id in touched_accounts:
+            h = holding_map.get(acc_id)
+            if h is None:
+                continue
+            if h["shares"] > EPS:
+                StockHolding.objects.update_or_create(
+                    funds_account_id=acc_id,
+                    stock_id=stock.id,
+                    defaults={
+                        "shares": round2(h["shares"]),
+                        "cost_price": round2(h["costPrice"]),
+                    },
+                )
+            else:
+                StockHolding.objects.filter(funds_account_id=acc_id, stock_id=stock.id).delete()
+
+        # 订单状态
+        for o in orders:
+            f = filled.get(o.id, Decimal("0"))
+            if f > EPS:
+                remaining = Decimal(str(o.quantity)) - f
+                if remaining <= EPS:
+                    StockOrder.objects.filter(pk=o.id).update(status="FILLED")
+                else:
+                    StockOrder.objects.filter(pk=o.id).update(
+                        quantity=round2(remaining),
+                        amount=round2(Decimal(str(o.price)) * remaining),
+                    )
+
+        # K 线（snake_case 字段映射，build_candle 返回驼峰）
+        # 计算成交量：买单成交量总和（买卖配对，取买单侧即可）
+        total_volume = Decimal("0")
+        for buy_order in buys:
+            total_volume += filled.get(buy_order.id, Decimal("0"))
+
+        StockCandle.objects.create(
+            stock_id=stock.id,
+            open=candle["open"],
+            high=candle["high"],
+            low=candle["low"],
+            close=candle["close"],
+            change_pct=candle["changePct"],
+            round=candle["round"],
+            volume=round2(total_volume),
+        )
+        # 股票价 / 轮次
+        Stock.objects.filter(pk=stock.id).update(current_price=price["final"], round=new_round)
+
+        # 轮次推进后处理旧轮订单：不再直接撤销，而是重新验证价格限制
+        # 避免限价单跨轮后以过时价限成交（下单时的 ±10% 限制随轮次失效）
+        # 但如果价格仍在有效范围内，订单应保持有效
+        from decimal import Decimal as D
+
+        old_orders = StockOrder.objects.filter(
+            stock_id=stock.id,
+            status="PENDING",
+            round__lt=new_round,
+        )
+
+        if old_orders.exists():
+            # 获取当前价格和涨跌幅限制
+            current_price = price["final"]
+            upper_limit = current_price * (1 + D(str(cfg["upperLimitPct"])))
+            lower_limit = current_price * (1 - D(str(cfg["lowerLimitPct"])))
+
+            cancelled_count = 0
+            for order in old_orders:
+                # 检查订单价格是否仍在有效范围内
+                order_price = D(str(order.price))
+                if order_price < lower_limit or order_price > upper_limit:
+                    # 价格超出限制，撤销订单
+                    order.status = "CANCELLED"
+                    order.save(update_fields=["status"])
+                    cancelled_count += 1
+                else:
+                    # 价格仍在范围内，更新订单轮次保持有效
+                    order.round = new_round
+                    order.save(update_fields=["round"])
+
+        return {
+            "stockId": stock.id,
+            "code": stock.code,
+            "round": new_round,
+            "skipped": False,
+            "matched": match["matched"],
+            "tradePrice": trade_price,
+            "finalPrice": price["final"],
+            "theoretical": price["theoretical"],
+            "pressure": price["pressure"],
+            "drift": price["drift"],
+            "usedTradePrice": price["usedTradePrice"],
+            "buyQty": match["totalBuyQty"],
+            "sellQty": match["totalSellQty"],
+            "buyAmount": match["totalBuyAmount"],
+            "sellAmount": match["totalSellAmount"],
+            "mmIntervened": mm_intervened,
+            "mmOrderCount": mm_count,
+            "candle": candle,
+        }
+
+
+# ==================== 推进轮次（主入口） ====================
+_advance_locks: dict[int, threading.Lock] = {}
+_advance_locks_guard = threading.Lock()
+
+
+def _try_acquire_advance_lock(competition_id: int) -> bool:
+    """尝试获取推进锁（非阻塞），成功返回 True。
+
+    说明（H6）：当前为进程内 threading.Lock，对「单进程 ASGI（daphne 单实例）」
+    部署已能防止同一比赛轮次被并发推进。若未来扩展为多进程/多 worker，
+    需改用跨进程互斥（如 Redis 分布式锁 / Postgres 咨询锁），
+    本锁本身不跨进程。写操作的原子性已由 advance_round 内的 comp_atomic() 兜底。
+    """
+    with _advance_locks_guard:
+        lock = _advance_locks.get(competition_id)
+        if lock is None:
+            lock = threading.Lock()
+            _advance_locks[competition_id] = lock
+        return lock.acquire(blocking=False)
+
+
+def _release_advance_lock(competition_id: int) -> None:
+    """释放推进锁。
+
+    移植修正：旧实现 release 块重复两次（二次 release 会误释放他人刚获取的锁），
+    这里只释放一次。
+    """
+    with _advance_locks_guard:
+        lock = _advance_locks.get(competition_id)
+        if lock is not None:
+            try:
+                lock.release()
+            except RuntimeError:
+                pass
+
+
+def load_stock_config(competition_id: int) -> dict:
+    """解析比赛级 stockConfig，缺失回退默认值。
+
+    多库适配：全局库 Competition 若带 stock_config 配置（JSON）即生效；
+    当前模型无该字段时 getattr 回退 None → DEFAULT_STOCK_CONFIG。
+    请求级覆盖见 advance_round 的 stock_config 参数（旧 AdvanceRoundSerializer 语义）。
+    """
+    from apps.global_.competitions.models import Competition
+
+    comp = Competition.objects.filter(pk=competition_id).first() if competition_id else None
+    raw = getattr(comp, "stock_config", None) if comp else None
+    return resolve_stock_config(raw if isinstance(raw, dict) else None)
+
+
+def advance_round(
+    competition_id: int,
+    stock_ids: list[int] | None = None,
+    market_maker: dict | None = None,
+    stock_config: dict | None = None,
+    operator=None,
+) -> dict:
+    """推进一轮：对比赛内（或指定）股票逐只撮合、定价、生成 K 线（契约 §3 编排入口）。
+
+    契约 §3 的 ``advance_round(competition_context, ...)`` 即本函数：
+    competition_id 为比赛上下文 id（比赛库 alias 由 thread-local
+    get_competition_alias() 提供，事务经 comp_atomic 落到比赛库连接）。
+
+    返回 {advanced, skipped, results, marketMakerOrders}。
+    撮合 → 定价 → K线 → 做市商报价 → 推进 Stock.round 全部在单事务内（§1 并发写），
+    异常整体回滚不落半账（§3）。
+    """
+    from .models import Stock, StockCandle
+
+    if not _try_acquire_advance_lock(competition_id):
+        raise StockError(
+            "轮次推进正在进行中，请稍候", code=409, status_code=409
+        )
+    try:
+        results: list = []
+
+        base_config = load_stock_config(competition_id)
+        if stock_config:
+            cfg = dict(base_config)
+            cfg.update(stock_config)
+        else:
+            cfg = base_config
+        mm_config = market_maker
+
+        total_mm_orders = 0
+
+        # 整轮推进包裹在事务中（H6 加固）：要么全部股票推进成功，要么整体回滚，
+        # 避免半场崩溃导致的部分写入/数据不一致。
+        # 并发推进（#16）：在事务内对目标 Stock 行加行级锁（select_for_update），
+        # 与进程内 threading.Lock 形成「进程内 + DB」双重防护，避免多 worker 部署下双推进。
+        with comp_atomic():
+            qs = Stock.objects.all()
+            if stock_ids:
+                qs = qs.filter(pk__in=stock_ids)
+            if connection.vendor != "sqlite":
+                qs = qs.select_for_update()
+            stocks = list(qs.order_by("code"))
+            field_map = resolve_field_value_map(competition_id)
+            # 一次性批量构建 PE 联动值映射，避免推进轮次时对每只股票逐一查库（H4）
+            pb_value_map = _build_pb_value_map(stocks)
+
+            # 批量获取每只股票的最近K线（避免 N+1 查询）
+            stock_ids_list = [s.id for s in stocks]
+            recent_candles_map: dict[int, list] = {sid: [] for sid in stock_ids_list}
+            if stock_ids_list:
+                # 获取每只股票最近3轮的K线
+                recent_candles = list(
+                    StockCandle.objects.filter(
+                        stock_id__in=stock_ids_list,
+                    ).order_by("stock_id", "-round")
+                )
+                for candle in recent_candles:
+                    if len(recent_candles_map[candle.stock_id]) < 3:
+                        recent_candles_map[candle.stock_id].append(candle)
+
+            # （多库适配点 6：旧 suppress_signals() 屏蔽 per-row 信号 → 新系统无该机制）
+            for stock in stocks:
+                apply_pb_round(stock, pb_value_map)
+                recent = recent_candles_map.get(stock.id, [])
+                up = 0
+                down = 0
+                for c in recent:
+                    if c.change_pct >= 9.9:
+                        up += 1
+                        down = 0
+                    elif c.change_pct <= -9.9:
+                        down += 1
+                        up = 0
+                    else:
+                        break
+                r = advance_one_stock(
+                    stock, competition_id, field_map, cfg, up, down, mm_config,
+                    float(recent[0].change_pct) if recent else 0.0, stocks,
+                )
+                if r:
+                    results.append(r)
+                    total_mm_orders += r.get("mmOrderCount", 0)
+
+        advanced = sum(1 for x in results if not x.get("skipped"))
+
+        # 审计：核心动账操作（Stock/Order/Holding/FundsAccount 批量变更）留痕
+        # （多库适配点 7：旧 apps.common.audit.log_write → 比赛内审计服务）。
+        try:
+            from apps.competition.audit import services as audit_services
+
+            audit_services.log_action(
+                'STOCK_ADVANCE_ROUND',
+                actor=operator,
+                target=str(competition_id),
+                payload={
+                    "advanced": advanced,
+                    "skipped": len(results) - advanced,
+                    "marketMakerOrders": total_mm_orders,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 审计失败不阻断推进结果
+            logger.warning("[stock] advance_round 审计写入失败", exc_info=True)
+
+        # 推送信号（契约 §4.3：轮次推进后广播 {type:'stock-updated'}，只当信号不带数据）
+        new_round = max((x.get("round") or 0 for x in results), default=0)
+        try:
+            from .services import broadcast_stock_updated
+
+            broadcast_stock_updated(competition_id, new_round)
+        except Exception:  # noqa: BLE001 - 推送失败静默（§4.3 防风暴，失败不影响业务）
+            logger.warning("[stock] advance_round 广播失败", exc_info=True)
+
+        return {
+            "advanced": advanced,
+            "skipped": len(results) - advanced,
+            "results": results,
+            "marketMakerOrders": total_mm_orders,
+        }
+    finally:
+        _release_advance_lock(competition_id)

@@ -31,4 +31,6 @@ urlpatterns = [
     path('api/', include('apps.competition.fieldlogs.urls')),
     path('api/', include('apps.competition.audit.urls')),
     path('api/', include('apps.competition.settlement.urls')),
+    # 股票模块（契约：股票模块与同步优化.md §4 /api/competitions/{cid}/stock/...）
+    path('api/', include('apps.competition.stock.urls')),
 ]

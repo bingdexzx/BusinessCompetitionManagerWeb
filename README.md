@@ -66,17 +66,21 @@ backup/                                   # 脚手架时期旧数据备份（D7 
 
 ```powershell
 # 1. 配置 .env（参考 .env.example；DATABASES_* 为 PostgreSQL 连接）
-# 2. 后端
+# 2. 后端（HTTP=waitress 多线程 :8000 + WebSocket=daphne :8001，一键启动）
 uv sync
 .venv\Scripts\python.exe BusinessCompetitionManagerWeb\manage.py migrate
 .venv\Scripts\python.exe BusinessCompetitionManagerWeb\manage.py bootstrap_superadmin <用户名> --password <密码>
-.venv\Scripts\python.exe BusinessCompetitionManagerWeb\manage.py runserver
+.venv\Scripts\python.exe scripts\run_servers.py
 
 # 3. 前端（另开终端）
 cd BusinessCompetitionManagerWebFrontend
 npm install
-npm run dev        # http://localhost:5173，/api 代理到 http://localhost:8000
+npm run dev        # http://localhost:5173，/api→8000、/ws→8001
 ```
+
+> **为什么不用 runserver？** 压测实测 Django 同步视图在 ASGI(daphne) 下单线程敏感执行，
+> 32 并发仅 ~72 QPS；WSGI 多线程(waitress) 同场景 ~910 QPS。故 HTTP 与 WebSocket
+> 分端口部署（详见 [docs/数据库优化.md](docs/数据库优化.md) §1.0）。
 
 ## 验证
 

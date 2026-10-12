@@ -23,8 +23,11 @@ GLOBAL_DB = {
     'PORT': os.getenv('DATABASES_PORT', '5432'),
 
     # ---- 连接层优化（详见 docs/数据库优化.md）----
-    # 长连接复用：多库路由下每个请求可能同时访问全局库 + 比赛库，
-    # 复用连接可省去每次 TLS/认证握手（默认 0 = 每请求新建连接）。
+    # 连接复用（秒）：实测本机新建一条 PG 连接固定 ~44ms（后端进程启动开销），
+    # 复用后查询仅 ~0.03ms——**必须复用**。
+    # 前提（实测教训）：Django 每线程一条连接，CONN_MAX_AGE>0 会让连接随线程数滞留，
+    # 故 PostgreSQL `max_connections` 必须 ≥ 2×并发线程数 + 余量（本机已调 200，
+    # 配合 DB_MAX_CONCURRENT_REQUESTS 背压限流）；上 PgBouncer 后可进一步放宽。
     'CONN_MAX_AGE': int(os.getenv('DATABASES_CONN_MAX_AGE', '60')),
     # 取出连接前先做健康探测，避免复用到已被服务端断开的死连接。
     'CONN_HEALTH_CHECKS': True,

@@ -36,6 +36,7 @@ import type {
   NetworkLogPage,
   NetworkLogQuery,
   PackageRecord,
+  PlaceStockOrderPayload,
   PluginKind,
   PluginRecord,
   RefreshResponse,
@@ -43,6 +44,16 @@ import type {
   School,
   ScoringConfig,
   SettlementResult,
+  Stock,
+  StockBook,
+  StockCandle,
+  StockMarketOverview,
+  StockOrder,
+  StockOrderPage,
+  StockOrderStatus,
+  StockPage,
+  StockRoundAdvanceResult,
+  StockSyncPage,
   Team,
   TeamJoinCode,
   UpdateMePayload,
@@ -469,4 +480,117 @@ export function getAuditLogs(
   query: { actorId?: number; action?: string; limit?: number } = {},
 ): Promise<AuditLogItem[]> {
   return http.get<AuditLogItem[]>(`/competitions/${cid}/audit-logs`, { query: { ...query } })
+}
+
+// ---------- 股票（行情 / 交易 / 推进 / 同步，契约 docs/股票模块与同步优化.md §4） ----------
+
+/** 分页响应归一：兼容裸数组与 { total, items } 两种形态 */
+function toPage<T>(res: { total?: number; items?: T[] } | T[] | null | undefined): {
+  total: number
+  items: T[]
+} {
+  if (Array.isArray(res)) return { total: res.length, items: res }
+  const items = res?.items ?? []
+  return { total: typeof res?.total === 'number' ? res.total : items.length, items }
+}
+
+/** 股票列表（薄字段：code/name/currentPrice/initPrice/round/updatedAt/涨跌幅；?page&pageSize 分页） */
+export async function getStocks(
+  cid: number | string,
+  query: { page?: number; pageSize?: number } = {},
+): Promise<StockPage> {
+  const res = await http.get<StockPage | Stock[]>(`/competitions/${cid}/stock/stocks`, {
+    query: { ...query },
+  })
+  return toPage<Stock>(res)
+}
+
+/** 单股详情（含指标全字段） */
+export function getStock(cid: number | string, code: string): Promise<Stock> {
+  return http.get<Stock>(`/competitions/${cid}/stock/stocks/${encodeURIComponent(code)}`)
+}
+
+/** K 线（按需加载：选中股票才拉；?fromRound&limit keyset 增量，返回轮次大于 fromRound 的 K 线） */
+export async function getStockCandles(
+  cid: number | string,
+  code: string,
+  query: { fromRound?: number; limit?: number } = {},
+): Promise<StockCandle[]> {
+  const res = await http.get<
+    | { items?: StockCandle[]; hasMore?: boolean; nextFromRound?: number }
+    | { candles?: StockCandle[] }
+    | StockCandle[]
+  >(`/competitions/${cid}/stock/stocks/${encodeURIComponent(code)}/candles`, {
+    query: { ...query },
+  })
+  if (Array.isArray(res)) return res
+  const wrapped = res as { items?: StockCandle[]; candles?: StockCandle[] }
+  return wrapped.items ?? wrapped.candles ?? []
+}
+
+/** 我的持仓 + 资金账户（owner 匹配 user 或本队公司） */
+export async function getStockBook(cid: number | string): Promise<StockBook> {
+  const res = await http.get<Partial<StockBook>>(`/competitions/${cid}/stock/book`)
+  return { accounts: res?.accounts ?? [], holdings: res?.holdings ?? [] }
+}
+
+/** 我的委托（?status 状态筛选，分页） */
+export async function getStockOrders(
+  cid: number | string,
+  query: { status?: string; page?: number; pageSize?: number } = {},
+): Promise<StockOrderPage> {
+  const res = await http.get<StockOrderPage | StockOrder[]>(`/competitions/${cid}/stock/orders`, {
+    query: { ...query },
+  })
+  return toPage<StockOrder>(res)
+}
+
+/** 下单 {code, side, price, quantity}（校验现金/持仓） */
+export function placeStockOrder(
+  cid: number | string,
+  payload: PlaceStockOrderPayload,
+): Promise<StockOrder> {
+  return http.post<StockOrder>(`/competitions/${cid}/stock/orders`, payload)
+}
+
+/** 撤单（仅 PENDING 且本人）→ 返回 { id, status }，本地按 id 合并状态 */
+export function cancelStockOrder(
+  cid: number | string,
+  id: number,
+): Promise<{ id: number; status: StockOrderStatus }> {
+  return http.delete<{ id: number; status: StockOrderStatus }>(
+    `/competitions/${cid}/stock/orders/${id}`,
+  )
+}
+
+/** 推进轮次（超管；撮合+定价+K线，单事务） */
+export function advanceStockRound(cid: number | string): Promise<StockRoundAdvanceResult> {
+  return http.post<StockRoundAdvanceResult>(`/competitions/${cid}/stock/round/advance`, {})
+}
+
+/** 市场概览（轻量心跳：轮次/股票数/更新时间） */
+export function getStockMarket(cid: number | string): Promise<StockMarketOverview> {
+  return http.get<StockMarketOverview>(`/competitions/${cid}/stock/market`)
+}
+
+/** 股票同步：since 空 = snapshot 快照起步；带 since = delta 增量（游标永远用上一响应的 serverTime） */
+export async function syncStockMarket(
+  cid: number | string,
+  since = '',
+  limit = 500,
+): Promise<StockSyncPage> {
+  const res = await http.get<StockSyncPage>(`/competitions/${cid}/stock/sync`, {
+    query: { since, limit },
+  })
+  return {
+    mode: res?.mode === 'delta' ? 'delta' : 'snapshot',
+    serverTime: res?.serverTime ?? '',
+    round: res?.round ?? 0,
+    hasMore: Boolean(res?.hasMore),
+    stocks: res?.stocks ?? [],
+    candles: res?.candles ?? [],
+    orders: res?.orders ?? [],
+    holdings: res?.holdings ?? [],
+    accounts: res?.accounts ?? [],
+  }
 }

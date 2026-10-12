@@ -606,3 +606,145 @@ export interface AuditLogItem {
   traceId: string
   occurredAt: string
 }
+
+// ---------- 股票（行情 / 交易 / 增量同步，契约 docs/股票模块与同步优化.md §2/§4） ----------
+
+/** 股票（列表/增量只带薄字段；单股详情含指标全字段）。Decimal 出站可能是数字字符串，数值运算前用 Number() 归一 */
+export interface Stock {
+  id: number
+  code: string
+  name: string
+  currentPrice: number
+  initPrice: number
+  round: number
+  /** 涨跌幅（%） */
+  changePct: number
+  /** 涨跌额（薄字段可选） */
+  changePrice?: number
+  updatedAt: string
+  // ---- 单股详情（GET /stock/stocks/{code}）指标全字段 ----
+  totalShares?: number
+  initNetProfit?: number
+  industryPE?: number
+  currentCarbon?: number
+  industryAvgCarbon?: number
+  happiness?: number
+}
+
+/** K 线（每轮每股票一根，unique(stock, round)） */
+export interface StockCandle {
+  id?: number
+  stockCode: string
+  round: number
+  open: number
+  high: number
+  low: number
+  close: number
+  changePct: number
+  volume: number
+  updatedAt?: string
+}
+
+export type StockOrderSide = 'BUY' | 'SELL'
+export type StockOrderStatus = 'PENDING' | 'FILLED' | 'CANCELLED'
+
+/** 委托（订单） */
+export interface StockOrder {
+  id: number
+  stockId: number
+  stockCode: string
+  /** 股票名称（后端薄序列化可能不含，视图用代码兜底） */
+  stockName?: string
+  fundsAccountId: number
+  side: StockOrderSide
+  price: number
+  quantity: number
+  amount: number
+  status: StockOrderStatus
+  round: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** 持仓 */
+export interface StockHolding {
+  id: number
+  fundsAccountId: number
+  stockId: number
+  stockCode: string
+  stockName: string
+  /** 现价（后端序列化时可能带上） */
+  currentPrice?: number | null
+  shares: number
+  costPrice: number
+  /** 市值（后端序列化时可能带上） */
+  marketValue?: number | null
+  updatedAt: string
+}
+
+/** 资金账户 */
+export interface StockFundsAccount {
+  id: number
+  name: string
+  ownerType: 'COMPANY' | 'USER'
+  companyId: number | null
+  userId: number | null
+  cashBalance: number
+  bindFieldId: number | null
+  /** 绑定产业字段时的实时现金（展示优先级高于 cashBalance） */
+  fieldBalance?: number | null
+  updatedAt: string
+}
+
+/** 市场概览（轻量心跳） */
+export interface StockMarketOverview {
+  round: number
+  stockCount: number
+  updatedAt: string
+}
+
+/** 我的持仓 + 资金账户（owner 匹配 user 或所辖公司） */
+export interface StockBook {
+  accounts: StockFundsAccount[]
+  holdings: StockHolding[]
+}
+
+/** 下单载荷 */
+export interface PlaceStockOrderPayload {
+  code: string
+  side: StockOrderSide
+  price: number | string
+  quantity: number | string
+}
+
+/** 股票分页列表（?page&pageSize） */
+export interface StockPage {
+  total: number
+  items: Stock[]
+}
+
+/** 我的委托分页（?status&page&pageSize） */
+export interface StockOrderPage {
+  total: number
+  items: StockOrder[]
+}
+
+/** 推进轮次结果（撮合+定价+K线，单事务；具体诊断字段由引擎返回） */
+export interface StockRoundAdvanceResult {
+  round?: number
+  [key: string]: unknown
+}
+
+/** 股票同步响应：since 为空 = snapshot（快照起步），带 since = delta（增量游标合并） */
+export interface StockSyncPage {
+  mode: 'snapshot' | 'delta'
+  /** 下次游标（服务端时间，规避客户端时钟偏差） */
+  serverTime: string
+  round: number
+  hasMore: boolean
+  stocks: Stock[]
+  candles: StockCandle[]
+  orders: StockOrder[]
+  holdings: StockHolding[]
+  accounts: StockFundsAccount[]
+}

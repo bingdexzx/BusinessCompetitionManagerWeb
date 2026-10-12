@@ -18,14 +18,15 @@ export default defineConfig({
     },
   },
   server: {
-    // 开发时把 /api 请求转发到 Django 后端，避免跨域；/ws 为 WebSocket 实时通道
+    // 开发代理：/api → waitress WSGI（多线程，实测并发 ~910 QPS）；
+    // /ws → daphne ASGI（WebSocket；Django 同步视图在 ASGI 下单线程执行，故 HTTP 不走它）
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://localhost:8001',
         ws: true,
       },
     },
