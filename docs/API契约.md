@@ -58,10 +58,10 @@
 |------|------|------|
 | GET | `/competitions/{cid}/contracts` | 合同列表（**服务端分页 + 薄字段**）：`?page&pageSize&status&q` → `{items, total, page, pageSize}`；**增量同步**：`?updatedAfter=<ISO>` → `{items, serverTime, hasMore, mode:'delta'}`（游标用上次 `serverTime`）。可见性：系统/比赛超管全量，其余按可操作公司过滤（JSONB containment + GIN 索引） |
 | POST | `/competitions/{cid}/contracts` | 创建草稿 `{contractTypeKey, pluginVersion?, name?, parties[{role, companyId}], inputs{}, isBackfill?, fiscalYearId?}` |
-| GET | `/competitions/{cid}/contracts/{id}` | 详情 **含 timeline**（§14.6 确认时间线：谁/何时/设备/IP） |
+| GET | `/competitions/{cid}/contracts/{id}` | 详情 **含 timeline**（§14.6 确认时间线：谁/何时/设备/IP）与 **checks**（§7.3 四检查点落库：`roundStatus: ACTIVE/HISTORY`，修改后按轮次回放当时的检查内容） |
 | POST | `.../contracts/{id}/submit` | T2 提交（运行 check，保证创建即能执行） |
 | POST | `.../contracts/{id}/confirm` | T3 逐方确认；末方确认后**自动编号 + 自动执行 + 落账**（T4/T5） |
-| GET | `.../contracts/{id}/effects` | 不可变落账审计（before/after/roundNo） |
+| GET | `.../contracts/{id}/effects` | 不可变落账审计（before/after/roundNo + **`roundStatus: ACTIVE/ROLLED_BACK`**：修改后旧轮效果标「已回滚」，仅当前轮次为生效） |
 | POST | `.../contracts/{id}/request-modify` | T6 申请修改 `{reason}`（任意参与方） |
 | POST | `.../contracts/{id}/modify/review` | T7/T7' 超管审核 `{action: approve\|reject, note?}` |
 | POST | `.../contracts/{id}/modify/other-party` | T8/T8' 其他方表态 `{action: approve\|reject, note?}` |
