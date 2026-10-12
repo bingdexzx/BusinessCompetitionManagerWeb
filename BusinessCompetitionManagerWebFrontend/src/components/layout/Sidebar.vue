@@ -42,6 +42,10 @@
           <el-icon><Files /></el-icon>
           <span>合同工作台</span>
         </el-menu-item>
+        <el-menu-item :index="`/competitions/${activeCid}/basedata`">
+          <el-icon><Grid /></el-icon>
+          <span>数据管理</span>
+        </el-menu-item>
         <!-- 股票市场：行情看板 / 交易管理 -->
         <el-sub-menu index="stocks-group" class="sidebar-group">
           <template #title>

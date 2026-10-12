@@ -66,6 +66,12 @@ const router = createRouter({
       props: true,
     },
     {
+      path: '/competitions/:cid/basedata',
+      name: 'competition-basedata',
+      component: () => import('../views/BasedataView.vue'),
+      props: true,
+    },
+    {
       path: '/competitions/:cid/settlement',
       name: 'competition-settlement',
       component: () => import('../views/SettlementView.vue'),

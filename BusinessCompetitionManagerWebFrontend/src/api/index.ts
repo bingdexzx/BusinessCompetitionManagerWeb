@@ -6,6 +6,9 @@ import type {
   AuditLogItem,
   AwardInfo,
   AwardRecord,
+  BasedataPage,
+  BasedataRow,
+  BasedataTable,
   Company,
   CompanyTable,
   Competition,
@@ -279,6 +282,44 @@ export function getContractTypes(id: number | string): Promise<ContractType[]> {
 
 export function getPlugins(kind?: PluginKind): Promise<PluginRecord[]> {
   return http.get<PluginRecord[]>('/plugins', { query: { kind } })
+}
+
+// ---------- 基础数据管理（数据管理页，契约 §6.1） ----------
+
+/** 基础数据列表（?q&page&pageSize；行字段 camelCase，effect/inputs 等 JSON 列后台维护） */
+export function getBasedata(
+  cid: number | string,
+  table: BasedataTable,
+  params: { q?: string; page?: number; pageSize?: number } = {},
+): Promise<BasedataPage> {
+  return http.get<BasedataPage>(`/competitions/${cid}/basedata/${table}`, {
+    query: { q: params.q, page: params.page, pageSize: params.pageSize },
+  })
+}
+
+export function createBasedataRow(
+  cid: number | string,
+  table: BasedataTable,
+  payload: Partial<BasedataRow>,
+): Promise<BasedataRow> {
+  return http.post<BasedataRow>(`/competitions/${cid}/basedata/${table}`, payload)
+}
+
+export function updateBasedataRow(
+  cid: number | string,
+  table: BasedataTable,
+  id: number,
+  payload: Partial<BasedataRow>,
+): Promise<BasedataRow> {
+  return http.patch<BasedataRow>(`/competitions/${cid}/basedata/${table}/${id}`, payload)
+}
+
+export function deleteBasedataRow(
+  cid: number | string,
+  table: BasedataTable,
+  id: number,
+): Promise<{ ok: boolean }> {
+  return http.delete<{ ok: boolean }>(`/competitions/${cid}/basedata/${table}/${id}`)
 }
 
 // ---------- 合同（M3/M4） ----------

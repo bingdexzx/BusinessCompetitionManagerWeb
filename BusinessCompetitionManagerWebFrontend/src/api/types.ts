@@ -808,3 +808,56 @@ export interface StockSyncPage {
   holdings: StockHolding[]
   accounts: StockFundsAccount[]
 }
+
+// ---------- 基础数据管理（数据管理页，契约 §6.1；effect/inputs 等 JSON 列后台维护） ----------
+
+/** 基础数据表：10 类比赛级基础数据 */
+export type BasedataTable =
+  | 'fuels'
+  | 'warehouses'
+  | 'vehicles'
+  | 'maps'
+  | 'materials'
+  | 'products'
+  | 'parts'
+  | 'infrastructures'
+  | 'tech_trees'
+  | 'production_lines'
+
+/** 基础数据行：id + 各表可选字段（camelCase），其余列以索引签名兜底 */
+export interface BasedataRow {
+  id: number
+  code?: string
+  name?: string
+  notes?: string
+  unit?: string
+  energyValue?: number
+  price?: number
+  capacity?: number
+  regionCode?: string
+  vehicleType?: string
+  loadCapacity?: number
+  speed?: number
+  fuelCode?: string
+  fuelConsumption?: number
+  regionType?: string
+  adjacentCodes?: string
+  distance?: number
+  basePrice?: number
+  compatibleTypes?: string
+  infraType?: string
+  buildCost?: number
+  maintenanceCost?: number
+  tier?: number
+  prerequisiteCodes?: string
+  researchCost?: number
+  [key: string]: unknown
+}
+
+/** 基础数据分页（?q&page&pageSize） */
+export interface BasedataPage {
+  items: BasedataRow[]
+  total: number
+  page: number
+  pageSize: number
+}
