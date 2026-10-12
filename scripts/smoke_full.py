@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 from pathlib import Path
+from urllib.parse import quote
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'BusinessCompetitionManagerWeb.settings')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'BusinessCompetitionManagerWeb'))
@@ -160,6 +161,19 @@ def main():
     contract = resp.json()
     check('创建合同草稿（T1）', resp.status_code == 201 and contract.get('status') == 'DRAFT',
           f'id={contract.get("id")}')
+
+    # 合同增量同步（updatedAfter 游标）
+    delta = client.get(
+        f'/api/competitions/{cid}/contracts?updatedAfter=2020-01-01T00:00:00Z', **p1).json()
+    check('合同增量同步（命中变更）', delta.get('mode') == 'delta'
+          and any(d.get('id') == contract.get('id') for d in delta.get('items', [])),
+          f"{len(delta.get('items', []))} 条")
+    empty = client.get(
+        '/api/competitions/%d/contracts?updatedAfter=%s'
+        % (cid, quote(delta['serverTime'], safe='')), **p1).json()
+    check('增量同步空变更（游标生效）', empty.get('mode') == 'delta'
+          and len(empty.get('items', [])) == 0,
+          f"{len(empty.get('items', []))} 条")
     cid_contract = contract['id']
 
     resp = post(client, f'/api/competitions/{cid}/contracts/{cid_contract}/submit', {}, p1, raw=True)

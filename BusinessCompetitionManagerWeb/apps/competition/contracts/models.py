@@ -52,6 +52,11 @@ class Contract(models.Model):
         verbose_name = '合同'
         verbose_name_plural = '合同'
         ordering = ['-created_at']
+        indexes = [
+            # 增量同步（按 updated_at 拉取变更）+ 状态列表组合查询
+            models.Index(fields=['updated_at'], name='idx_contract_updated_at'),
+            models.Index(fields=['status', 'updated_at'], name='idx_contract_status_updated'),
+        ]
 
     def __str__(self):
         return f'{self.unified_number or self.contract_type_key} [{self.status}]'

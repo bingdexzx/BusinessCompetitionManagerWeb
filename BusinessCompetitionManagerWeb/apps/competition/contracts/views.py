@@ -4,6 +4,7 @@
 """
 
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -149,10 +150,28 @@ def _visible_contracts(request):
 
 
 class ContractListCreateView(APIView):
+    """合同列表（全量）+ **增量同步**（`?updatedAfter=<ISO>` 只拉变更）。"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid):
         contracts = _visible_contracts(request)
+        updated_after = request.query_params.get('updatedAfter') or ''
+        if updated_after:
+            from django.utils.dateparse import parse_datetime
+
+            cursor = parse_datetime(updated_after)
+            if cursor is not None:
+                contracts = contracts.filter(updated_at__gt=cursor)
+            limit = min(int(request.query_params.get('limit', 500) or 500), 1000)
+            now = timezone.now()
+            items = [_contract_data(c) for c in contracts.order_by('updated_at')[:limit]]
+            return Response({
+                'items': items,
+                'serverTime': now.isoformat(),   # 下次增量游标（避免客户端时钟偏差）
+                'hasMore': len(items) == limit,
+                'mode': 'delta',
+            })
         return Response([_contract_data(c) for c in contracts[:500]])
 
     def post(self, request, cid):

@@ -13,6 +13,7 @@ import type {
   CompetitionMetaPayload,
   Contract,
   ContractEffect,
+  ContractSyncPage,
   ContractType,
   CreateCompetitionPayload,
   CreateContractPayload,
@@ -271,6 +272,17 @@ export function getPlugins(kind?: PluginKind): Promise<PluginRecord[]> {
 
 export function getContracts(cid: number | string): Promise<Contract[]> {
   return http.get<Contract[]>(`/competitions/${cid}/contracts`)
+}
+
+/** 合同增量同步：只拉 updatedAfter 之后变更的合同（游标用上次响应的 serverTime） */
+export function syncContracts(
+  cid: number | string,
+  updatedAfter: string,
+  limit = 500,
+): Promise<ContractSyncPage> {
+  return http.get<ContractSyncPage>(`/competitions/${cid}/contracts`, {
+    query: { updatedAfter, limit },
+  })
 }
 
 export function createContract(

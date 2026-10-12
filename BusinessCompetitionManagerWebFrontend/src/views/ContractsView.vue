@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createContract, getCompanies, getContractTypes, getContracts, getFiscalYears } from '@/api'
+import { createContract, getCompanies, getContractTypes, getContracts, getFiscalYears, syncContracts } from '@/api'
+import { useNotifications } from '@/composables/useNotifications'
 import type { Company, Contract, ContractType, FiscalYear } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 
@@ -31,11 +32,14 @@ function statusMeta(status: string): { label: string; type: TagType } {
 
 const STATUS_OPTIONS = Object.keys(STATUS_META)
 
-// ---------- 合同列表 ----------
+// ---------- 合同列表（增量同步） ----------
 const contracts = ref<Contract[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
+/** 增量游标（上次同步的服务端时间） */
+const lastSyncAt = ref('1970-01-01T00:00:00Z')
+const syncing = ref(false)
 
 const filteredContracts = computed<Contract[]>(() => {
   const kw = keyword.value.trim().toLowerCase()
@@ -55,16 +59,45 @@ function partiesSummary(row: Contract): string {
   return row.parties.map((p) => `${p.role}:${p.companyName || '—'}`).join('、')
 }
 
-async function loadContracts(): Promise<void> {
-  loading.value = true
+/** 合同同步：首次全量，此后按 updatedAfter 增量合并（新通知触发只拉变更） */
+async function loadContracts(full = false): Promise<void> {
+  syncing.value = true
+  if (full) loading.value = true
   try {
-    contracts.value = await getContracts(props.cid)
+    const cursor = full ? '1970-01-01T00:00:00Z' : lastSyncAt.value
+    const page = await syncContracts(props.cid, cursor)
+    const map = new Map<number, Contract>()
+    if (!full) {
+      for (const c of contracts.value) map.set(c.id, c)
+    }
+    for (const item of page.items) map.set(item.id, item) // 按 id 合并（同 id 取新）
+    contracts.value = [...map.values()].sort((a, b) =>
+      (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
+    )
+    lastSyncAt.value = page.serverTime // 用服务端时间做游标，规避客户端时钟偏差
+    if (page.hasMore) await loadContracts() // 还有更多变更则继续拉
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    // 增量失败回退全量
+    try {
+      contracts.value = await getContracts(props.cid)
+      lastSyncAt.value = new Date().toISOString()
+    } catch {
+      ElMessage.error(e instanceof Error ? e.message : '同步失败')
+    }
   } finally {
+    syncing.value = false
     loading.value = false
   }
 }
+
+/** WebSocket 推送到达时增量同步（合同相关通知才触发） */
+useNotifications((message) => {
+  const payload = message.payload || {}
+  const isContractEvent = typeof message.kind === 'string' && message.kind.startsWith('CONTRACT')
+  if (isContractEvent || payload.contractId != null) {
+    void loadContracts(false)
+  }
+})
 
 function openDetail(row: Contract): void {
   void router.push(`/competitions/${props.cid}/contracts/${row.id}`)
@@ -191,14 +224,16 @@ async function loadBaseData(): Promise<void> {
 }
 
 onMounted(() => {
-  void loadContracts()
+  void loadContracts(true) // 首次全量，此后增量
   void loadBaseData()
 })
 
 watch(
   () => props.cid,
   () => {
-    void loadContracts()
+    contracts.value = []
+    lastSyncAt.value = '1970-01-01T00:00:00Z'
+    void loadContracts(true)
     void loadBaseData()
   },
 )
@@ -228,6 +263,7 @@ watch(
           placeholder="搜索名称 / 统一编号"
           style="width: 220px"
         />
+        <el-button :loading="syncing" @click="loadContracts(false)">同步</el-button>
         <el-button type="primary" @click="openCreate">创建合同</el-button>
       </div>
     </div>

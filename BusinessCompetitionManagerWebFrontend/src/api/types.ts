@@ -334,6 +334,14 @@ export interface ContractEffect {
   createdAt: string
 }
 
+export interface ContractSyncPage {
+  items: Contract[]
+  /** 服务端时间（下次增量游标，避免客户端时钟偏差） */
+  serverTime: string
+  hasMore: boolean
+  mode: 'delta'
+}
+
 export interface CreateContractPayload {
   contractTypeKey: string
   pluginVersion?: string

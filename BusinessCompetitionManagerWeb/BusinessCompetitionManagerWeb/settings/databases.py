@@ -21,6 +21,22 @@ GLOBAL_DB = {
     'PASSWORD': os.getenv('DATABASES_PASSWORD', ''),
     'HOST': os.getenv('DATABASES_HOST', 'localhost'),
     'PORT': os.getenv('DATABASES_PORT', '5432'),
+
+    # ---- 连接层优化（详见 docs/数据库优化.md）----
+    # 长连接复用：多库路由下每个请求可能同时访问全局库 + 比赛库，
+    # 复用连接可省去每次 TLS/认证握手（默认 0 = 每请求新建连接）。
+    'CONN_MAX_AGE': int(os.getenv('DATABASES_CONN_MAX_AGE', '60')),
+    # 取出连接前先做健康探测，避免复用到已被服务端断开的死连接。
+    'CONN_HEALTH_CHECKS': True,
+    'OPTIONS': {
+        # 连接建立超时（秒）：DB 不可用时快速失败，避免请求线程长时间挂起。
+        'connect_timeout': int(os.getenv('DATABASES_CONNECT_TIMEOUT', '5')),
+        # TCP keepalive：及时发现 NAT/防火墙静默断开的空闲连接。
+        'keepalives': 1,
+        'keepalives_idle': 30,
+        'keepalives_interval': 10,
+        'keepalives_count': 5,
+    },
 }
 
 DATABASES = {
