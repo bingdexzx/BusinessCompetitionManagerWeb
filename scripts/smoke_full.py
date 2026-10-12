@@ -195,6 +195,10 @@ def main():
     confirms = [t for t in timeline if t['type'] == 'CONFIRM']
     check('确认时间线（谁/何时，§14.6）', len(confirms) == 2
           and all(c['actor'] for c in confirms), str(confirms))
+    field_nodes = [t for t in timeline if t['type'] == 'FIELD']
+    check('时间线字段操作为中文', bool(field_nodes)
+          and all('增加' in t['title'] or '减少' in t['title'] or '设置' in t['title']
+                  for t in field_nodes), field_nodes[0]['title'] if field_nodes else '无')
     effects = client.get(f'/api/competitions/{cid}/contracts/{cid_contract}/effects', **p1).json()
     check('不可变效果审计（3 条）', len(effects) == 3 and all(e['roundNo'] == 0 for e in effects),
           str(len(effects)))
