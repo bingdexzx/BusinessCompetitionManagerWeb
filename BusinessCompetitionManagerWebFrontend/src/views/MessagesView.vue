@@ -81,8 +81,10 @@ function openSource(item: InmailMessage): void {
     void router.push(link)
     return
   }
-  if (item.competitionId) {
-    void router.push(`/competitions/${item.competitionId}`)
+  // 只接受有效数字 id（系统通知的 competitionId 可能为空，防 /competitions/undefined）
+  const cid = Number(item.competitionId)
+  if (Number.isInteger(cid) && cid > 0) {
+    void router.push(`/competitions/${cid}`)
   }
 }
 

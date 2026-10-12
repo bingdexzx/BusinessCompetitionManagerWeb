@@ -71,7 +71,8 @@ watch(isCompact, (compact) => {
 watch(
   () => route.params.cid,
   (cid) => {
-    if (typeof cid === 'string' && cid) {
+    // 只接受纯数字 id：拦截 undefined/null/非法值污染上下文（曾致 /competitions/undefined 请求）
+    if (typeof cid === 'string' && /^\d+$/.test(cid)) {
       auth.selectCompetition(cid)
     }
   },

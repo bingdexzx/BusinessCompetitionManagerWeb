@@ -128,6 +128,13 @@ router.beforeEach((to) => {
     return { name: 'competitions' }
   }
 
+  // cid 必须是纯数字：拦截 /competitions/undefined 等非法链接
+  //（否则页面会以 undefined 发 /api/competitions/undefined/... 请求 → 404 噪音）
+  const rawCid = to.params.cid
+  if (rawCid !== undefined && !/^\d+$/.test(String(rawCid))) {
+    return { name: 'competitions' }
+  }
+
   // 超管页（结算 / 审计日志）：系统超管 或 本比赛超管（与后端权限一致）
   if (to.meta.manager) {
     const cid = String(to.params.cid ?? '')
