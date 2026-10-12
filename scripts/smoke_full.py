@@ -396,6 +396,9 @@ def main():
     check('网络日志仅系统超管（§15.2）', resp.status_code == 403, str(resp.status_code))
     resp = client.get(f'/api/competitions/{cid}/logs/fields', **p2)
     check('字段日志按公司可见性过滤', resp.status_code == 200, str(resp.status_code))
+    resp = client.get('/api/competitions/99999/stock/sync?limit=10', **p1)
+    check('不存在的比赛返回干净 404（旧页面残留防 500）', resp.status_code == 404
+          and resp.json().get('code') == 404, str(resp.status_code))
 
     failed = [n for n, ok in results if not ok]
     print(f'\n== 结果：{len(results) - len(failed)}/{len(results)} 通过 ==')

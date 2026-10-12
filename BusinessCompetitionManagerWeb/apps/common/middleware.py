@@ -64,9 +64,11 @@ class CompetitionContextMiddleware(MiddlewareMixin):
 
     def process_request(self, request):
         competition_id = None
+        from_path = False
         m = _COMPETITION_URL_RE.match(request.path)
         if m:
             competition_id = int(m.group(1))
+            from_path = True
         else:
             header = request.META.get('HTTP_X_COMPETITION_ID', '')
             if str(header).isdigit():
@@ -78,7 +80,13 @@ class CompetitionContextMiddleware(MiddlewareMixin):
 
             competition = Competition.objects.filter(pk=competition_id).first()
             if competition is None:
-                # 交给视图返回 404；此处只清上下文
+                # 比赛不存在/已删除：**URL 明确指向该比赛的接口直接 404**（干净响应），
+                # 否则视图内比赛域模型会以 RuntimeError 500 暴露（路由器无上下文）。
+                # 仅带头（X-Competition-Id）的全局接口（/api/me 等）不拦，避免旧头误伤。
+                if from_path:
+                    return JsonResponse(
+                        {'code': 404, 'message': '比赛不存在或已删除', 'details': ''},
+                        status=404)
                 return None
             alias = provisioning.ensure_competition_db(competition.db_name)
             ctx.set_competition_context(competition_id, alias)

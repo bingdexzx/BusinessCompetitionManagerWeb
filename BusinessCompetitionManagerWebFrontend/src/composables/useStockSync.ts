@@ -12,6 +12,7 @@
 // 视图侧按 50/页切片渲染；同步只走 /stock/sync，不拉无谓全量。
 import { ref, shallowRef, toValue, type MaybeRefOrGetter } from 'vue'
 import { syncStockMarket } from '@/api'
+import { ApiError } from '@/api/client'
 import type {
   Stock,
   StockCandle,
@@ -52,6 +53,8 @@ const lastSyncAt = ref('')
 const syncing = ref(false)
 /** 最近一次同步失败原因（后台自动同步静默记录，手动同步由调用方统一弹错） */
 const lastError = ref('')
+/** 比赛不存在/已删除（404）：同步已终止，页面提示返回比赛列表 */
+const missing = ref(false)
 
 // 合并缓冲：先 Map 幂等覆盖，再整体发布为浅引用数组
 const stockByCode = new Map<string, Stock>()
@@ -189,6 +192,13 @@ async function runSync(full: boolean): Promise<void> {
       await syncOnce(true)
     }
   } catch (e) {
+    // 404 = 比赛不存在/已删除（旧页面残留）：终止同步，避免无限重试风暴
+    if (e instanceof ApiError && e.status === 404) {
+      missing.value = true
+      lastError.value = e.message
+      stop()
+      throw e
+    }
     lastError.value = e instanceof Error ? e.message : '同步失败'
     throw e
   } finally {
@@ -344,6 +354,7 @@ export function useStockSync(cid: MaybeRefOrGetter<string | number | undefined>)
     lastSyncAt,
     /** 最近一次同步失败原因 */
     lastError,
+    missing,
 
     // ---------- 控制 ----------
     /** 立即同步一次（full=true 强制快照重拉；带 in-flight 去重） */

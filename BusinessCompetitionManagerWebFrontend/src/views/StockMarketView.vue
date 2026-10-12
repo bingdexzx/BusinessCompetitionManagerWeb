@@ -45,6 +45,7 @@ const {
   round,
   syncing,
   lastSyncAt,
+  missing,
   syncNow,
   scheduleSync,
   start,
@@ -509,6 +510,23 @@ watch(
 
 <template>
   <div class="stock-market-page">
+    <!-- 比赛不存在/已删除（旧页面残留） -->
+    <el-alert
+      v-if="missing"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="比赛不存在或已删除"
+      description="当前页面指向的比赛已不存在（可能被清理/重建）。请返回比赛列表选择现有比赛。"
+      class="missing-alert"
+    >
+      <template #default>
+        <el-button type="primary" size="small" @click="$router.push('/competitions')">
+          返回比赛列表
+        </el-button>
+      </template>
+    </el-alert>
+
     <!-- 工具栏 -->
     <div class="mm-toolbar">
       <h2 class="mm-title">股票行情</h2>
