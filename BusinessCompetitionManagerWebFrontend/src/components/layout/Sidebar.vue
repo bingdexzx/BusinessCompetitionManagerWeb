@@ -46,7 +46,7 @@
           <el-icon><Calendar /></el-icon>
           <span>财年与补录</span>
         </el-menu-item>
-        <el-menu-item :index="`/competitions/${activeCid}/settlement`">
+        <el-menu-item v-if="canViewSettlement" :index="`/competitions/${activeCid}/settlement`">
           <el-icon><TrophyBase /></el-icon>
           <span>结算与获奖</span>
         </el-menu-item>
@@ -109,12 +109,15 @@ const activeCid = computed(() => {
 })
 const hasCompetition = computed(() => activeCid.value !== '')
 
-/** 审计日志可见性：比赛超管/管理员 或 系统超管 */
-const canViewAudit = computed(() => {
+/** 本比赛超级管理员 / 系统超管（与后端 can_manage_competition 口径一致） */
+const canManageComp = computed(() => {
   if (auth.isSuperuser) return true
-  const identity = auth.currentMembership?.identity ?? ''
-  return identity === 'COMP_SUPER_ADMIN' || identity === 'ADMIN'
+  return auth.currentMembership?.identity === 'COMP_SUPER_ADMIN'
 })
+/** 审计日志可见性：系统超管 / 比赛超管（主席团与参赛代表不可见） */
+const canViewAudit = canManageComp
+/** 结算与获奖：仅超管可见（决策：结算结果仅超管可见） */
+const canViewSettlement = canManageComp
 
 // 当前比赛名（侧栏品牌区展示）：成员身份自带名称，系统超管按需查询
 const competitionName = ref('')

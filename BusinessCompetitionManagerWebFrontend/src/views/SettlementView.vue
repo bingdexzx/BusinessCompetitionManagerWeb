@@ -23,11 +23,13 @@ import { useAuthStore } from '@/stores/auth'
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
 
-/** 系统超管 / 本比赛超管可维护配置与执行结算 */
+/** 系统超管 / 本比赛超管：结算与获奖仅超管可见（可维护配置与执行结算） */
 const canManage = computed(() => {
   if (auth.isSuperuser) return true
   return auth.memberships.some((m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN')
 })
+/** 页面可见性与可管理性一致（仅超管可见） */
+const canView = canManage
 
 // ---------- 评分配置 ----------
 const config = ref<ScoringConfig | null>(null)
@@ -221,12 +223,18 @@ async function reloadAll(): Promise<void> {
   await Promise.all([loadConfig(), loadResult()])
 }
 
-onMounted(() => void reloadAll())
+onMounted(() => {
+  if (canView.value) void reloadAll()
+})
 </script>
 
 <template>
   <div class="settlement-page">
     <h1 class="page-title">结算管理</h1>
+
+    <!-- 权限口径：结算结果仅超级管理员（系统超管/比赛超管）可见 -->
+    <el-empty v-if="!canView" description="结算与获奖仅超级管理员可见" />
+    <template v-if="canView">
 
     <el-alert
       class="hint-alert"
@@ -423,6 +431,7 @@ onMounted(() => void reloadAll())
         <el-button type="primary" :loading="submitting" @click="submitAdd">确定</el-button>
       </template>
     </el-dialog>
+    </template>
   </div>
 </template>
 

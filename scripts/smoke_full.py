@@ -281,6 +281,10 @@ def main():
     entries = result.get('entries', [])
     check('结算结果（名次/得分/获奖）', len(entries) >= 2
           and any(e.get('awardLevel') for e in entries), str(entries)[:200])
+    resp = client.get(f'/api/competitions/{cid}/settlement/result', **p1)
+    check('结算结果仅超管可见（需求方口径）', resp.status_code == 403, str(resp.status_code))
+    resp = client.get(f'/api/competitions/{cid}/settlement/config', **p3)
+    check('结算配置仅超管可见', resp.status_code == 403, str(resp.status_code))
 
     awards = client.get('/api/me/awards', **p1).json()
     check('获奖信息同步个人档案', bool(awards) and awards[0].get('medalId'), str(awards)[:200])

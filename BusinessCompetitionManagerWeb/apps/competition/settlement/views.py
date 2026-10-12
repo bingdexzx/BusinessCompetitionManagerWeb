@@ -1,12 +1,23 @@
-"""结算 API（§12：POST .../settlement/run、GET .../settlement/result、GET .../awards）。"""
+"""结算 API（§12：POST .../settlement/run、GET .../settlement/result、GET .../awards）。
+
+权限口径（需求方确认）：**结算与获奖仅超管可见**（系统超管 / 比赛超管，含读取）；
+参赛代表与管理员的获奖记录与电子奖牌经 `/api/me/awards`、`/api/me/medals` 在个人档案查看。
+"""
 
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authority import can_manage_competition, user_company_ids
+from apps.common.authority import can_manage_competition
 from apps.competition.settlement import services as settlement_services
 from apps.competition.settlement.models import AwardResult, AwardRule, ScoringCriterion, SettlementRun
+
+
+def _manager_only(request, cid):
+    """结算域统一守卫：仅超管可见（含读取）。"""
+    if not can_manage_competition(request.user, cid):
+        return Response({'code': 403, 'message': '结算与获奖仅超级管理员可见', 'details': ''}, status=403)
+    return None
 
 
 class ScoringConfigView(APIView):
@@ -15,6 +26,9 @@ class ScoringConfigView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid):
+        denied = _manager_only(request, cid)
+        if denied:
+            return denied
         return Response({
             'criteria': [
                 {
@@ -87,25 +101,27 @@ class SettlementResultView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid):
+        denied = _manager_only(request, cid)
+        if denied:
+            return denied
         run = SettlementRun.objects.filter(status=SettlementRun.Status.SUCCESS).first()
         if run is None:
             return Response({'run': None, 'entries': []})
-        ids = user_company_ids(request.user)
-        entries = (run.result or {}).get('entries') or []
-        if '*' not in ids:
-            entries = [e for e in entries if e.get('companyId') in ids]
         return Response({'run': {
             'id': run.id, 'createdAt': run.created_at.isoformat(),
             'criteria': run.criteria_snapshot,
-        }, 'entries': entries})
+        }, 'entries': (run.result or {}).get('entries') or []})
 
 
 class AwardListView(APIView):
-    """本比赛获奖信息（§12：GET .../awards）。"""
+    """本比赛获奖信息（仅超管；§12：GET .../awards）。"""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid):
+        denied = _manager_only(request, cid)
+        if denied:
+            return denied
         run = SettlementRun.objects.filter(status=SettlementRun.Status.SUCCESS).first()
         if run is None:
             return Response([])

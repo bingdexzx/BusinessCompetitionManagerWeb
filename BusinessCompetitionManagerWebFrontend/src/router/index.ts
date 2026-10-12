@@ -57,6 +57,7 @@ const router = createRouter({
       name: 'competition-settlement',
       component: () => import('../views/SettlementView.vue'),
       props: true,
+      meta: { manager: true },
     },
     {
       path: '/competitions/:cid/logs',
@@ -112,6 +113,17 @@ router.beforeEach((to) => {
 
   if (to.meta.superuser && !auth.isSuperuser) {
     return { name: 'competitions' }
+  }
+
+  // 超管页（结算 / 审计日志）：系统超管 或 本比赛超管（与后端权限一致）
+  if (to.meta.manager) {
+    const cid = String(to.params.cid ?? '')
+    const isCompSuperAdmin = auth.memberships.some(
+      (m) => String(m.id) === cid && m.identity === 'COMP_SUPER_ADMIN',
+    )
+    if (!auth.isSuperuser && !isCompSuperAdmin) {
+      return { name: 'competitions' }
+    }
   }
 
   return true

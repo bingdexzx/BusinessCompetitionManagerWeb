@@ -6,6 +6,7 @@ import {
   confirmContract,
   getContract,
   getContractEffects,
+  getTeams,
   requestContractModify,
   reviewBackfill,
   reviewContractModify,
@@ -142,6 +143,26 @@ const isCompSuperAdmin = computed(() =>
 /** 超管 / 比赛超管可审核修改与补录 */
 const canReview = computed(() => auth.isSuperuser || isCompSuperAdmin.value)
 
+/** 我在本比赛可操作的公司 ID 集（null=未知，按放开处理）：
+ *  参赛代表 → 本队公司（队伍映射）；管理员 → 所辖公司 */
+const myCompanyIds = ref<Set<number> | null>(null)
+
+async function loadMyCompanies(): Promise<void> {
+  try {
+    const teams = await getTeams(props.cid)
+    const uid = auth.user?.id
+    const ids = new Set<number>()
+    for (const team of teams) {
+      if (team.companyId != null && team.members.some((mm) => mm.userId === uid)) {
+        ids.add(team.companyId)
+      }
+    }
+    myCompanyIds.value = ids
+  } catch {
+    myCompanyIds.value = null // 未知：按放开处理，由后端最终校验
+  }
+}
+
 /** 当前用户是否可能代待确认方操作（无法判断时放开，由后端校验） */
 const canActForPending = computed(() => {
   const user = auth.user
@@ -152,7 +173,9 @@ const canActForPending = computed(() => {
   if (m.identity === 'COMP_SUPER_ADMIN') return true
   const companyId = pendingParty.value?.companyId
   if (companyId == null) return true
-  return m.managedCompanies.includes(companyId)
+  if (m.identity === 'ADMIN') return m.managedCompanies.includes(companyId)
+  // 参赛代表：本队公司
+  return myCompanyIds.value === null || myCompanyIds.value.has(companyId)
 })
 
 // ---------- 状态操作 ----------
@@ -313,6 +336,7 @@ function submitChanges(): void {
 onMounted(() => {
   void load()
   void loadEffects()
+  void loadMyCompanies()
 })
 
 watch(
