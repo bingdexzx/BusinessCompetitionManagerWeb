@@ -376,18 +376,100 @@ def main():
     else:
         check('电子奖牌在线展示（D12）', False, '无奖牌记录')
 
-    # ====== 数据管理（基础数据改由系统维护，导入方式变更） ======
+    # ====== 数据管理（基础数据改由系统维护，导入方式变更；字段照旧项目口径） ======
     print('\n== 数据管理（基础数据维护） ==')
     resp = post(client, f'/api/competitions/{cid}/basedata/fuels',
-                {'code': 'F-TEST', 'name': '测试燃料', 'unit': 'L', 'price': 7.5}, admin, raw=True)
-    check('数据管理新增（燃料）', resp.status_code == 201, str(resp.status_code))
-    rows = client.get(f'/api/competitions/{cid}/basedata/fuels?q=F-TEST', **admin).json()
-    target = next((r for r in rows.get('items', []) if r.get('code') == 'F-TEST'), None)
+                {'name': '测试燃料', 'pricePerLiter': 7.5}, admin, raw=True)
+    body = resp.json()
+    check('数据管理新增（燃料 name+pricePerLiter）', resp.status_code == 201
+          and body.get('pricePerLiter') == 7.5, f"{resp.status_code} {str(body)[:120]}")
+    rows = client.get(f'/api/competitions/{cid}/basedata/fuels?q=测试燃料', **admin).json()
+    target = next((r for r in rows.get('items', []) if r.get('name') == '测试燃料'), None)
     check('数据管理列表检索', target is not None, str(rows.get('total')))
     resp = client.delete(f"/api/competitions/{cid}/basedata/fuels/{target['id']}", **admin)
     check('数据管理删除', resp.status_code == 200, str(resp.status_code))
+
+    # products 带 parts relation（关联内嵌 upsert by id + 整体替换）
+    resp = post(client, f'/api/competitions/{cid}/basedata/parts',
+                {'name': '测试零件'}, admin, raw=True)
+    check('数据管理新增（零件）', resp.status_code == 201, str(resp.status_code))
+    part_id = resp.json().get('id')
+    resp = post(client, f'/api/competitions/{cid}/basedata/products',
+                {'name': '测试产品',
+                 'relations': {'parts': [{'partId': part_id, 'ratio': 2.0}]}}, admin, raw=True)
+    body = resp.json()
+    parts_rel = (body.get('relations') or {}).get('parts') or [{}]
+    check('产品新增（含 parts relation）', resp.status_code == 201
+          and parts_rel[0].get('partId') == part_id
+          and parts_rel[0].get('partName') == '测试零件' and parts_rel[0].get('ratio') == 2.0,
+          str(body)[:200])
+    product_id = body.get('id')
+    impact = client.get(f'/api/competitions/{cid}/basedata/parts/{part_id}/impact', **admin).json()
+    check('删除影响检查（零件被产品引用 → removable=false）',
+          impact.get('removable') is False
+          and any(r.get('kind') == 'product_parts' for r in impact.get('refs', [])),
+          str(impact)[:200])
+    resp = client.patch(f'/api/competitions/{cid}/basedata/products/{product_id}',
+                        data=json.dumps({'name': '测试产品改',
+                                         'relations': {'parts': [{'partId': part_id, 'ratio': 3.5}]}}),
+                        content_type='application/json', **admin)
+    body = resp.json()
+    parts_rel = (body.get('relations') or {}).get('parts') or [{}]
+    check('产品 PATCH（relations 整体替换改配比）', resp.status_code == 200
+          and body.get('name') == '测试产品改' and parts_rel[0].get('ratio') == 3.5,
+          str(body)[:200])
+    resp = client.patch(f'/api/competitions/{cid}/basedata/products/{product_id}',
+                        data=json.dumps({'relations': {'parts': []}}),
+                        content_type='application/json', **admin)
+    check('产品 relations 整体替换（清空）', resp.status_code == 200
+          and resp.json().get('relations', {}).get('parts') == [], str(resp.json())[:200])
+
+    # vehicles.pathTypes / tech_nodes.prerequisites / map_nodes 行字段（前端契约依赖项）
+    resp = post(client, f'/api/competitions/{cid}/basedata/path_types',
+                {'name': '测试路径类型'}, admin, raw=True)
+    path_type_id = resp.json().get('id')
     resp = post(client, f'/api/competitions/{cid}/basedata/fuels',
-                {'code': 'X1', 'name': 'x'}, p1, raw=True)
+                {'name': '载具燃料', 'pricePerLiter': 6}, admin, raw=True)
+    fuel_id = resp.json().get('id')
+    resp = post(client, f'/api/competitions/{cid}/basedata/vehicles',
+                {'name': '测试载具', 'fuelId': fuel_id, 'fuelConsumptionPerKm': 0.3,
+                 'price': 100, 'carbonEmission': 1.2,
+                 'relations': {'pathTypes': [{'pathTypeId': path_type_id}]}}, admin, raw=True)
+    body = resp.json()
+    pt_rel = (body.get('relations') or {}).get('pathTypes') or [{}]
+    check('载具新增（含 pathTypes relation）', resp.status_code == 201
+          and pt_rel[0].get('pathTypeId') == path_type_id
+          and pt_rel[0].get('pathTypeName') == '测试路径类型', str(body)[:200])
+    resp = post(client, f'/api/competitions/{cid}/basedata/tech_nodes',
+                {'name': '前置科技', 'tier': 1, 'researchCost': 100}, admin, raw=True)
+    pre_id = resp.json().get('id')
+    resp = post(client, f'/api/competitions/{cid}/basedata/tech_nodes',
+                {'name': '后续科技', 'tier': 2,
+                 'relations': {'prerequisites': [{'prerequisiteId': pre_id}]}}, admin, raw=True)
+    body = resp.json()
+    pre_rel = (body.get('relations') or {}).get('prerequisites') or [{}]
+    check('科技节点（含 prerequisites relation）', resp.status_code == 201
+          and pre_rel[0].get('prerequisiteId') == pre_id
+          and pre_rel[0].get('prerequisiteName') == '前置科技', str(body)[:200])
+    resp = post(client, f'/api/competitions/{cid}/basedata/map_node_types',
+                {'name': '测试节点类型'}, admin, raw=True)
+    node_type_id = resp.json().get('id')
+    resp = post(client, f'/api/competitions/{cid}/basedata/map_nodes',
+                {'name': '测试节点', 'region': '华东', 'nodeTypeId': node_type_id,
+                 'x': 1.5, 'y': 2.5}, admin, raw=True)
+    body = resp.json()
+    check('地图节点新增（行字段照旧口径）', resp.status_code == 201
+          and body.get('region') == '华东' and body.get('nodeTypeId') == node_type_id
+          and body.get('x') == 1.5 and body.get('y') == 2.5, str(body)[:200])
+    rows = client.get(f'/api/competitions/{cid}/basedata/map_nodes?page=1&pageSize=500',
+                      **admin).json()
+    node_row = next((r for r in rows.get('items', []) if r.get('name') == '测试节点'), None)
+    check('地图节点列表（{id,name,region,x,y} 供原料产地编辑）',
+          node_row is not None and all(k in node_row for k in ('id', 'name', 'region', 'x', 'y')),
+          str(node_row)[:200])
+
+    resp = post(client, f'/api/competitions/{cid}/basedata/fuels',
+                {'name': 'x', 'pricePerLiter': 1}, p1, raw=True)
     check('数据管理写入仅超管', resp.status_code == 403, str(resp.status_code))
 
     # ====== 股票管理（新增股票/资金账户，旧系统能力补齐） ======

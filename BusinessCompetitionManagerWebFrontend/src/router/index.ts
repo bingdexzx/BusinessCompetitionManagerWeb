@@ -74,7 +74,13 @@ const router = createRouter({
     {
       path: '/competitions/:cid/basedata',
       name: 'competition-basedata',
-      component: () => import('../views/BasedataView.vue'),
+      component: () => import('../views/data-management/DataManagementView.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/maps',
+      name: 'competition-maps',
+      component: () => import('../views/data-management/MapsManager.vue'),
       props: true,
     },
     {

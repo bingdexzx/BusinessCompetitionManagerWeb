@@ -507,8 +507,10 @@ def resolve_field_value_or_default(
 
 
 # 区域总览数据源候选（旧系统 apps.regions.views._get_map_overview）。
-# 多库适配点：新系统暂无「区域总览卡片」服务，找不到可调用入口时回退空映射
-# （effective_* 直接回落 stock 静态值，与旧系统「区域服务不可用」分支语义一致）。
+# 旧 MapRegion 结构已改为 MapNode/MapEdge 口径：首选 basedata.services 的兼容实现
+# （按 map_nodes/map_edges 聚合区域；旧「区域总览卡片」概念不存在时 cards 为空）；
+# 找不到可调用入口时回退空映射（effective_* 直接回落 stock 静态值，与旧系统
+# 「区域服务不可用」分支语义一致）。
 _MAP_OVERVIEW_SOURCES = (
     "apps.competition.basedata.services.get_map_overview",
     "apps.competition.basedata.views.get_map_overview",

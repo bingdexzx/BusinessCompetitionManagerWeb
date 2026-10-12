@@ -73,16 +73,35 @@
 
 ### 6.1 基础数据管理（数据管理页；基础数据不再随比赛包导入）
 
+统一通用契约（字段照旧项目口径，camelCase=旧字段名）：
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/competitions/{cid}/basedata/{table}` | 列表 `{items, total, page, pageSize}`，`?q=` 过滤 code/name |
-| POST | `/competitions/{cid}/basedata/{table}` | 新增（超管）`{code*, name*, ...类型字段}` |
-| PATCH | `.../basedata/{table}/{id}` | 编辑（超管） |
-| DELETE | `.../basedata/{table}/{id}` | 删除（超管） |
+| GET | `/competitions/{cid}/basedata/{table}?page&pageSize&q` | 列表 `{items, total, page, pageSize}`，`q` 过滤名称（map_edges 按起终点名/ID） |
+| POST | `/api/competitions/{cid}/basedata/{table}` | 新增（超管）→ 行；body 可带 `relations` 嵌套数组 |
+| GET | `/api/competitions/{cid}/basedata/{table}/{id}` | 行（含 `relations`） |
+| PATCH | `.../basedata/{table}/{id}` | 编辑（超管）→ 行；body 可带 `relations` 整体替换 |
+| DELETE | `.../basedata/{table}/{id}` | 删除（超管）→ `{ok:true}` |
+| GET | `.../basedata/{table}/{id}/impact` | 删除影响 `{removable, refs:[{kind,label,count}]}` |
 
-`table` ∈ `fuels / warehouses / vehicles / maps / materials / products / parts / infrastructures / tech_trees / production_lines`；
-行字段 camelCase（如 `energyValue`、`loadCapacity`、`basePrice`、`adjacentCodes`…），通用列 `code/name/notes/meta`。
-权限：查看=本比赛成员；写入=系统超管或本比赛超管。
+`table` ∈ `fuels / warehouses / vehicles / materials / products / parts / infrastructures /
+tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_edges`。
+
+- 行字段 camelCase 照旧模型字段名（`pricePerLiter`、`fuelConsumptionPerKm`、
+  `maxMaterialCargo`/`maxPartCargo`/`maxProductCargo`、`carbonEmissionCoefficient`、
+  `nodePrices`（JSON 字符串）、`activationPrice`、`laborCount`、`maxPerYear`、
+  `employmentRateBonus`…），通用列 `id/name/createdAt/updatedAt`；金额 Decimal(60,4)。
+- **关联内嵌**：行/列表项带 `relations` 对象（`products → {parts:[{id,partId,partName,ratio}],
+  techRequirements:[{id,techNodeId,techNodeName}]}`；`parts → {materials:[{id,materialId,
+  materialName,ratio}], techRequirements:[...]}`；`tech_nodes → {prerequisites:[{id,
+  prerequisiteId,prerequisiteName}]}`；`vehicles → {pathTypes:[{id,pathTypeId,pathTypeName}]}`；
+  `map_nodes → {edgesCount}`）。POST/PATCH body 接受同名 `relations` 嵌套数组（平铺同名数组
+  为兼容别名）**整体替换**：带 `id` 更新、无 `id` 新增、缺失删除（upsert by id）。
+- **impact**：删除影响检查（旧语义）。`refs` 统计引用/级联行数；`removable=false` 表示存在
+  **外部引用**（删除会破坏其他主数据，如 fuel 被 vehicles 引用、part 被 products 引用、
+  map_node 被 map_edges 引用）→ 前端提示并拒绝删除；自身级联子配置计入 `refs`（展示
+  「将级联删除」）但不阻塞。
+- 权限：查看=本比赛成员；写入=系统超管或本比赛超管；错误响应 `{code,message,details}`（中文）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|

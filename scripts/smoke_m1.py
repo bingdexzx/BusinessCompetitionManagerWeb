@@ -108,7 +108,7 @@ def main():
 
     # ---------------------------------------------------------- 3. 比赛库数据落地
     tables = tables_in(db_name)
-    check('比赛库含 basedata 表', 'basedata_fuel' in tables and 'basedata_productionline' in tables)
+    check('比赛库含 basedata 表（旧字段口径表名）', 'fuels' in tables and 'production_lines' in tables)
 
     # 比赛状态自动推进
     resp = client.get(f'/api/competitions/{cid}', **auth)

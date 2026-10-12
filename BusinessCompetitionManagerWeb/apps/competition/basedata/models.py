@@ -1,143 +1,619 @@
-"""基础数据 10 类（§6.2 basedata_*、《比赛包格式规范》§5）。
+"""基础数据模型（照旧项目字段结构重写）。
 
-由比赛包表格导入到各比赛库；**扩展列**原样保留在 ``meta`` JSON（不丢数据）。
+语义来源：旧系统 backend/apps/{fuels,warehouses,vehicles,maps,materials,products,
+parts,infrastructures,tech_tree,production_lines}/models.py —— 表名（db_table）、
+字段名、choices、金额 Decimal(60,4) 口径、唯一约束、关联关系逐项照搬。
+
+多库适配（§5.2，与 stock 同口径）：
+- **不建跨库外键**：旧模型的 competition 外键（指向全局库 Competition）整体去掉
+  （一个比赛一个库 comp_<id>，归属由库本身决定）；如出现指向公司/用户的引用一律
+  BigIntegerField 存整数 ID（本域模型当前没有此类引用）；
+- **同库 FK 保留**：本 app 内部关联（Vehicle.fuel、MapEdge.from_node、
+  ProductPart、PartMaterial、TechPrerequisite 等）全部照旧用外键；
+- **同步用途**：主表保留 created_at/updated_at，并按旧表名建
+  ``idx_<table>_updated`` 索引（delta 同步按 updated_at keyset 拉取）。
 """
 
 from django.db import models
 
 
-class BaseDataRow(models.Model):
-    """基础数据公共行：code 唯一 + 名称 + 备注 + 扩展列。"""
-
-    code = models.CharField('编码', max_length=64, unique=True)
-    name = models.CharField('名称', max_length=120)
-    notes = models.TextField('备注', blank=True)
-    meta = models.JSONField('扩展列', default=dict, blank=True)
-
-    class Meta:
-        abstract = True
-
-    def __str__(self):
-        return f'{self.code} {self.name}'
+# ---------------------------------------------------------------- 燃料
 
 
-class Fuel(BaseDataRow):
-    """燃料"""
+class Fuel(models.Model):
+    """燃料（比赛级基础数据，db_table=fuels）。"""
 
-    unit = models.CharField('单位', max_length=32, blank=True)
-    energy_value = models.FloatField('热值', null=True, blank=True)
-    price = models.FloatField('单价', null=True, blank=True)
+    name = models.CharField('名称', max_length=255)
+    # 燃料单价：玩家购买时累加到现金支出，浮点累计会漂。改 Decimal（旧口径）。
+    price_per_liter = models.DecimalField(
+        '燃料单价', max_digits=60, decimal_places=4,
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '燃料'
         verbose_name_plural = '燃料'
+        db_table = 'fuels'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_fuels_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_fuels_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class Warehouse(BaseDataRow):
-    """仓库"""
+# ---------------------------------------------------------------- 仓库
 
-    capacity = models.FloatField('容量', null=True, blank=True)
-    region_code = models.CharField('所在地区(REF:maps)', max_length=64, blank=True)
+
+class Warehouse(models.Model):
+    """仓库（比赛级基础数据，db_table=warehouses）。"""
+
+    TYPE_CHOICES = [
+        ("MATERIAL", "MATERIAL"),
+        ("PART", "PART"),
+        ("PRODUCT", "PRODUCT"),
+        ("FUEL", "FUEL"),
+    ]
+
+    name = models.CharField('名称', max_length=255)
+    # 容量 + 价格：玩家购买场景，必须 Decimal（旧口径）。
+    capacity = models.DecimalField('容量', max_digits=60, decimal_places=4)
+    price = models.DecimalField('价格', max_digits=60, decimal_places=4)
+    type = models.CharField('仓库类型', max_length=16, choices=TYPE_CHOICES)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '仓库'
         verbose_name_plural = '仓库'
+        db_table = 'warehouses'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_warehouses_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_warehouses_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class Vehicle(BaseDataRow):
-    """载具"""
+# ---------------------------------------------------------------- 载具
 
-    vehicle_type = models.CharField('载具类型', max_length=64, blank=True)
-    load_capacity = models.FloatField('载重', null=True, blank=True)
-    speed = models.FloatField('速度', null=True, blank=True)
-    fuel_code = models.CharField('燃料(REF:fuels)', max_length=64, blank=True)
-    fuel_consumption = models.FloatField('油耗', null=True, blank=True)
+
+class Vehicle(models.Model):
+    """载具主数据（db_table=vehicles）。
+
+    fuel 使用 PROTECT：被引用的燃料不允许直接删除（旧口径）。
+    """
+
+    name = models.CharField('名称', max_length=128)
+    fuel = models.ForeignKey(
+        Fuel,
+        verbose_name='燃料',
+        on_delete=models.PROTECT,
+        related_name='vehicles',
+    )
+    # 油耗/载货：均为比率/容量配置，可保留 Float（旧口径）
+    fuel_consumption_per_km = models.FloatField('每公里油耗')
+    # 原 max_cargo 拆分为三类载货量（旧 D16）：原料、零件、产品各限独立上限。
+    max_material_cargo = models.FloatField('原料载货上限', default=0)
+    max_part_cargo = models.FloatField('零件载货上限', default=0)
+    max_product_cargo = models.FloatField('产品载货上限', default=0)
+    # 价格：玩家购买场景，必须 Decimal
+    price = models.DecimalField('价格', max_digits=60, decimal_places=4)
+    # 碳排：派生系数，Float 足够
+    carbon_emission = models.FloatField('碳排系数')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '载具'
         verbose_name_plural = '载具'
+        db_table = 'vehicles'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_vehicles_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_vehicles_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class MapRegion(BaseDataRow):
-    """地图（地区）"""
+# ---------------------------------------------------------------- 地图
 
-    region_type = models.CharField('地区类型', max_length=64, blank=True)
-    adjacent_codes = models.CharField('相邻地区', max_length=500, blank=True)  # 逗号分隔 code
-    distance = models.FloatField('距离', null=True, blank=True)
+
+class MapNodeType(models.Model):
+    """地图节点类型（db_table=map_node_types）。"""
+
+    name = models.CharField('名称', max_length=128)
+    description = models.TextField('描述', null=True, blank=True)
+    color = models.CharField('颜色', max_length=32, null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
-        verbose_name = '地图'
-        verbose_name_plural = '地图'
+        verbose_name = '地图节点类型'
+        verbose_name_plural = '地图节点类型'
+        db_table = 'map_node_types'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_map_node_types_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_map_node_types_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class Material(BaseDataRow):
-    """原料"""
+class PathType(models.Model):
+    """路径（道路）类型（db_table=path_types）。"""
 
-    unit = models.CharField('单位', max_length=32, blank=True)
-    base_price = models.FloatField('基础价格', null=True, blank=True)
+    name = models.CharField('名称', max_length=128)
+    description = models.TextField('描述', null=True, blank=True)
+    color = models.CharField('颜色', max_length=32, null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '路径类型'
+        verbose_name_plural = '路径类型'
+        db_table = 'path_types'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_path_types_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_path_types_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class MapNode(models.Model):
+    """地图节点（db_table=map_nodes）。"""
+
+    name = models.CharField('名称', max_length=128)
+    region = models.CharField('所属区域', max_length=128, default="")
+    node_type = models.ForeignKey(
+        MapNodeType,
+        verbose_name='节点类型',
+        on_delete=models.CASCADE,
+        related_name='nodes',
+    )
+    x = models.FloatField('横坐标', default=0)
+    y = models.FloatField('纵坐标', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '地图节点'
+        verbose_name_plural = '地图节点'
+        db_table = 'map_nodes'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_map_nodes_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_map_nodes_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class MapEdge(models.Model):
+    """地图边（db_table=map_edges）：起终点唯一。"""
+
+    from_node = models.ForeignKey(
+        MapNode,
+        verbose_name='起点节点',
+        on_delete=models.CASCADE,
+        related_name='edges_from',
+    )
+    to_node = models.ForeignKey(
+        MapNode,
+        verbose_name='终点节点',
+        on_delete=models.CASCADE,
+        related_name='edges_to',
+    )
+    distance = models.FloatField('距离', default=0)
+    path_type = models.ForeignKey(
+        PathType,
+        verbose_name='路径类型',
+        on_delete=models.CASCADE,
+        related_name='edges',
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '地图边'
+        verbose_name_plural = '地图边'
+        db_table = 'map_edges'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['from_node', 'to_node'], name='uniq_map_edges_from_to',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_map_edges_updated'),
+        ]
+
+    def __str__(self):
+        return f"边#{self.id}"
+
+
+# ---------------------------------------------------------------- 原料
+
+
+class Material(models.Model):
+    """原料（比赛级基础数据，db_table=materials）。"""
+
+    TYPE_CHOICES = [("NORMAL", "NORMAL"), ("SPECIAL", "SPECIAL")]
+
+    name = models.CharField('名称', max_length=255)
+    origin = models.CharField('产地', max_length=255)
+    carbon_emission_coefficient = models.FloatField('碳排系数')
+    # 按地点（地图节点）价格：JSON 字符串 { [mapNodeId]: 价格 }（旧口径 TextField）
+    node_prices = models.TextField('按地点价格', default="{}")
+    type = models.CharField('原料类型', max_length=16, default="NORMAL", choices=TYPE_CHOICES)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '原料'
         verbose_name_plural = '原料'
+        db_table = 'materials'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_materials_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_materials_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class Product(BaseDataRow):
-    """产品"""
+# ---------------------------------------------------------------- 产品
 
-    unit = models.CharField('单位', max_length=32, blank=True)
-    base_price = models.FloatField('基础价格', null=True, blank=True)
+
+class Product(models.Model):
+    """产品主数据（db_table=products）。"""
+
+    name = models.CharField('名称', max_length=128)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '产品'
         verbose_name_plural = '产品'
+        db_table = 'products'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_products_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_products_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class Part(BaseDataRow):
-    """零件"""
+class ProductPart(models.Model):
+    """产品-零件配比（db_table=product_parts）。product / part 任一删除均级联删除本关联行。"""
 
-    unit = models.CharField('单位', max_length=32, blank=True)
-    base_price = models.FloatField('基础价格', null=True, blank=True)
-    compatible_types = models.CharField('适配类型', max_length=500, blank=True)  # 逗号分隔
+    product = models.ForeignKey(
+        Product,
+        verbose_name='产品',
+        on_delete=models.CASCADE,
+        related_name='product_parts',
+    )
+    part = models.ForeignKey(
+        'Part',
+        verbose_name='零件',
+        on_delete=models.CASCADE,
+        related_name='product_parts',
+    )
+    ratio = models.FloatField('配比')
+
+    class Meta:
+        verbose_name = '产品零件配比'
+        verbose_name_plural = '产品零件配比'
+        db_table = 'product_parts'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['product', 'part'], name='uniq_product_parts_product_part',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.product_id}-{self.part_id}"
+
+
+class ProductTechRequirement(models.Model):
+    """产品-科技节点需求（db_table=product_tech_requirements）。"""
+
+    product = models.ForeignKey(
+        Product,
+        verbose_name='产品',
+        on_delete=models.CASCADE,
+        related_name='tech_requirements',
+    )
+    tech_node = models.ForeignKey(
+        'TechNode',
+        verbose_name='科技节点',
+        on_delete=models.CASCADE,
+        related_name='product_requirements',
+    )
+
+    class Meta:
+        verbose_name = '产品科技需求'
+        verbose_name_plural = '产品科技需求'
+        db_table = 'product_tech_requirements'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['product', 'tech_node'], name='uniq_product_tech_requirements',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.product_id}-{self.tech_node_id}"
+
+
+# ---------------------------------------------------------------- 零件
+
+
+class Part(models.Model):
+    """零件主数据（db_table=parts）。"""
+
+    name = models.CharField('名称', max_length=128)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '零件'
         verbose_name_plural = '零件'
+        db_table = 'parts'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_parts_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_parts_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class Infrastructure(BaseDataRow):
-    """基建"""
+class PartMaterial(models.Model):
+    """零件-原料配比（db_table=part_materials）。part / material 任一删除均级联删除本关联行。"""
 
-    infra_type = models.CharField('基建类型', max_length=64, blank=True)
-    build_cost = models.FloatField('建造成本', null=True, blank=True)
-    maintenance_cost = models.FloatField('维护成本', null=True, blank=True)
-    effect = models.JSONField('效果', default=dict, blank=True)
+    part = models.ForeignKey(
+        Part,
+        verbose_name='零件',
+        on_delete=models.CASCADE,
+        related_name='part_materials',
+    )
+    material = models.ForeignKey(
+        Material,
+        verbose_name='原料',
+        on_delete=models.CASCADE,
+        related_name='part_materials',
+    )
+    ratio = models.FloatField('配比')
+
+    class Meta:
+        verbose_name = '零件原料配比'
+        verbose_name_plural = '零件原料配比'
+        db_table = 'part_materials'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['part', 'material'], name='uniq_part_materials_part_material',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.part_id}-{self.material_id}"
+
+
+class PartTechRequirement(models.Model):
+    """零件-科技节点需求（db_table=part_tech_requirements）。"""
+
+    part = models.ForeignKey(
+        Part,
+        verbose_name='零件',
+        on_delete=models.CASCADE,
+        related_name='tech_requirements',
+    )
+    tech_node = models.ForeignKey(
+        'TechNode',
+        verbose_name='科技节点',
+        on_delete=models.CASCADE,
+        related_name='part_requirements',
+    )
+
+    class Meta:
+        verbose_name = '零件科技需求'
+        verbose_name_plural = '零件科技需求'
+        db_table = 'part_tech_requirements'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['part', 'tech_node'], name='uniq_part_tech_requirements',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.part_id}-{self.tech_node_id}"
+
+
+# ---------------------------------------------------------------- 基建
+
+
+class Infrastructure(models.Model):
+    """基建（比赛级基础数据，db_table=infrastructures）。"""
+
+    name = models.CharField('名称', max_length=255)
+    # footprint 是面积（可保留 Float：图形属性，非账目）
+    footprint = models.FloatField('占地面积')
+    # bonus 系列：百分比系数（0.05=+5%），用 Float 保留（区间运算，精度足）
+    employment_rate_bonus = models.FloatField('就业率加成', default=0)
+    population_bonus = models.FloatField('人口加成', default=0)
+    high_quality_population_bonus = models.FloatField('高质量人口加成', default=0)
+    # 价格类：必须 Decimal（玩家购买场景）
+    price = models.DecimalField('价格', max_digits=60, decimal_places=4)
+    happiness_index_bonus = models.FloatField('幸福指数加成', default=0)
+    per_capita_income_bonus = models.FloatField('人均收入加成', default=0)
+    carbon_reduction_bonus = models.FloatField('碳减加成', default=0)
+    activation_price = models.DecimalField('激活价格', max_digits=60, decimal_places=4)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '基建'
         verbose_name_plural = '基建'
+        db_table = 'infrastructures'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_infrastructures_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_infrastructures_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class TechNode(BaseDataRow):
-    """科技树"""
+# ---------------------------------------------------------------- 科技树
 
-    tier = models.PositiveSmallIntegerField('层级', null=True, blank=True)
-    prerequisite_codes = models.CharField('前置科技', max_length=500, blank=True)  # 逗号分隔
-    research_cost = models.FloatField('研发成本', null=True, blank=True)
-    effect = models.JSONField('效果', default=dict, blank=True)
+
+class TechNode(models.Model):
+    """科技节点（db_table=tech_nodes）。"""
+
+    name = models.CharField('名称', max_length=128)
+    description = models.TextField('描述', null=True, blank=True)
+    tier = models.IntegerField('层级', default=0)
+    research_cost = models.FloatField('研发成本', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
-        verbose_name = '科技树'
-        verbose_name_plural = '科技树'
+        verbose_name = '科技节点'
+        verbose_name_plural = '科技节点'
+        db_table = 'tech_nodes'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_tech_nodes_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_tech_nodes_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
-class ProductionLine(BaseDataRow):
-    """生产线"""
+class TechPrerequisite(models.Model):
+    """科技节点的前置依赖关系（自关联多对多中间表，db_table=tech_prerequisites）。
 
-    inputs = models.JSONField('投入', default=dict, blank=True)   # {"<物料code>": 数量}
-    outputs = models.JSONField('产出', default=dict, blank=True)  # {"<产品code>": 数量}
-    capacity = models.FloatField('产能', null=True, blank=True)
-    build_cost = models.FloatField('建造成本', null=True, blank=True)
+    - node → 前置依赖此节点的科技（本节点的前置配置）；
+    - prerequisite → 本节点依赖的前置科技。
+    """
+
+    node = models.ForeignKey(
+        TechNode,
+        verbose_name='科技节点',
+        on_delete=models.CASCADE,
+        related_name='prerequisites',
+    )
+    prerequisite = models.ForeignKey(
+        TechNode,
+        verbose_name='前置科技',
+        on_delete=models.CASCADE,
+        related_name='required_by',
+    )
+
+    class Meta:
+        verbose_name = '科技前置依赖'
+        verbose_name_plural = '科技前置依赖'
+        db_table = 'tech_prerequisites'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['node', 'prerequisite'], name='uniq_tech_prerequisites_node_pre',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.node_id}-{self.prerequisite_id}"
+
+
+# ---------------------------------------------------------------- 生产线
+
+
+class ProductionLine(models.Model):
+    """生产线（比赛级基础数据，db_table=production_lines）。"""
+
+    name = models.CharField('名称', max_length=255)
+    # 价格 + 年产能：玩家购买场景，必须 Decimal（旧口径）。
+    price = models.DecimalField('价格', max_digits=60, decimal_places=4)
+    labor_count = models.IntegerField('用工数')
+    max_per_year = models.DecimalField('年产能上限', max_digits=60, decimal_places=4)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '生产线'
         verbose_name_plural = '生产线'
+        db_table = 'production_lines'
+        constraints = [
+            models.UniqueConstraint(fields=['name'], name='uniq_production_lines_name'),
+        ]
+        indexes = [
+            models.Index(fields=['updated_at'], name='idx_production_lines_updated'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+# ---------------------------------------------------------------- 载具-路径类型关联
+
+
+class VehiclePathType(models.Model):
+    """载具-路径类型关联（db_table=vehicle_path_types）。
+
+    vehicle / path_type 任一删除均级联删除本关联行。
+    沿用旧仓库约定：自增 id 作主键 + unique_together 表达复合唯一约束。
+    """
+
+    vehicle = models.ForeignKey(
+        Vehicle,
+        verbose_name='载具',
+        on_delete=models.CASCADE,
+        related_name='vehicle_path_types',
+    )
+    path_type = models.ForeignKey(
+        PathType,
+        verbose_name='路径类型',
+        on_delete=models.CASCADE,
+        related_name='vehicles',
+    )
+
+    class Meta:
+        verbose_name = '载具路径类型'
+        verbose_name_plural = '载具路径类型'
+        db_table = 'vehicle_path_types'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['vehicle', 'path_type'], name='uniq_vehicle_path_types',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.vehicle_id}-{self.path_type_id}"
