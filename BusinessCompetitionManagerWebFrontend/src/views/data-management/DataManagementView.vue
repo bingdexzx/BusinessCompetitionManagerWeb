@@ -70,7 +70,7 @@ const NAV_ITEMS: NavItem[] = [
   { type: "materials", label: "原料", icon: Box },
   { type: "parts", label: "零件", icon: Setting },
   { type: "products", label: "产品", icon: Goods },
-  { type: "maps", label: "地图", icon: MapLocation, external: true },
+  { type: "maps", label: "地图", icon: MapLocation },
   { type: "infrastructures", label: "基建", icon: OfficeBuilding },
   { type: "tech-tree", label: "科技树", icon: DataLine },
   { type: "fuels", label: "燃料", icon: Watermelon },
@@ -112,6 +112,8 @@ const MANAGER_COMPONENTS: Record<string, Component> = {
     import("./InfrastructureManager.vue"),
   ),
   fuels: defineAsyncComponent(() => import("./FuelManager.vue")),
+  // 地图管理挂回枢纽页内切换（保持顶部数据域菜单常驻；不再跳独立页）
+  maps: defineAsyncComponent(() => import("./MapsManager.vue")),
 };
 
 const MANAGER_TYPES = Object.keys(MANAGER_COMPONENTS);
@@ -123,11 +125,6 @@ const managerComponent = computed(
 );
 
 function selectType(item: NavItem): void {
-  if (item.external) {
-    // 地图管理：跳转地图页（地图页路由 /competitions/:cid/maps，页内不引用地图组件，零耦合）
-    void router.push(`/competitions/${props.cid}/maps`);
-    return;
-  }
   if (item.type === type.value) return;
   void router.push({ path: route.path, query: { ...route.query, type: item.type } });
 }

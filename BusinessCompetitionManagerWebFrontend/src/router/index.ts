@@ -79,9 +79,11 @@ const router = createRouter({
     },
     {
       path: '/competitions/:cid/maps',
-      name: 'competition-maps',
-      component: () => import('../views/data-management/MapsManager.vue'),
-      props: true,
+      // 地图管理已挂回数据管理枢纽（页内切换，顶部数据域菜单常驻）；旧链接/深链转发
+      redirect: (to) => ({
+        path: `/competitions/${to.params.cid}/basedata`,
+        query: { type: 'maps' },
+      }),
     },
     {
       path: '/competitions/:cid/settlement',

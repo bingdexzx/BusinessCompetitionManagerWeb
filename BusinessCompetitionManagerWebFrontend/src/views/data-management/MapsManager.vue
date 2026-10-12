@@ -2061,9 +2061,10 @@ onBeforeUnmount(() => {
 .maps-manager {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 120px); /* 回退 */
-  height: calc(100dvh - 120px);
-  min-height: 600px;
+  /* 挂在数据管理枢纽内（顶部有数据域菜单条），高度按外壳扣除给足画布 */
+  height: calc(100vh - 210px); /* 回退 */
+  height: calc(100dvh - 210px);
+  min-height: 480px;
   background: #f5f7fa;
 }
 
