@@ -14,6 +14,7 @@ from apps.common import context as ctx
 from apps.common.authority import (
     can_act_for_company, can_manage_competition, user_company_ids,
 )
+from apps.common.labels import op_label
 from apps.competition.audit import services as audit_services
 from apps.competition.contracts import engine
 from apps.competition.contracts.engine import ContractError
@@ -151,7 +152,7 @@ def _timeline(contract: Contract) -> list:
     for log in FieldLog.objects.filter(contract=contract, event=FieldLog.Event.VALUE_CHANGE)[:200]:
         nodes.append({
             'type': 'FIELD', 'at': log.occurred_at.isoformat(),
-            'title': f'字段 {log.field_key} {log.op}',
+            'title': f'字段 {log.field_key} {op_label(log.op)}',  # 操作类型中文显示
             'actor': log.operator_username,
             'detail': f'{log.before_raw} → {log.after_raw}（{log.get_source_display()}）',
             'traceId': log.trace_id,
