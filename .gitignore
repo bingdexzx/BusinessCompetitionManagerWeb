@@ -16,3 +16,8 @@ BusinessCompetitionManagerWeb/media/
 # æ—¥å¿—ï¼ˆä»…æ ¹ç›®å½•ï¼Œå‹¿è¯¯ä¼¤ apps/global_/logs åº”ç”¨åŒ…ï¼‰
 /logs/
 *.log
+
+# Ã°ÑÌ/Ñ¹²âÁÙÊ±²úÎï
+gipfel_full_*/
+gipfel_m1_*/
+
