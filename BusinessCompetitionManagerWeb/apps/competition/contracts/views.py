@@ -28,11 +28,27 @@ def _error(message, code=400):
 # ---------------------------------------------------------------- 序列化
 
 
-def _party_data(contract: Contract) -> list:
+def _company_map_for(contracts) -> dict:
+    """批量解析合同涉及的公司（消 N+1：2000 合同列表原先每行每方各查一次公司）。"""
+    from apps.competition.companies.models import Company
+
+    ids = set()
+    for c in contracts:
+        for p in (c.parties or []):
+            if p.get('companyId'):
+                ids.add(p['companyId'])
+    if not ids:
+        return {}
+    return {co.id: co for co in Company.objects.filter(pk__in=ids)}
+
+
+def _party_data(contract: Contract, company_map=None) -> list:
     from apps.competition.companies.models import Company
     out = []
     for p in sorted(contract.parties, key=lambda x: x.get('confirmOrder', 0)):
-        company = Company.objects.filter(pk=p.get('companyId')).first()
+        company = (company_map or {}).get(p.get('companyId'))
+        if company is None and company_map is None:
+            company = Company.objects.filter(pk=p.get('companyId')).first()
         out.append({
             'role': p['role'],
             'companyId': p.get('companyId'),
@@ -44,7 +60,9 @@ def _party_data(contract: Contract) -> list:
     return out
 
 
-def _contract_data(contract: Contract, *, with_timeline=False) -> dict:
+def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
+                   company_map=None) -> dict:
+    """合同序列化；列表/增量走 thin=True（字段裁剪：不带 inputs 等大字段）。"""
     data = {
         'id': contract.id,
         'contractTypeKey': contract.contract_type_key,
@@ -53,8 +71,7 @@ def _contract_data(contract: Contract, *, with_timeline=False) -> dict:
         'status': contract.status,
         'statusLabel': contract.get_status_display(),
         'pendingPartyIndex': contract.pending_party_index,
-        'parties': _party_data(contract),
-        'inputs': contract.inputs,
+        'parties': _party_data(contract, company_map),
         'unifiedNumber': contract.unified_number,
         'numberedAt': contract.numbered_at.isoformat() if contract.numbered_at else None,
         'executedAt': contract.executed_at.isoformat() if contract.executed_at else None,
@@ -66,6 +83,8 @@ def _contract_data(contract: Contract, *, with_timeline=False) -> dict:
         'createdBy': contract.created_by,
         'createdAt': contract.created_at.isoformat(),
     }
+    if not thin or with_timeline:
+        data['inputs'] = contract.inputs
     if with_timeline:
         data['timeline'] = _timeline(contract)
     return data
@@ -133,17 +152,22 @@ def _timeline(contract: Contract) -> list:
 
 
 def _visible_contracts(request):
+    """可见性过滤（DB 侧 JSONB containment + GIN 索引 idx_contract_parties_gin）。
+
+    原实现把全表拉回 Python 过滤（2000+ 合同每请求全量读取），是「后期卡死」主因之一。
+    """
+    from django.db.models import Q
+
     ids = user_company_ids(request.user)
     qs = Contract.objects.all()
     if '*' in ids:
         return qs
     if not ids:
         return qs.none()
-    visible = [
-        c.id for c in qs.only('id', 'parties')
-        if any(p.get('companyId') in ids for p in (c.parties or []))
-    ]
-    return Contract.objects.filter(id__in=visible or [-1])
+    q = Q()
+    for company_id in sorted(ids):
+        q |= Q(parties__contains=[{'companyId': int(company_id)}])
+    return qs.filter(q)
 
 
 # ---------------------------------------------------------------- 合同实例
@@ -165,14 +189,36 @@ class ContractListCreateView(APIView):
                 contracts = contracts.filter(updated_at__gt=cursor)
             limit = min(int(request.query_params.get('limit', 500) or 500), 1000)
             now = timezone.now()
-            items = [_contract_data(c) for c in contracts.order_by('updated_at')[:limit]]
+            rows = list(contracts.order_by('updated_at')[:limit])
+            company_map = _company_map_for(rows)   # 批量解析公司（消 N+1）
+            items = [_contract_data(c, thin=True, company_map=company_map) for c in rows]
             return Response({
                 'items': items,
                 'serverTime': now.isoformat(),   # 下次增量游标（避免客户端时钟偏差）
-                'hasMore': len(items) == limit,
+                'hasMore': len(rows) == limit,
                 'mode': 'delta',
             })
-        return Response([_contract_data(c) for c in contracts[:500]])
+        # 全量列表：**服务端分页 + 字段裁剪 + 批量公司映射**（2000+ 合同必备）
+        page = max(int(request.query_params.get('page', 1) or 1), 1)
+        page_size = min(int(request.query_params.get('pageSize', 50) or 50), 200)
+        status_filter = request.query_params.get('status') or ''
+        keyword = (request.query_params.get('q') or '').strip()
+        if status_filter:
+            contracts = contracts.filter(status=status_filter)
+        if keyword:
+            from django.db.models import Q
+
+            contracts = contracts.filter(
+                Q(name__icontains=keyword) | Q(unified_number__icontains=keyword))
+        total = contracts.count()
+        rows = list(contracts.order_by('-updated_at')[(page - 1) * page_size: page * page_size])
+        company_map = _company_map_for(rows)
+        return Response({
+            'items': [_contract_data(c, thin=True, company_map=company_map) for c in rows],
+            'total': total,
+            'page': page,
+            'pageSize': page_size,
+        })
 
     def post(self, request, cid):
         """创建合同草稿（T1）；补录合同（isBackfill）进入超管审核（§3.4）。"""
@@ -213,7 +259,8 @@ class ContractDetailView(APIView):
 
     def get(self, request, cid, pk):
         contract = get_object_or_404(Contract, pk=pk)
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
 
 
 class ContractSubmitView(APIView):
@@ -228,7 +275,8 @@ class ContractSubmitView(APIView):
         except ContractError as exc:
             return _error(str(exc))
         audit_services.log_action('CONTRACT_SUBMIT', actor=request.user, target=str(contract.id))
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
 
 
 class ContractConfirmView(APIView):
@@ -249,7 +297,8 @@ class ContractConfirmView(APIView):
         except ContractError as exc:
             return _error(str(exc))
         audit_services.log_action('CONTRACT_CONFIRM', actor=request.user, target=str(contract.id))
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
 
 
 class ContractEffectsView(APIView):
@@ -286,7 +335,9 @@ class ContractRequestModifyView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_APPLY', actor=request.user,
                                   target=str(contract.id), payload={'reason': mod.reason})
-        return Response(_contract_data(contract, with_timeline=True), status=status.HTTP_201_CREATED)
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])),
+                        status=status.HTTP_201_CREATED)
 
 
 class ContractModifyReviewView(APIView):
@@ -306,7 +357,8 @@ class ContractModifyReviewView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_REVIEW', actor=request.user,
                                   target=str(contract.id), payload={'approve': approve})
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
 
 
 class ContractModifyOtherPartyView(APIView):
@@ -324,7 +376,8 @@ class ContractModifyOtherPartyView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_OTHER_PARTY', actor=request.user,
                                   target=str(contract.id), payload={'approve': approve})
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
 
 
 class ContractModifySubmitView(APIView):
@@ -343,7 +396,8 @@ class ContractModifySubmitView(APIView):
         audit_services.log_action('CONTRACT_MOD_SUBMIT', actor=request.user,
                                   target=str(contract.id),
                                   payload={'roundNo': contract.round_no})
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
 
 
 class ContractBackfillReviewView(APIView):
@@ -363,4 +417,5 @@ class ContractBackfillReviewView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_BACKFILL_REVIEW', actor=request.user,
                                   target=str(contract.id), payload={'approve': approve})
-        return Response(_contract_data(contract, with_timeline=True))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))

@@ -14,6 +14,7 @@ import type {
   Contract,
   ContractEffect,
   ContractSyncPage,
+  ContractListPage,
   ContractType,
   CreateCompetitionPayload,
   CreateContractPayload,
@@ -281,8 +282,14 @@ export function getPlugins(kind?: PluginKind): Promise<PluginRecord[]> {
 
 // ---------- 合同（M3/M4） ----------
 
-export function getContracts(cid: number | string): Promise<Contract[]> {
-  return http.get<Contract[]>(`/competitions/${cid}/contracts`)
+/** 合同列表（服务端分页 + 薄字段；2000+ 合同不可整表拉取） */
+export function getContracts(
+  cid: number | string,
+  params: { page?: number; pageSize?: number; status?: string; q?: string } = {},
+): Promise<ContractListPage> {
+  return http.get<ContractListPage>(`/competitions/${cid}/contracts`, {
+    query: { page: params.page, pageSize: params.pageSize, status: params.status, q: params.q },
+  })
 }
 
 /** 合同增量同步：只拉 updatedAfter 之后变更的合同（游标用上次响应的 serverTime） */

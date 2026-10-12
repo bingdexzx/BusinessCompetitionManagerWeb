@@ -101,3 +101,8 @@ metadata:
 60 账号 × 800 股票 × 30 轮 K 线（2.4 万行）+ 持仓/委托，修复后稳态：
 增量同步 P50=58ms、行情分页 P50=73ms、持仓 P50=40ms，0 错误；真实节奏负载 47 QPS vs 容量 95 QPS。
 完整过程与数字见 references/case-study.md。
+
+**案例 2（合同域）**：2000+ 合同 × 50 管理员，列表 P50 6,991ms → **34ms（≈205×）**——
+头号根因是**列表 N+1**（每合同每方查一次公司）+ JSON 可见性 Python 过滤 + 无分页；
+修复 = 批量公司映射 + `parties__contains`(JSONB)+GIN 索引下推 + 服务端分页/字段裁剪。
+详见 references/case-study-contracts.md（含"列表 SQL 条数体检"等教训）。

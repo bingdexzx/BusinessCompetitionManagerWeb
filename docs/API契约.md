@@ -56,7 +56,7 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/competitions/{cid}/contracts` | 合同列表（按可操作公司过滤）；**增量同步**：`?updatedAfter=<ISO>` 返回 `{items, serverTime, hasMore, mode:'delta'}`，游标用上次的 `serverTime` |
+| GET | `/competitions/{cid}/contracts` | 合同列表（**服务端分页 + 薄字段**）：`?page&pageSize&status&q` → `{items, total, page, pageSize}`；**增量同步**：`?updatedAfter=<ISO>` → `{items, serverTime, hasMore, mode:'delta'}`（游标用上次 `serverTime`）。可见性：系统/比赛超管全量，其余按可操作公司过滤（JSONB containment + GIN 索引） |
 | POST | `/competitions/{cid}/contracts` | 创建草稿 `{contractTypeKey, pluginVersion?, name?, parties[{role, companyId}], inputs{}, isBackfill?, fiscalYearId?}` |
 | GET | `/competitions/{cid}/contracts/{id}` | 详情 **含 timeline**（§14.6 确认时间线：谁/何时/设备/IP） |
 | POST | `.../contracts/{id}/submit` | T2 提交（运行 check，保证创建即能执行） |

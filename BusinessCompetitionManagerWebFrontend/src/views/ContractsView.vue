@@ -32,26 +32,18 @@ function statusMeta(status: string): { label: string; type: TagType } {
 
 const STATUS_OPTIONS = Object.keys(STATUS_META)
 
-// ---------- 合同列表（增量同步） ----------
+// ---------- 合同列表（服务端分页 + 增量同步） ----------
 const contracts = ref<Contract[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
 const keyword = ref('')
+/** 服务端分页（2000+ 合同不能整表拉取） */
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(50)
 /** 增量游标（上次同步的服务端时间） */
 const lastSyncAt = ref('1970-01-01T00:00:00Z')
 const syncing = ref(false)
-
-const filteredContracts = computed<Contract[]>(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return contracts.value.filter((c) => {
-    if (statusFilter.value && c.status !== statusFilter.value) return false
-    if (kw) {
-      const hay = `${c.name ?? ''} ${c.unifiedNumber ?? ''}`.toLowerCase()
-      if (!hay.includes(kw)) return false
-    }
-    return true
-  })
-})
 
 /** 参与方摘要：role:companyName */
 function partiesSummary(row: Contract): string {
@@ -59,27 +51,47 @@ function partiesSummary(row: Contract): string {
   return row.parties.map((p) => `${p.role}:${p.companyName || '—'}`).join('、')
 }
 
-/** 合同同步：首次全量，此后按 updatedAfter 增量合并（新通知触发只拉变更） */
-async function loadContracts(full = false): Promise<void> {
-  syncing.value = true
-  if (full) loading.value = true
+/** 加载指定页（服务端分页 + 状态/关键字过滤，薄字段响应） */
+async function loadPage(nextPage = page.value): Promise<void> {
+  loading.value = true
   try {
-    const cursor = full ? '1970-01-01T00:00:00Z' : lastSyncAt.value
-    const page = await syncContracts(props.cid, cursor)
+    const result = await getContracts(props.cid, {
+      page: nextPage,
+      pageSize: pageSize.value,
+      status: statusFilter.value || undefined,
+      q: keyword.value.trim() || undefined,
+    })
+    contracts.value = result.items
+    total.value = result.total
+    page.value = result.page
+    lastSyncAt.value = new Date().toISOString()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '加载失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+/** 增量同步：按 updatedAfter 只拉变更，按 id 幂等合并进当前页（WS 信号/同步按钮触发） */
+async function loadContracts(full = false): Promise<void> {
+  if (full) {
+    await loadPage(1) // 全量=重拉当前页（服务端分页）
+    return
+  }
+  syncing.value = true
+  try {
+    const result = await syncContracts(props.cid, lastSyncAt.value)
     const map = new Map<number, Contract>()
-    if (!full) {
-      for (const c of contracts.value) map.set(c.id, c)
-    }
-    for (const item of page.items) map.set(item.id, item) // 按 id 合并（同 id 取新）
+    for (const c of contracts.value) map.set(c.id, c)
+    for (const item of result.items) map.set(item.id, item) // 同 id 取新（幂等）
     contracts.value = [...map.values()].sort((a, b) =>
       (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
     )
-    lastSyncAt.value = page.serverTime // 用服务端时间做游标，规避客户端时钟偏差
-    if (page.hasMore) await loadContracts() // 还有更多变更则继续拉
+    lastSyncAt.value = result.serverTime // 服务端时间做游标，规避客户端时钟偏差
+    if (result.hasMore) await loadContracts() // 还有更多变更则续拉
   } catch (e) {
-    // 增量失败回退全量
     try {
-      contracts.value = await getContracts(props.cid)
+      await loadPage(page.value) // 增量失败回退当前页重拉
       lastSyncAt.value = new Date().toISOString()
     } catch {
       ElMessage.error(e instanceof Error ? e.message : '同步失败')
@@ -88,6 +100,21 @@ async function loadContracts(full = false): Promise<void> {
     syncing.value = false
     loading.value = false
   }
+}
+
+/** 过滤条件变化 → 回第 1 页（关键字防抖 300ms） */
+let keywordTimer: ReturnType<typeof setTimeout> | null = null
+watch(statusFilter, () => void loadPage(1))
+watch(keyword, () => {
+  if (keywordTimer) clearTimeout(keywordTimer)
+  keywordTimer = setTimeout(() => void loadPage(1), 300)
+})
+function onPageChange(next: number): void {
+  void loadPage(next)
+}
+function onSizeChange(size: number): void {
+  pageSize.value = size
+  void loadPage(1)
 }
 
 /** WebSocket 推送到达时增量同步（合同相关通知才触发） */
@@ -270,7 +297,7 @@ watch(
 
     <el-table
       v-loading="loading"
-      :data="filteredContracts"
+      :data="contracts"
       border
       stripe
       class="clickable-table"
@@ -318,6 +345,19 @@ watch(
         <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
     </el-table>
+
+    <!-- 服务端分页（2000+ 合同只渲染当前页 50 行） -->
+    <el-pagination
+      class="contracts-pager"
+      background
+      layout="total, sizes, prev, pager, next"
+      :total="total"
+      :current-page="page"
+      :page-size="pageSize"
+      :page-sizes="[20, 50, 100]"
+      @current-change="onPageChange"
+      @size-change="onSizeChange"
+    />
 
     <!-- 创建合同 -->
     <el-dialog v-model="showCreate" title="创建合同" width="640px" append-to-body>

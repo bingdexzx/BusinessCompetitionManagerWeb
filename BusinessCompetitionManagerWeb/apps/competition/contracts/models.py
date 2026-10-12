@@ -8,6 +8,7 @@
 业务引擎（M3/M4）在 plugins_runtime + ledger 中实现；本模块先落数据模型。
 """
 
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 
 
@@ -56,6 +57,9 @@ class Contract(models.Model):
             # 增量同步（按 updated_at 拉取变更）+ 状态列表组合查询
             models.Index(fields=['updated_at'], name='idx_contract_updated_at'),
             models.Index(fields=['status', 'updated_at'], name='idx_contract_status_updated'),
+            # 可见性过滤（JSONB containment：parties @> [{"companyId": N}]），2000+ 合同必备
+            GinIndex(fields=['parties'], name='idx_contract_parties_gin',
+                     opclasses=['jsonb_path_ops']),
         ]
 
     def __str__(self):

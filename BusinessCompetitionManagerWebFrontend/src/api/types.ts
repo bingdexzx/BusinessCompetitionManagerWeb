@@ -334,6 +334,13 @@ export interface ContractEffect {
   createdAt: string
 }
 
+export interface ContractListPage {
+  items: Contract[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 export interface ContractSyncPage {
   items: Contract[]
   /** 服务端时间（下次增量游标，避免客户端时钟偏差） */
