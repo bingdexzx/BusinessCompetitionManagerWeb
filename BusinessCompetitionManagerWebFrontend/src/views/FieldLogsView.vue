@@ -7,6 +7,7 @@ import { exportFieldLogs, getFieldLogs } from '@/api'
 import type { FieldLogItem, FieldLogQuery } from '@/api/types'
 import { formatDateTime, toDisplay, truncate } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
+import { opLabel } from '@/utils/fieldOps'
 
 const props = defineProps<{ cid: string }>()
 
@@ -239,7 +240,7 @@ onMounted(() => void load())
         </el-table-column>
         <el-table-column prop="op" label="操作" width="80">
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ row.op }}</el-tag>
+            <el-tag size="small" effect="plain">{{ opLabel(row.op) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="变更（前 → 后）" min-width="220" show-overflow-tooltip>

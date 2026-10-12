@@ -17,6 +17,7 @@ import {
 } from '@/api'
 import type { Contract, ContractCheck, ContractEffect, ContractLedger, ContractParty, TimelineNode } from '@/api/types'
 import { formatDateTime, toDisplay } from '@/utils/format'
+import { opLabel } from '@/utils/fieldOps'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications } from '@/composables/useNotifications'
 import { errorMessage } from '@/utils/errors'
@@ -669,7 +670,7 @@ function goBack(): void {
         <el-table-column prop="fieldKey" label="字段" min-width="140" />
         <el-table-column prop="op" label="操作" width="90" align="center">
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ row.op }}</el-tag>
+            <el-tag size="small" effect="plain">{{ opLabel(row.op) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="值" min-width="110">
@@ -736,7 +737,7 @@ function goBack(): void {
             </template>
           </el-table-column>
           <el-table-column label="效果" width="120">
-            <template #default="{ row }">{{ row.op }} {{ toDisplay(row.value) }}</template>
+            <template #default="{ row }">{{ opLabel(row.op) }} {{ toDisplay(row.value) }}</template>
           </el-table-column>
           <el-table-column label="重演（当前账目）" min-width="170">
             <template #default="{ row }">
