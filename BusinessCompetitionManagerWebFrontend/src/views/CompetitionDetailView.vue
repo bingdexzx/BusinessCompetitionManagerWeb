@@ -197,7 +197,28 @@ const packages = ref<PackageRecord[]>([])
 const packagesLoading = ref(false)
 
 function handleFileChange(file: UploadFile): void {
-  uploadFile.value = file.raw ?? null
+  const raw = file.raw ?? null
+  if (raw && !raw.name.toLowerCase().endsWith('.zip')) {
+    ElMessage.warning('仅支持 .zip 比赛包')
+    uploadFile.value = null
+    return
+  }
+  uploadFile.value = raw
+}
+
+/** limit=1 时再选文件触发的是 on-exceed（不是 on-change）：这里直接替换为新文件 */
+function handleFileExceed(files: File[]): void {
+  const raw = files[0] ?? null
+  if (raw && !raw.name.toLowerCase().endsWith('.zip')) {
+    ElMessage.warning('仅支持 .zip 比赛包')
+    return
+  }
+  uploadFile.value = raw
+  if (raw) ElMessage.info(`已选择：${raw.name}`)
+}
+
+function handleFileRemove(): void {
+  uploadFile.value = null
 }
 
 async function doImport(): Promise<void> {
@@ -551,7 +572,8 @@ onMounted(() => {
             :limit="1"
             :auto-upload="false"
             :on-change="handleFileChange"
-            :on-remove="() => (uploadFile = null)"
+            :on-remove="handleFileRemove"
+            :on-exceed="handleFileExceed"
           >
             <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
             <div class="el-upload__text">将比赛包 .zip 拖到此处，或<em>点击选择</em></div>
@@ -563,11 +585,12 @@ onMounted(() => {
             <el-button
               type="primary"
               :loading="importing"
-              :disabled="!uploadFile"
+              :disabled="importing"
               @click="doImport"
             >
               开始导入
             </el-button>
+            <span v-if="uploadFile" class="import-file">{{ uploadFile.name }}</span>
           </div>
         </el-card>
 
@@ -958,6 +981,13 @@ onMounted(() => {
 
 .import-actions {
   margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.import-file {
+  color: var(--color-text-secondary);
+  font-size: 13px;
 }
 
 .report-head {
