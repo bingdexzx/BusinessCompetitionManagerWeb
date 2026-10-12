@@ -12,13 +12,19 @@ import {
 } from '@/api/client'
 import type { LoginResponse, Membership, RegisterPayload, UpdateMePayload, User } from '@/api/types'
 
+/** 只接受正整数 id；undefined/null/'NaN'/0 等一律归 null（防脏值污染比赛上下文） */
+function sanitizeId(id: number | string | null | undefined): number | null {
+  if (id === null || id === undefined || id === '') return null
+  const next = Number(id)
+  return Number.isInteger(next) && next > 0 ? next : null
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref(getAccessToken())
   const refreshToken = ref(getRefreshToken())
   const user = ref<User | null>(null)
-  const selectedCompetitionId = ref<number | null>(
-    getCompetitionId() ? Number(getCompetitionId()) : null,
-  )
+  // 仅接受正整数 id：历史脏值（'undefined'/'NaN'）会被清理，防止污染 X-Competition-Id
+  const selectedCompetitionId = ref<number | null>(sanitizeId(getCompetitionId()))
 
   const isAuthenticated = computed(() => Boolean(accessToken.value))
   const isSuperuser = computed(() => Boolean(user.value?.isSuperuser))
@@ -76,7 +82,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function selectCompetition(id: number | string | null): void {
-    const next = id === null || id === '' ? null : Number(id)
+    const next = sanitizeId(id)
     selectedCompetitionId.value = next
     setCompetitionId(next)
   }

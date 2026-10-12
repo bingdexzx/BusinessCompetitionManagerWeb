@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules, UploadFile } from 'element-plus'
 import * as api from '@/api'
+import { ApiError } from '@/api/client'
 import {
   COMPETITION_STATUS_CHAIN,
   MEMBER_IDENTITIES,
@@ -399,12 +400,21 @@ function quickLink(path: string): void {
 }
 
 // ---------- 数据加载 ----------
+const missing = ref(false)
+
 async function loadCompetition(): Promise<void> {
   loading.value = true
   try {
     competition.value = await api.getCompetition(props.cid)
+    missing.value = false
     auth.selectCompetition(props.cid)
   } catch (err) {
+    // 404 = 比赛不存在/已删除（旧链接/被清理）：友好状态而非错误弹窗
+    if (err instanceof ApiError && err.status === 404) {
+      missing.value = true
+      competition.value = null
+      return
+    }
     ElMessage.error(err instanceof Error ? err.message : '操作失败')
   } finally {
     loading.value = false
@@ -431,6 +441,22 @@ onMounted(() => {
 </script>
 
 <template>
+  <!-- 比赛不存在/已删除（旧链接残留） -->
+  <el-alert
+    v-if="missing"
+    type="warning"
+    show-icon
+    :closable="false"
+    title="比赛不存在或已删除"
+    description="当前链接指向的比赛已不存在（可能被清理/重建）。请返回比赛列表选择现有比赛。"
+  >
+    <template #default>
+      <el-button type="primary" size="small" @click="$router.push('/competitions')">
+        返回比赛列表
+      </el-button>
+    </template>
+  </el-alert>
+
   <div v-if="competition" class="detail-page">
     <!-- ===== 顶部：标题 + 基本信息 ===== -->
     <div class="page-toolbar">
