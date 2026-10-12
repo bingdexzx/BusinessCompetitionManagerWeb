@@ -94,7 +94,7 @@ def main():
     cid = resp.json().get('id')
     check('创建比赛（含比赛代码）', resp.status_code == 201 and resp.json().get('code') == 'SMOKE')
 
-    # 导入示例比赛包（合同/产业插件 + 基础数据）
+    # 导入示例比赛包（合同/产业插件 + 产业/合同表格；基础数据不再随包）
     zip_path = build_sample(tmp_root)
     upload = SimpleUploadedFile('sample.zip', zip_path.read_bytes(), content_type='application/zip')
     resp = client.post(f'/api/competitions/{cid}/package', {'file': upload}, **admin)
@@ -375,6 +375,20 @@ def main():
         check('电子奖牌在线展示（D12）', bool(medal.get('displayAsset')), medal.get('displayName', ''))
     else:
         check('电子奖牌在线展示（D12）', False, '无奖牌记录')
+
+    # ====== 数据管理（基础数据改由系统维护，导入方式变更） ======
+    print('\n== 数据管理（基础数据维护） ==')
+    resp = post(client, f'/api/competitions/{cid}/basedata/fuels',
+                {'code': 'F-TEST', 'name': '测试燃料', 'unit': 'L', 'price': 7.5}, admin, raw=True)
+    check('数据管理新增（燃料）', resp.status_code == 201, str(resp.status_code))
+    rows = client.get(f'/api/competitions/{cid}/basedata/fuels?q=F-TEST', **admin).json()
+    target = next((r for r in rows.get('items', []) if r.get('code') == 'F-TEST'), None)
+    check('数据管理列表检索', target is not None, str(rows.get('total')))
+    resp = client.delete(f"/api/competitions/{cid}/basedata/fuels/{target['id']}", **admin)
+    check('数据管理删除', resp.status_code == 200, str(resp.status_code))
+    resp = post(client, f'/api/competitions/{cid}/basedata/fuels',
+                {'code': 'X1', 'name': 'x'}, p1, raw=True)
+    check('数据管理写入仅超管', resp.status_code == 403, str(resp.status_code))
 
     # ================================================== M6：站内信 / 权限
     print('\n== M6 站内信与权限 ==')

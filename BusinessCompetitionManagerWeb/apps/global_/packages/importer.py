@@ -1,7 +1,8 @@
 """比赛包导入编排（§9.2、《比赛包格式规范》§8）。
 
 流程：解压 → manifest/SHA-256 校验 → AST 扫描插件 → 建库即迁移
-     → 产业插件字段迁移 → 基础数据表格导入 → 合同插件注册 → 合同实例导入 → 导入报告
+     → 产业插件字段迁移 → 合同插件注册 → 合同实例导入 → 导入报告
+     （比赛包只含产业信息与合同信息；基础数据改由系统「数据管理」页维护）
 
 失败策略：任一阶段错误 → 全局库/比赛库写入整体回滚（本次新建的比赛库直接删除），
 并持久化一份 FAILED 的导入报告供排查。
@@ -274,38 +275,12 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user):
             # industries.xlsx 对账（规范 §6）
             _import_industries_sheet(root, industry_modules, report)
 
-            # 基础数据表格（规范 §5）
-            all_entries, all_codes = {}, {}
+            # 基础数据不再由比赛包提供（导入方式变更）：包内如携带旧版数据表格 → 忽略并提示，
+            # 燃料/仓库/载具等 10 类基础数据改由系统「数据管理」页维护。
             for sheet_key in parsers.BASEDATA_SPECS:
-                path = _find_sheet(root, sheet_key)
-                if path is None:
-                    continue
-                headers, rows = parsers.read_table(path)
-                if len(rows) > MAX_ROWS_PER_SHEET:
-                    report['errors'].append(f'{sheet_key}：行数超过上限 {MAX_ROWS_PER_SHEET}')
-                    continue
-                entries, errors, warnings = parsers.parse_basedata_sheet(sheet_key, headers, rows)
-                report['errors'] += [f'{sheet_key}：{e}' for e in errors]
-                report['warnings'] += [f'{sheet_key}：{w}' for w in warnings]
-                all_entries[sheet_key] = entries
-                all_codes[sheet_key] = {e['code'] for e in entries}
-
-            for sheet_key, entries in all_entries.items():
-                ref_errors = parsers.check_refs(sheet_key, entries, all_codes)
-                report['errors'] += [f'{sheet_key}：{e}' for e in ref_errors]
-            if report['errors']:
-                raise ImportFailure(report)
-
-            for sheet_key, entries in all_entries.items():
-                app_label, model_name = parsers.BASEDATA_SPECS[sheet_key]['model']
-                model = django_apps.get_model(app_label, model_name)
-                for e in entries:
-                    code = e.pop('code')
-                    model.objects.update_or_create(code=code,
-                                                   defaults=_normalize_entry(model, e))
-                report['basedataRows'][sheet_key] = len(entries)
-                report['files'].append({'file': f'sheets/{sheet_key}', 'stage': 'basedata',
-                                        'rows': len(entries), 'errors': [], 'warnings': []})
+                if _find_sheet(root, sheet_key) is not None:
+                    report['warnings'].append(
+                        f'{sheet_key}：基础数据不再由比赛包导入（已忽略），请在系统「数据管理」页维护')
 
             # 合同实例导入（规范 §7）
             contract_modules = {k: {'module': v['module'], 'version': v['version']}

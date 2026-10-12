@@ -142,8 +142,9 @@ def main():
     alias = provisioning.ensure_competition_db(db_name)
     ctx.set_competition_context(cid, alias)
     try:
-        check('基础数据导入（燃料）', Fuel.objects.count() == 3, f'count={Fuel.objects.count()}')
-        check('基础数据导入（生产线 JSON 列）', ProductionLine.objects.count() == 2)
+        check('基础数据不再随包导入（燃料为空）', Fuel.objects.count() == 0,
+              f'count={Fuel.objects.count()}')
+        check('基础数据改由数据管理页维护（生产线为空）', ProductionLine.objects.count() == 0)
         fields = {f.field_key: f for f in IndustryField.objects.all()}
         check('产业字段迁移', set(fields) == {'cash', 'capacity', 'loan_limit'}, str(set(fields)))
         check('公式字段标记', fields.get('loan_limit') is not None and fields['loan_limit'].is_calculated)
@@ -173,7 +174,8 @@ def main():
     # 坏包未破坏既有数据
     ctx.set_competition_context(cid, provisioning.ensure_competition_db(db_name))
     try:
-        check('失败导入不影响既有数据', Fuel.objects.count() == 3
+        check('失败导入不影响既有数据', Fuel.objects.count() == 0
+              and IndustryField.objects.count() == 3
               and Contract.objects.count() == 2)
     finally:
         ctx.clear_request_context()

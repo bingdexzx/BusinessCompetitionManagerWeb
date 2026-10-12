@@ -221,9 +221,9 @@ def build(out_dir: Path) -> Path:
     (root / 'plugins' / 'contract_loan.py').write_text(CONTRACT_LOAN, encoding='utf-8')
     (root / 'plugins' / 'industry_manufacturer.py').write_text(INDUSTRY_MANUFACTURER, encoding='utf-8')
 
-    # 基础数据表
-    for sheet, spec in BASEDATA_SHEETS.items():
-        write_xlsx(root / 'sheets' / f'{sheet}.xlsx', spec['headers'], spec['rows'])
+    # 基础数据不再随比赛包提供（导入方式变更：改由系统「数据管理」页维护），
+    # 示例包只含 产业信息（industries.xlsx）与 合同信息（contracts.xlsx）；
+    # BASEDATA_SHEETS 定义保留作数据字典参考。
 
     # industries.xlsx（双工作表：industries + fields 对账）
     write_xlsx(

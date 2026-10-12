@@ -71,6 +71,19 @@
 
 ## 6. 公司 / 产业字段（§6.3 实体信息表 / 财务报表）
 
+### 6.1 基础数据管理（数据管理页；基础数据不再随比赛包导入）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/competitions/{cid}/basedata/{table}` | 列表 `{items, total, page, pageSize}`，`?q=` 过滤 code/name |
+| POST | `/competitions/{cid}/basedata/{table}` | 新增（超管）`{code*, name*, ...类型字段}` |
+| PATCH | `.../basedata/{table}/{id}` | 编辑（超管） |
+| DELETE | `.../basedata/{table}/{id}` | 删除（超管） |
+
+`table` ∈ `fuels / warehouses / vehicles / maps / materials / products / parts / infrastructures / tech_trees / production_lines`；
+行字段 camelCase（如 `energyValue`、`loadCapacity`、`basePrice`、`adjacentCodes`…），通用列 `code/name/notes/meta`。
+权限：查看=本比赛成员；写入=系统超管或本比赛超管。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/competitions/{cid}/companies` | 公司列表（按可见性过滤） |
