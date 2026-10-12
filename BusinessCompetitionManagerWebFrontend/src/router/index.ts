@@ -54,6 +54,12 @@ const router = createRouter({
       meta: { participant: true }, // 交易管理需参赛身份
     },
     {
+      path: '/competitions/:cid/stocks/admin',
+      name: 'competition-stocks-admin',
+      component: () => import('../views/StockAdminView.vue'),
+      props: true,
+    },
+    {
       path: '/competitions/:cid/contracts/:id',
       name: 'contract-detail',
       component: () => import('../views/ContractDetailView.vue'),

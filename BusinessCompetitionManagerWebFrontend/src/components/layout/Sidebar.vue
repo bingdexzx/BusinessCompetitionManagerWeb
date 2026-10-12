@@ -46,7 +46,7 @@
           <el-icon><Grid /></el-icon>
           <span>数据管理</span>
         </el-menu-item>
-        <!-- 股票市场：行情看板 / 交易管理 -->
+        <!-- 股票市场：行情看板 / 交易管理 / 股票管理（超管） -->
         <el-sub-menu index="stocks-group" class="sidebar-group">
           <template #title>
             <el-icon><TrendCharts /></el-icon>
@@ -54,6 +54,10 @@
           </template>
           <el-menu-item :index="`/competitions/${activeCid}/stocks`">行情看板</el-menu-item>
           <el-menu-item :index="`/competitions/${activeCid}/stocks/manage`">交易管理</el-menu-item>
+          <el-menu-item
+            v-if="canManageComp"
+            :index="`/competitions/${activeCid}/stocks/admin`"
+          >股票管理</el-menu-item>
         </el-sub-menu>
         <el-menu-item :index="`/competitions/${activeCid}/fiscal`">
           <el-icon><Calendar /></el-icon>

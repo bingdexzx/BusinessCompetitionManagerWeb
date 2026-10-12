@@ -390,6 +390,32 @@ def main():
                 {'code': 'X1', 'name': 'x'}, p1, raw=True)
     check('数据管理写入仅超管', resp.status_code == 403, str(resp.status_code))
 
+    # ====== 股票管理（新增股票/资金账户，旧系统能力补齐） ======
+    print('\n== 股票管理（股票与账户维护） ==')
+    resp = post(client, f'/api/competitions/{cid}/stock/stocks',
+                {'code': 'S-TEST', 'name': '测试股票', 'totalShares': 10000,
+                 'initNetProfit': 5000, 'initPrice': 10, 'industryPe': 12.5}, admin, raw=True)
+    check('新增股票', resp.status_code == 201 and resp.json().get('currentPrice') == 10,
+          str(resp.status_code))
+    resp = client.patch(f'/api/competitions/{cid}/stock/stocks/S-TEST',
+                        data=json.dumps({'currentPrice': 11.5}),
+                        content_type='application/json', **admin)
+    check('编辑股票', resp.status_code == 200 and resp.json().get('currentPrice') == 11.5,
+          str(resp.status_code))
+    p3_id = client.get('/api/me', **p3).json()['id']
+    resp = post(client, f'/api/competitions/{cid}/stock/accounts',
+                {'name': '测试账户', 'ownerType': 'USER', 'userId': p3_id,
+                 'cashBalance': 50000}, admin, raw=True)
+    check('新增资金账户', resp.status_code == 201, str(resp.status_code))
+    account_id = resp.json().get('id')
+    resp = client.delete(f'/api/competitions/{cid}/stock/accounts/{account_id}', **admin)
+    check('删除资金账户', resp.status_code == 200, str(resp.status_code))
+    resp = client.delete(f'/api/competitions/{cid}/stock/stocks/S-TEST', **admin)
+    check('删除股票（无持仓/挂单）', resp.status_code == 200, str(resp.status_code))
+    resp = post(client, f'/api/competitions/{cid}/stock/stocks',
+                {'code': 'S2', 'name': 'x'}, p1, raw=True)
+    check('股票管理写入仅超管', resp.status_code == 403, str(resp.status_code))
+
     # ================================================== M6：站内信 / 权限
     print('\n== M6 站内信与权限 ==')
     p3_id = client.get('/api/me', **p3).json()['id']

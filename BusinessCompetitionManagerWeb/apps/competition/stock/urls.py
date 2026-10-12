@@ -15,6 +15,9 @@ urlpatterns = [
     path('competitions/<int:cid>/stock/stocks/<str:code>/candles', views.StockCandlesView.as_view()),
     path('competitions/<int:cid>/stock/stocks/<str:code>', views.StockDetailView.as_view()),
     path('competitions/<int:cid>/stock/book', views.BookView.as_view()),
+    # 资金账户管理（超管；新增/编辑/删除，旧系统「新增资金账户」能力）
+    path('competitions/<int:cid>/stock/accounts', views.AccountListCreateView.as_view()),
+    path('competitions/<int:cid>/stock/accounts/<int:pk>', views.AccountItemView.as_view()),
     path('competitions/<int:cid>/stock/orders', views.OrderListCreateView.as_view()),
     path('competitions/<int:cid>/stock/orders/<int:pk>', views.OrderItemView.as_view()),
     path('competitions/<int:cid>/stock/round/advance', views.AdvanceRoundView.as_view()),

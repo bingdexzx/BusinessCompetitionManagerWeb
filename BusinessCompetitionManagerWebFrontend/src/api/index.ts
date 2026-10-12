@@ -50,6 +50,8 @@ import type {
   ScoringConfig,
   SettlementResult,
   Stock,
+  StockAccount,
+  StockAdmin,
   StockBook,
   StockCandle,
   StockMarketOverview,
@@ -647,4 +649,65 @@ export async function syncStockMarket(
     holdings: res?.holdings ?? [],
     accounts: res?.accounts ?? [],
   }
+}
+
+// ---------- 股票管理（超管：股票 / 资金账户新增·编辑·删除） ----------
+
+/** 新增股票（code/name 必填；currentPrice 缺省 = initPrice） */
+export function createStock(
+  cid: number | string,
+  payload: Partial<StockAdmin>,
+): Promise<StockAdmin> {
+  return http.post<StockAdmin>(`/competitions/${cid}/stock/stocks`, payload)
+}
+
+/** 编辑股票（按 code 定位，字段同新增） */
+export function updateStock(
+  cid: number | string,
+  code: string,
+  payload: Partial<StockAdmin>,
+): Promise<StockAdmin> {
+  return http.patch<StockAdmin>(
+    `/competitions/${cid}/stock/stocks/${encodeURIComponent(code)}`,
+    payload,
+  )
+}
+
+/** 删除股票（存在委托单/持仓时后端拒绝，直接展示 message） */
+export function deleteStock(cid: number | string, code: string): Promise<{ ok: boolean }> {
+  return http.delete<{ ok: boolean }>(
+    `/competitions/${cid}/stock/stocks/${encodeURIComponent(code)}`,
+  )
+}
+
+/** 资金账户列表（{ items, total }） */
+export async function getStockAccounts(
+  cid: number | string,
+): Promise<{ items: StockAccount[]; total: number }> {
+  const res = await http.get<{ items?: StockAccount[]; total?: number } | StockAccount[]>(
+    `/competitions/${cid}/stock/accounts`,
+  )
+  return toPage<StockAccount>(res)
+}
+
+/** 新增资金账户（name 必填；USER 必填 userId、COMPANY 必填 companyId） */
+export function createStockAccount(
+  cid: number | string,
+  payload: Partial<StockAccount>,
+): Promise<StockAccount> {
+  return http.post<StockAccount>(`/competitions/${cid}/stock/accounts`, payload)
+}
+
+/** 编辑资金账户（字段同新增） */
+export function updateStockAccount(
+  cid: number | string,
+  id: number,
+  payload: Partial<StockAccount>,
+): Promise<StockAccount> {
+  return http.patch<StockAccount>(`/competitions/${cid}/stock/accounts/${id}`, payload)
+}
+
+/** 删除资金账户（存在委托/持仓时后端拒绝，直接展示 message） */
+export function deleteStockAccount(cid: number | string, id: number): Promise<{ ok: boolean }> {
+  return http.delete<{ ok: boolean }>(`/competitions/${cid}/stock/accounts/${id}`)
 }

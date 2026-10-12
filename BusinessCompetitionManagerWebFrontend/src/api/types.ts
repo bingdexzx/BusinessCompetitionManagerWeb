@@ -809,6 +809,50 @@ export interface StockSyncPage {
   accounts: StockFundsAccount[]
 }
 
+// ---------- 股票管理（超管 CRUD：股票 / 资金账户） ----------
+
+/** 股票管理端全字段（POST/PATCH 入参与写回同名 camelCase；GET 详情的行业 PE 用 industryPE 口径） */
+export interface StockAdmin {
+  id?: number
+  code: string
+  name: string
+  totalShares?: number | string | null
+  initNetProfit?: number | string | null
+  /** 管理端写回的行业 PE */
+  industryPe?: number | string | null
+  /** 单股详情（GET /stock/stocks/{code}）的行业 PE */
+  industryPE?: number | string | null
+  currentCarbon?: number | null
+  industryAvgCarbon?: number | null
+  happiness?: number | null
+  initPrice?: number | string | null
+  /** 缺省 = initPrice */
+  currentPrice?: number | string | null
+  round?: number
+  companyId?: number | null
+  /** PE 关联公司（与 pbFieldId 同填为联动模式，均空为随机模式） */
+  pbCompanyId?: number | null
+  pbFieldId?: number | null
+  /** 随机 PE（0-20） */
+  pbRandom?: number | null
+  carbonFieldRef?: string | null
+  happinessFieldRef?: string | null
+  industryAvgCarbonRefs?: string | null
+}
+
+export type StockAccountOwnerType = 'USER' | 'COMPANY'
+
+/** 资金账户（管理端） */
+export interface StockAccount {
+  id?: number
+  name: string
+  ownerType: StockAccountOwnerType
+  userId?: number | null
+  companyId?: number | null
+  cashBalance?: number | string | null
+  bindFieldId?: number | null
+}
+
 // ---------- 基础数据管理（数据管理页，契约 §6.1；effect/inputs 等 JSON 列后台维护） ----------
 
 /** 基础数据表：10 类比赛级基础数据 */

@@ -194,7 +194,9 @@ const currentPageTitle = computed(() => {
       return /^\/competitions\/[^/]+\/contracts\/[^/]+$/.test(path) ? '合同详情' : '合同工作台'
     }
     if (section === 'stocks') {
-      return sub === 'manage' ? '股票交易管理' : '股票行情'
+      if (sub === 'manage') return '股票交易管理'
+      if (sub === 'admin') return '股票管理'
+      return '股票行情'
     }
     return SECTION_TITLES[section] ?? ''
   }

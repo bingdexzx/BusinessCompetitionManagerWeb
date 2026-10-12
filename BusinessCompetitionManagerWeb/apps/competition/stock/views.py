@@ -145,9 +145,24 @@ class StockListView(APIView):
         ]
         return Response(_page_envelope(items, total, page, page_size))
 
+    def post(self, request, cid):
+        """新增股票（超管）：code/name 必填，价格与股本用 Decimal（旧「新增股票」语义）。"""
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        stock = Stock()
+        try:
+            _apply_stock_fields(stock, request.data, creating=True)
+        except StockError as exc:
+            return _error(str(exc))
+        if Stock.objects.filter(code=stock.code).exists():
+            return _error(f'股票代码 {stock.code} 已存在')
+        stock.save()
+        return Response(_serialize_stock_admin(stock), status=status.HTTP_201_CREATED)
+
 
 class StockDetailView(APIView):
-    """GET /stock/stocks/{code} —— 单股详情（含指标全字段，§4.1）。"""
+    """GET /stock/stocks/{code} —— 单股详情（含指标全字段，§4.1）；
+    PATCH/DELETE —— 股票维护（超管；有挂单/持仓拒绝删除，旧系统语义）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -163,6 +178,35 @@ class StockDetailView(APIView):
         return Response(serialize_stock_detail(
             stock, field_map=field_map, pb_map=pb_map, candle=candle,
         ))
+
+    def patch(self, request, cid, code):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        stock = Stock.objects.filter(code=code).first()
+        if stock is None:
+            return _error('股票不存在', 404)
+        try:
+            _apply_stock_fields(stock, request.data, creating=False)
+        except StockError as exc:
+            return _error(str(exc))
+        if 'code' in request.data and Stock.objects.filter(code=stock.code).exclude(pk=stock.pk).exists():
+            return _error(f'股票代码 {stock.code} 已存在')
+        stock.save()
+        return Response(_serialize_stock_admin(stock))
+
+    def delete(self, request, cid, code):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        stock = Stock.objects.filter(code=code).first()
+        if stock is None:
+            return _error('股票不存在', 404)
+        # 旧系统语义：有挂单或持仓拒绝删除
+        if StockOrder.objects.filter(stock=stock).exists():
+            return _error('该股票存在委托单，不能删除')
+        if StockHolding.objects.filter(stock=stock).exists():
+            return _error('该股票存在持仓，不能删除')
+        stock.delete()
+        return Response({'ok': True})
 
 
 class StockCandlesView(APIView):
@@ -515,3 +559,180 @@ class SyncView(APIView):
             competition_id=cid,
         )
         return Response(payload)
+
+
+# ================================================================ 管理端（新增·编辑·删除）
+# 旧系统「新增股票 / 新增资金账户」能力移植：行情/交易页只读，维护入口在这里（超管）。
+
+
+_STOCK_DECIMAL_FIELDS = {
+    'totalShares': 'total_shares', 'initNetProfit': 'init_net_profit',
+    'initPrice': 'init_price', 'currentPrice': 'current_price',
+}
+_STOCK_FLOAT_FIELDS = {
+    'industryPe': 'industry_pe', 'currentCarbon': 'current_carbon',
+    'industryAvgCarbon': 'industry_avg_carbon', 'happiness': 'happiness',
+    'pbRandom': 'pb_random',
+}
+_STOCK_TEXT_FIELDS = {
+    'carbonFieldRef': 'carbon_field_ref', 'happinessFieldRef': 'happiness_field_ref',
+    'industryAvgCarbonRefs': 'industry_avg_carbon_refs',
+}
+_STOCK_INT_FIELDS = {'pbCompanyId': 'pb_company_id', 'pbFieldId': 'pb_field_id'}
+
+
+def _apply_stock_fields(stock, data: dict, *, creating: bool):
+    """把管理端入参写入 Stock（Decimal 精度口径；缺省 currentPrice=initPrice）。"""
+    if creating or 'code' in data:
+        code = str(data.get('code') or '').strip()
+        if not code:
+            raise StockError('缺少参数 code')
+        stock.code = code
+    if creating or 'name' in data:
+        name = str(data.get('name') or '').strip()
+        if not name:
+            raise StockError('缺少参数 name')
+        stock.name = name
+    for api_key, model_field in _STOCK_DECIMAL_FIELDS.items():
+        if api_key in data and data.get(api_key) not in (None, ''):
+            setattr(stock, model_field, _parse_decimal(data.get(api_key), api_key))
+    if creating and stock.current_price is None:
+        stock.current_price = stock.init_price  # 未给现价时以发行价起步
+    for api_key, model_field in _STOCK_FLOAT_FIELDS.items():
+        if api_key in data and data.get(api_key) not in (None, ''):
+            try:
+                setattr(stock, model_field, float(data.get(api_key)))
+            except (TypeError, ValueError):
+                raise StockError(f'{api_key} 不是合法数值')
+    for api_key, model_field in _STOCK_TEXT_FIELDS.items():
+        if api_key in data:
+            setattr(stock, model_field, str(data.get(api_key) or ''))
+    for api_key, model_field in _STOCK_INT_FIELDS.items():
+        if api_key not in data:
+            continue
+        raw = data.get(api_key)
+        if raw in (None, ''):
+            setattr(stock, model_field, None)  # 显式置空 = 清除关联
+            continue
+        try:
+            setattr(stock, model_field, int(raw))
+        except (TypeError, ValueError):
+            raise StockError(f'{api_key} 不是合法整数')
+    if 'companyId' in data:
+        stock.company_id = data.get('companyId') or None
+    if creating:
+        stock.industry_pe = stock.industry_pe or 0.0
+        stock.current_carbon = stock.current_carbon or 0.0
+        stock.industry_avg_carbon = stock.industry_avg_carbon or 0.0
+        stock.happiness = stock.happiness or 0.0
+
+
+def _serialize_stock_admin(stock) -> dict:
+    return {
+        'id': stock.id, 'code': stock.code, 'name': stock.name,
+        'totalShares': stock.total_shares, 'initNetProfit': stock.init_net_profit,
+        'industryPe': stock.industry_pe, 'currentCarbon': stock.current_carbon,
+        'industryAvgCarbon': stock.industry_avg_carbon, 'happiness': stock.happiness,
+        'initPrice': stock.init_price, 'currentPrice': stock.current_price,
+        'round': stock.round, 'companyId': stock.company_id,
+        'pbCompanyId': stock.pb_company_id, 'pbFieldId': stock.pb_field_id,
+        'pbRandom': stock.pb_random,
+        'carbonFieldRef': stock.carbon_field_ref,
+        'happinessFieldRef': stock.happiness_field_ref,
+        'industryAvgCarbonRefs': stock.industry_avg_carbon_refs,
+    }
+
+
+def _serialize_account_admin(account) -> dict:
+    return {
+        'id': account.id, 'name': account.name, 'ownerType': account.owner_type,
+        'companyId': account.company_id, 'userId': account.user_id,
+        'cashBalance': account.cash_balance, 'bindFieldId': account.bind_field_id,
+    }
+
+
+class AccountListCreateView(APIView):
+    """GET/POST /stock/accounts —— 资金账户管理（超管）：新增资金账户（旧系统语义）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        accounts = StockFundsAccount.objects.all().order_by('id')
+        return Response({'items': [_serialize_account_admin(a) for a in accounts],
+                         'total': accounts.count()})
+
+    def post(self, request, cid):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        name = str(request.data.get('name') or '').strip()
+        if not name:
+            return _error('缺少参数 name')
+        owner_type = request.data.get('ownerType') or 'USER'
+        if owner_type not in ('USER', 'COMPANY'):
+            return _error('ownerType 应为 USER 或 COMPANY')
+        if owner_type == 'USER' and not request.data.get('userId'):
+            return _error('USER 账户缺少 userId')
+        if owner_type == 'COMPANY' and not request.data.get('companyId'):
+            return _error('COMPANY 账户缺少 companyId')
+        if StockFundsAccount.objects.filter(name=name).exists():
+            return _error(f'账户名 {name} 已存在')
+        account = StockFundsAccount(
+            name=name, owner_type=owner_type,
+            user_id=request.data.get('userId') or None,
+            company_id=request.data.get('companyId') or None,
+            bind_field_id=request.data.get('bindFieldId') or None,
+        )
+        if request.data.get('cashBalance') not in (None, ''):
+            account.cash_balance = _parse_decimal(request.data.get('cashBalance'),
+                                                  'cashBalance')
+        account.save()
+        return Response(_serialize_account_admin(account), status=status.HTTP_201_CREATED)
+
+
+class AccountItemView(APIView):
+    """PATCH/DELETE /stock/accounts/{id} —— 资金账户维护（超管）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, cid, pk):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        account = StockFundsAccount.objects.filter(pk=pk).first()
+        if account is None:
+            return _error('账户不存在', 404)
+        if 'name' in request.data:
+            name = str(request.data.get('name') or '').strip()
+            if not name:
+                return _error('账户名必填')
+            if StockFundsAccount.objects.filter(name=name).exclude(pk=pk).exists():
+                return _error(f'账户名 {name} 已存在')
+            account.name = name
+        if 'ownerType' in request.data:
+            owner_type = request.data.get('ownerType')
+            if owner_type not in ('USER', 'COMPANY'):
+                return _error('ownerType 应为 USER 或 COMPANY')
+            account.owner_type = owner_type
+        for key, field in (('userId', 'user_id'), ('companyId', 'company_id'),
+                           ('bindFieldId', 'bind_field_id')):
+            if key in request.data:
+                setattr(account, field, request.data.get(key) or None)
+        if request.data.get('cashBalance') not in (None, ''):
+            account.cash_balance = _parse_decimal(request.data.get('cashBalance'),
+                                                  'cashBalance')
+        account.save()
+        return Response(_serialize_account_admin(account))
+
+    def delete(self, request, cid, pk):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        account = StockFundsAccount.objects.filter(pk=pk).first()
+        if account is None:
+            return _error('账户不存在', 404)
+        if StockOrder.objects.filter(funds_account=account).exists():
+            return _error('该账户存在委托单，不能删除')
+        if StockHolding.objects.filter(funds_account=account).exists():
+            return _error('该账户存在持仓，不能删除')
+        account.delete()
+        return Response({'ok': True})
