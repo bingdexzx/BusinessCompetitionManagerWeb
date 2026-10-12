@@ -138,14 +138,6 @@ onMounted(() => void load())
   <div class="field-logs-page">
     <h1 class="page-title">字段日志</h1>
 
-    <el-alert
-      class="hint-alert"
-      type="info"
-      :closable="false"
-      show-icon
-      title="权限按公司可见性自动过滤（§15.2）：仅显示你有权查看的公司字段变更记录。"
-    />
-
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">

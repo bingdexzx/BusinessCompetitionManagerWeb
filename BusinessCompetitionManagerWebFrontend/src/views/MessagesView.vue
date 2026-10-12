@@ -346,8 +346,8 @@ onMounted(() => {
             </el-option-group>
           </el-select>
           <div class="recipient-tip">
-            当前选择：{{ selectionSummary }}。按比赛发送属于「公告」，仅超级管理员可用；发送时自动去重。
-            <span v-if="!canBulkSend">（你的身份暂无批量发送权限，仅可发个人）</span>
+            选中比赛＝发全员（仅超管）
+            <span v-if="!canBulkSend">；当前身份仅可发个人</span>
           </div>
         </el-form-item>
       </el-form>

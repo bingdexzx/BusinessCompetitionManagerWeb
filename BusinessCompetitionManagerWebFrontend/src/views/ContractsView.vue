@@ -306,7 +306,7 @@ watch(
       @row-click="openDetail"
     >
       <template #empty>
-        <el-empty description="暂无合同，点击右上角「创建合同」新建" />
+        <el-empty description="暂无合同" />
       </template>
       <el-table-column prop="name" label="合同名称" min-width="180">
         <template #default="{ row }">
@@ -445,7 +445,7 @@ watch(
 
           <el-divider>补录</el-divider>
           <el-form-item>
-            <el-checkbox v-model="createIsBackfill">补录合同（需超管审核，以所补录财年末快照为执行基准）</el-checkbox>
+            <el-checkbox v-model="createIsBackfill">补录合同（需超管审核）</el-checkbox>
           </el-form-item>
           <el-form-item v-if="createIsBackfill" label="补录财年" required>
             <el-select

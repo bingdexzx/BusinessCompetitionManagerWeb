@@ -128,15 +128,6 @@ watch(() => props.cid, loadYears)
     </div>
 
     <!-- 补录说明 -->
-    <el-alert
-      type="info"
-      :closable="false"
-      show-icon
-      title="补录说明"
-      description="补录合同在合同工作台创建（勾选补录 + 选择财年），需超管审核，以财年末快照为执行基准。"
-      class="backfill-alert"
-    />
-
     <!-- 财年列表 -->
     <section class="panel">
       <h2 class="section-title">财年一览</h2>
@@ -186,7 +177,7 @@ watch(() => props.cid, loadYears)
             :value="fy.id"
           />
         </el-select>
-        <span class="backup-hint">结束财年时自动备份各公司字段数据表，展开行查看快照键值</span>
+        <span class="backup-hint">展开行查看快照</span>
       </div>
 
       <el-table

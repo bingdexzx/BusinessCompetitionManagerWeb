@@ -449,7 +449,7 @@ onMounted(() => {
     show-icon
     :closable="false"
     title="比赛不存在或已删除"
-    description="当前链接指向的比赛已不存在（可能被清理/重建）。请返回比赛列表选择现有比赛。"
+    description="请返回比赛列表重新选择"
   >
     <template #default>
       <el-button type="primary" size="small" @click="$router.push('/competitions')">
@@ -503,7 +503,7 @@ onMounted(() => {
           type="info"
           :closable="false"
           show-icon
-          title="当前状态：已创建。需先在下方「比赛包导入」导入比赛包，才能推进生命周期。"
+          title="需先导入比赛包后方可推进"
         >
           <el-button size="small" type="primary" @click="activeTab = 'package'">
             去导入比赛包

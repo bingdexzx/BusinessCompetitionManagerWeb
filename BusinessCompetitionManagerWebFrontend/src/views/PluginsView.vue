@@ -60,14 +60,6 @@ onMounted(() => void load())
   <div class="plugins-view">
     <h1 class="page-title">插件管理</h1>
 
-    <el-alert
-      class="plugin-note"
-      type="info"
-      :closable="false"
-      show-icon
-      title="插件随比赛包上传（不可变版本：key+version+sha256），仅系统超管可见；服务端 AST 护栏 + 执行审计。"
-    />
-
     <el-card shadow="never" class="plugin-card">
       <template #header>
         <div class="card-head">

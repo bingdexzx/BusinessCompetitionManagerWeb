@@ -345,7 +345,7 @@ watch(
       show-icon
       :closable="false"
       title="比赛不存在或已删除"
-      description="当前页面指向的比赛已不存在（可能被清理/重建）。请返回比赛列表选择现有比赛。"
+      description="请返回比赛列表重新选择"
       class="missing-alert"
     >
       <template #default>
@@ -466,7 +466,6 @@ watch(
           >
             {{ form.side === 'BUY' ? '买入' : '卖出' }}
           </el-button>
-          <div class="form-hint">下单后本地立即入列，由增量同步校正持仓/资金，不拉全量。</div>
         </el-form>
       </el-card>
 

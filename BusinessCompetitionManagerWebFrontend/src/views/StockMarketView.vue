@@ -518,7 +518,7 @@ watch(
       show-icon
       :closable="false"
       title="比赛不存在或已删除"
-      description="当前页面指向的比赛已不存在（可能被清理/重建）。请返回比赛列表选择现有比赛。"
+      description="请返回比赛列表重新选择"
       class="missing-alert"
     >
       <template #default>
@@ -656,7 +656,7 @@ watch(
 
       <template v-if="selectedStock">
         <div v-loading="loadingCandles" ref="chartRef" class="kline-chart"></div>
-        <div class="chart-hint">滚轮缩放 · 拖拽平移 · 底部滑块 · MA5/MA10/MA20</div>
+        <div class="chart-hint">滚轮缩放 · 拖拽平移</div>
       </template>
       <div v-else class="chart-empty">
         <el-icon :size="40" class="chart-empty-icon"><TrendCharts /></el-icon>

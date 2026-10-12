@@ -282,7 +282,7 @@ onMounted(() => void load())
         type="info"
         :closable="false"
         show-icon
-        title="产业志愿为自由输入的产业 key，回车添加；队长建队时填写的志愿即为初始志愿。"
+        title="输入产业 key，回车添加"
         class="dialog-tip"
       />
       <el-form
@@ -350,7 +350,7 @@ onMounted(() => void load())
         type="warning"
         :closable="false"
         show-icon
-        title="最终产业一经设定即为该队伍定夺的产业方向，系统会同步创建/更新对应公司并回填产业初始值。"
+        title="保存后同步创建/更新对应公司"
         class="dialog-tip"
       />
       <el-form :model="adjustForm" label-width="110px" @submit.prevent>

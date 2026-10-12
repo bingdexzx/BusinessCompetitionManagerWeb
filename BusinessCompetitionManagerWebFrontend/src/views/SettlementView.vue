@@ -237,14 +237,6 @@ onMounted(() => {
     <el-empty v-if="!canView" description="结算与获奖仅超级管理员可见" />
     <template v-if="canView">
 
-    <el-alert
-      class="hint-alert"
-      type="info"
-      :closable="false"
-      show-icon
-      title="评分准则为可配置框架（决策 D11），细则待需求方提供后调整。"
-    />
-
     <!-- ===== 评分准则 ===== -->
     <el-card shadow="never" class="section-card">
       <template #header>

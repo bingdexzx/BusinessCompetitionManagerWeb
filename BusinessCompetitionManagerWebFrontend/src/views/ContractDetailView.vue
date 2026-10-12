@@ -425,7 +425,6 @@ function goBack(): void {
       <div class="action-row">
         <template v-if="contract?.status === 'DRAFT'">
           <el-button type="primary" :loading="actionLoading" @click="doSubmit">提交</el-button>
-          <span class="action-hint">提交后进入逐方确认流程</span>
         </template>
 
         <template v-else-if="contract?.status === 'PENDING_PARTY'">
@@ -439,10 +438,10 @@ function goBack(): void {
           </el-button>
           <span class="action-hint">
             <template v-if="canActForPending">
-              末方确认后系统自动统一编号并执行落账
+              末方确认后自动编号并落账
             </template>
             <template v-else>
-              当前账号可能不是待确认方「{{ pendingParty?.companyName || pendingParty?.role }}」（由后端最终校验）
+              当前不是待确认方「{{ pendingParty?.companyName || pendingParty?.role }}」
             </template>
           </span>
         </template>
@@ -451,7 +450,7 @@ function goBack(): void {
           <el-button type="warning" :loading="actionLoading" @click="openModifyDialog">
             申请修改
           </el-button>
-          <span class="action-hint">申请修改需填写原因，经超管审核后进入修改流程</span>
+          <span class="action-hint">需超管审核</span>
         </template>
 
         <template v-else-if="contract?.status === 'MOD_APPLYING'">
@@ -470,9 +469,8 @@ function goBack(): void {
             >
               驳回
             </el-button>
-            <span class="action-hint">超管审核修改申请，通过后进入修改编辑</span>
           </template>
-          <span v-else class="action-hint">修改申请待超管审核</span>
+          <span v-else class="action-hint">待超管审核</span>
         </template>
 
         <template v-else-if="contract?.status === 'MOD_EDITING'">
@@ -493,7 +491,7 @@ function goBack(): void {
           <el-button type="primary" :loading="actionLoading" @click="openChangesDialog">
             提交修改
           </el-button>
-          <span class="action-hint">其他方逐方表态；提交修改将回滚旧效果并重新执行落账</span>
+          <span class="action-hint">提交后回滚旧效果并重新落账</span>
         </template>
 
         <template v-else-if="contract?.status === 'BACKFILL_REVIEW'">
@@ -512,12 +510,11 @@ function goBack(): void {
             >
               补录驳回
             </el-button>
-            <span class="action-hint">补录合同审核通过后进入正常确认链</span>
           </template>
-          <span v-else class="action-hint">补录合同待超管审核</span>
+          <span v-else class="action-hint">待超管审核</span>
         </template>
 
-        <span v-else class="action-hint">当前状态（{{ statusMeta(contract?.status ?? '').label }}）无可用操作</span>
+        <span v-else class="action-hint">暂无可用操作</span>
       </div>
     </section>
 
@@ -597,10 +594,10 @@ function goBack(): void {
 
     <!-- 检查记录（修改后按轮次回放当时的检查内容） -->
     <section class="panel checks-panel">
-      <h2 class="section-title">检查记录（保证创建即能执行）</h2>
+      <h2 class="section-title">检查记录</h2>
       <el-table :data="checks" border stripe style="width: 100%">
         <template #empty>
-          <el-empty description="暂无检查记录（提交/落账/修改时自动产生）" />
+          <el-empty description="暂无检查记录" />
         </template>
         <el-table-column label="轮次" width="150" align="center">
           <template #default="{ row }">
@@ -658,10 +655,6 @@ function goBack(): void {
     <!-- 效果审计 -->
     <section class="panel effects-panel">
       <h2 class="section-title">效果审计（落账）</h2>
-      <div class="effects-hint">
-        当前生效为 <b>第 {{ contract?.roundNo ?? 0 }} 轮</b>；修改合同后旧轮效果标记「已回滚」
-        （值为当时变更，仅作审计历史），生效轮次显示的是修改后重新落账的最新前后值。
-      </div>
       <el-table
         v-loading="effectsLoading"
         :data="effects"
@@ -699,7 +692,7 @@ function goBack(): void {
                 {{ toDisplay(row.replayBefore) }} → {{ toDisplay(row.replayAfter) }}
               </span>
               <div v-if="toDisplay(row.replayBefore) !== toDisplay(row.before)" class="replay-tip">
-                上游已修改，按当前内容重算
+                上游已修改
               </div>
             </template>
             <span v-else class="num-empty">—</span>
@@ -723,10 +716,9 @@ function goBack(): void {
 
     <!-- 资金账本链（查账同步：上游修改后下游重演值自动重算） -->
     <section v-if="ledger?.chains?.length" class="panel ledger-panel">
-      <h2 class="section-title">资金账本链（重演 · 查账）</h2>
+      <h2 class="section-title">资金账本链（重演）</h2>
       <div class="effects-hint">
-        按合同编号顺序重放**当前生效效果**：上游合同修改后，下游节点的重演值**自动同步**；
-        「当时值」为落账瞬间的不可变审计，两者不一致处以重演值为当前账目口径。
+        以重演值为当前账目口径，当时值仅作审计留存。
       </div>
       <div v-for="chain in ledger.chains" :key="`${chain.companyId}-${chain.fieldKey}`" class="ledger-chain">
         <div class="ledger-head">

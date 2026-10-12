@@ -164,14 +164,6 @@ onMounted(() => void loadLogs())
   <div class="logs-view">
     <h1 class="page-title">网络日志中心</h1>
 
-    <el-alert
-      class="log-note"
-      type="info"
-      :closable="false"
-      show-icon
-      title="日志只增不删；请求/响应摘要已脱敏（密码、令牌等敏感字段不入日志）。导出未勾选记录时导出当前全部记录。"
-    />
-
     <el-card shadow="never" class="log-card">
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <!-- ===== 网络日志 ===== -->
