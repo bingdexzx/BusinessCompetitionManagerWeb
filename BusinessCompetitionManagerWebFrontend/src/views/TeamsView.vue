@@ -7,6 +7,7 @@ import * as api from '@/api'
 import type { Team, TeamJoinCode } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
@@ -60,7 +61,7 @@ async function load(): Promise<void> {
   try {
     teams.value = await api.getTeams(props.cid)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -83,7 +84,7 @@ async function submitCreate(): Promise<void> {
     showCreate.value = false
     await load()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     creating.value = false
   }
@@ -103,7 +104,7 @@ async function submitJoin(): Promise<void> {
     joinCode.value = ''
     await load()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     joining.value = false
   }
@@ -115,7 +116,7 @@ async function genJoinCode(team: Team): Promise<void> {
   try {
     joinCodeInfo = await api.createTeamJoinCode(props.cid, team.id)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
     return
   }
   try {
@@ -164,7 +165,7 @@ async function submitAdjust(): Promise<void> {
     showAdjust.value = false
     await load()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     adjusting.value = false
   }

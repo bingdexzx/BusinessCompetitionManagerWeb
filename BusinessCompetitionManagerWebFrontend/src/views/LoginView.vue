@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const router = useRouter()
 const route = useRoute()
@@ -35,7 +36,7 @@ async function handleLogin(): Promise<void> {
     const redirect = route.query.redirect
     void router.push(typeof redirect === 'string' && redirect ? redirect : '/competitions')
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '登录失败，请稍后重试')
+    ElMessage.error(errorMessage(err, '登录失败，请稍后重试'))
   } finally {
     loading.value = false
   }

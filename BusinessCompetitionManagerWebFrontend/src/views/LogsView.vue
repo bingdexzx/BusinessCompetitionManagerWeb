@@ -6,6 +6,7 @@ import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import { exportNetworkLogs, getAdminDevices, getNetworkLogs } from '@/api'
 import type { AdminDevice, NetworkLogItem, NetworkLogQuery } from '@/api/types'
 import { formatDateTime, truncate } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const activeTab = ref<'network' | 'devices'>('network')
 
@@ -52,7 +53,7 @@ async function loadLogs(): Promise<void> {
     logs.value = res.items ?? []
     total.value = res.total ?? 0
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -125,7 +126,7 @@ async function exportLogs(): Promise<void> {
     URL.revokeObjectURL(url)
     ElMessage.success('导出成功')
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     exporting.value = false
   }
@@ -145,7 +146,7 @@ async function loadDevices(): Promise<void> {
     )
     devicesLoaded.value = true
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     devicesLoading.value = false
   }

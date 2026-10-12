@@ -77,6 +77,8 @@ MIDDLEWARE = [
     'apps.common.middleware.CompetitionContextMiddleware',
     # 网络日志（§14.3：每次 API 交互脱敏记录）
     'apps.common.middleware.NetworkLogMiddleware',
+    # /api/* 的 HTML 错误页 → 简洁中文 JSON（所有错误提示统一中文）
+    'apps.common.middleware.ApiErrorHtmlMiddleware',
 ]
 
 ROOT_URLCONF = 'BusinessCompetitionManagerWeb.urls'

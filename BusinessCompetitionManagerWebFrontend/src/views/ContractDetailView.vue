@@ -19,6 +19,7 @@ import type { Contract, ContractCheck, ContractEffect, ContractLedger, ContractP
 import { formatDateTime, toDisplay } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications } from '@/composables/useNotifications'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string; id: string }>()
 const router = useRouter()
@@ -73,7 +74,7 @@ async function load(): Promise<void> {
   try {
     contract.value = await getContract(props.cid, Number(props.id))
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -84,7 +85,7 @@ async function loadEffects(): Promise<void> {
   try {
     effects.value = await getContractEffects(props.cid, Number(props.id))
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     effectsLoading.value = false
   }
@@ -224,7 +225,7 @@ async function runAction(action: () => Promise<unknown>, success: string): Promi
     await loadEffects()
     await loadLedger()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     actionLoading.value = false
   }

@@ -399,6 +399,10 @@ def main():
     resp = client.get('/api/competitions/99999/stock/sync?limit=10', **p1)
     check('不存在的比赛返回干净 404（旧页面残留防 500）', resp.status_code == 404
           and resp.json().get('code') == 404, str(resp.status_code))
+    resp = client.get('/api/nonexistent-path-xyz', **p1)
+    check('API 错误页为中文 JSON（非 HTML 调试页）',
+          resp.status_code == 404 and resp.get('Content-Type', '').startswith('application/json')
+          and bool(resp.json().get('message')), resp.get('Content-Type', ''))
 
     failed = [n for n, ok in results if not ok]
     print(f'\n== 结果：{len(results) - len(failed)}/{len(results)} 通过 ==')

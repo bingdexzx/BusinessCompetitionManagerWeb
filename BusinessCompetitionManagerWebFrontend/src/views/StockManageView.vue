@@ -8,6 +8,7 @@ import type { StockOrder, StockOrderSide, StockOrderStatus } from '@/api/types'
 import { useStockSync } from '@/composables/useStockSync'
 import { useNotifications } from '@/composables/useNotifications'
 import { formatDateTime } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 
@@ -264,7 +265,7 @@ async function submitOrder(): Promise<void> {
     scheduleSync()
   } catch (e) {
     removeLocalOrder(tempId) // 失败回滚乐观行
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     placing.value = false
   }
@@ -293,7 +294,7 @@ async function onCancelOrder(row: StockOrder): Promise<void> {
     scheduleSync() // 增量校正，不拉全量
   } catch (e) {
     applyLocalOrder(previous) // 失败回滚
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     cancellingId.value = 0
   }
@@ -304,7 +305,7 @@ async function manualSync(): Promise<void> {
   try {
     await syncNow(false)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 
@@ -313,7 +314,7 @@ onMounted(() => {
   start()
   // 首次进入（无游标）自动快照起步；已有游标则一次增量
   void syncNow(false).catch((e) => {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   })
 })
 
@@ -329,7 +330,7 @@ watch(
     statusFilter.value = ''
     form.code = ''
     void syncNow(false).catch((e) => {
-      ElMessage.error(e instanceof Error ? e.message : '操作失败')
+      ElMessage.error(errorMessage(e, '操作失败'))
     })
   },
 )

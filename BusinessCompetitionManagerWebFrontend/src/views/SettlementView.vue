@@ -19,6 +19,7 @@ import type {
 } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
@@ -50,7 +51,7 @@ async function loadConfig(): Promise<void> {
   try {
     config.value = await getScoringConfig(props.cid)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     configLoading.value = false
   }
@@ -122,7 +123,7 @@ async function submitAdd(): Promise<void> {
     dialogVisible.value = false
     await loadConfig()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     submitting.value = false
   }
@@ -139,7 +140,7 @@ async function removeCriterion(row: ScoringCriterion): Promise<void> {
     ElMessage.success('已删除')
     await loadConfig()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
 
@@ -156,7 +157,7 @@ async function removeAwardRule(row: AwardRule): Promise<void> {
     ElMessage.success('已删除')
     await loadConfig()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
 
@@ -179,7 +180,7 @@ async function startSettlement(): Promise<void> {
     ElMessage.success('结算完成')
     await loadResult()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     running.value = false
   }
@@ -194,7 +195,7 @@ async function loadResult(): Promise<void> {
   try {
     result.value = await getSettlementResult(props.cid)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     resultLoading.value = false
   }

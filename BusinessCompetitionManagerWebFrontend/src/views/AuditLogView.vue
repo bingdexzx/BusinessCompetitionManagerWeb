@@ -6,6 +6,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { getAuditLogs } from '@/api'
 import type { AuditLogItem } from '@/api/types'
 import { formatDateTime, truncate } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 
@@ -21,7 +22,7 @@ async function load(): Promise<void> {
   try {
     items.value = await getAuditLogs(props.cid, { limit: 100 })
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }

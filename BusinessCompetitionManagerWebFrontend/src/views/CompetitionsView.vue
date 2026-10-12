@@ -8,6 +8,7 @@ import * as api from '@/api'
 import type { Competition, School } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -59,7 +60,7 @@ async function load(): Promise<void> {
   try {
     competitions.value = await api.getCompetitions()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -72,7 +73,7 @@ async function openCreate(): Promise<void> {
   try {
     schools.value = await api.getSchools()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     schoolsLoading.value = false
   }
@@ -98,7 +99,7 @@ async function submitCreate(): Promise<void> {
     showCreate.value = false
     await load()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     creating.value = false
   }
@@ -125,7 +126,7 @@ async function submitJoin(): Promise<void> {
     // 刷新列表与我的身份
     await Promise.all([load(), auth.fetchMe()])
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     joining.value = false
   }

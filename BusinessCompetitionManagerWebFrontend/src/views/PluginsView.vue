@@ -6,6 +6,7 @@ import { CopyDocument, Refresh, Search } from '@element-plus/icons-vue'
 import { getPlugins } from '@/api'
 import type { PluginKind, PluginRecord } from '@/api/types'
 import { formatDateTime, toDisplay, truncate } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 // 插件类型标签
 const KIND_LABELS: Record<PluginKind, string> = {
@@ -22,7 +23,7 @@ async function load(): Promise<void> {
   try {
     plugins.value = await getPlugins(kindFilter.value || undefined)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -38,7 +39,7 @@ async function copySha(row: PluginRecord): Promise<void> {
     await navigator.clipboard.writeText(row.sha256)
     ElMessage.success('SHA-256 已复制')
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
 

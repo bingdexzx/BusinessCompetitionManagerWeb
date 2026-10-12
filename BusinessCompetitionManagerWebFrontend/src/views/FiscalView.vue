@@ -10,6 +10,7 @@ import {
 import type { FiscalYear, FiscalYearBackup } from '@/api/types'
 import { formatDateTime, toDisplay } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
@@ -44,7 +45,7 @@ async function loadYears(): Promise<void> {
   try {
     years.value = await getFiscalYears(props.cid)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -58,7 +59,7 @@ async function handleOpen(): Promise<void> {
     ElMessage.success('财年已开启')
     await loadYears()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     acting.value = false
   }
@@ -80,7 +81,7 @@ async function handleClose(): Promise<void> {
     ElMessage.success('财年已结束，已自动备份')
     await loadYears()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     acting.value = false
   }
@@ -100,7 +101,7 @@ async function loadBackups(): Promise<void> {
   try {
     backups.value = await getFiscalYearBackups(props.cid, selectedFiscalYearId.value)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     backupsLoading.value = false
   }

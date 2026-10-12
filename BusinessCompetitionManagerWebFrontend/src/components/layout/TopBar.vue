@@ -72,6 +72,7 @@ import { ElMessage } from 'element-plus'
 import * as api from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications } from '@/composables/useNotifications'
+import { errorMessage } from '@/utils/errors'
 
 const { unreadCount, resetUnread } = useNotifications()
 
@@ -109,7 +110,7 @@ watch(
     try {
       superCompetitions.value = (await api.getCompetitions()).map((c) => ({ id: c.id, name: c.name }))
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : '获取比赛列表失败')
+      ElMessage.error(errorMessage(err, '获取比赛列表失败'))
     } finally {
       competitionsLoading.value = false
     }

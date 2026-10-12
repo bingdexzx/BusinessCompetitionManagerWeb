@@ -16,6 +16,7 @@ import {
 import type { AddressBook, InmailKind, InmailMessage, SendInmailPayload } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -47,7 +48,7 @@ async function loadInbox(): Promise<void> {
     inboxTotal.value = page.total
     unreadCount.value = page.unread
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '加载失败')
+    ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     inboxLoading.value = false
   }
@@ -60,7 +61,7 @@ async function markRead(item: InmailMessage & { recipientId?: number }): Promise
     item.readAt = new Date().toISOString()
     unreadCount.value = Math.max(0, unreadCount.value - 1)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 
@@ -70,7 +71,7 @@ async function markAllRead(): Promise<void> {
     ElMessage.success(`已标记 ${result.updated} 条为已读`)
     await loadInbox()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 
@@ -108,7 +109,7 @@ async function loadSent(): Promise<void> {
   try {
     sent.value = await getSentInmails()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '加载失败')
+    ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     sentLoading.value = false
   }
@@ -129,7 +130,7 @@ async function openCompose(): Promise<void> {
     try {
       addressBook.value = await getAddressBook()
     } catch (e) {
-      ElMessage.error(e instanceof Error ? e.message : '通讯录加载失败')
+      ElMessage.error(errorMessage(e, '通讯录加载失败'))
     }
   }
 }
@@ -184,7 +185,7 @@ async function submitCompose(): Promise<void> {
     selected.value = []
     await loadSent()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '发送失败')
+    ElMessage.error(errorMessage(e, '发送失败'))
   } finally {
     submitting.value = false
   }

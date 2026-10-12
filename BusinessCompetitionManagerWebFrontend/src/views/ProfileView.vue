@@ -7,6 +7,7 @@ import { getMedal, getMyAwards, getMyDevices, getSchools } from '@/api'
 import type { AwardRecord, MedalAsset, Membership, MyDevice, School } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const auth = useAuthStore()
 const user = computed(() => auth.user)
@@ -55,7 +56,7 @@ async function loadSchools(q: string): Promise<void> {
   try {
     schools.value = await getSchools(q || undefined)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     schoolsLoading.value = false
   }
@@ -85,7 +86,7 @@ async function saveProfile(): Promise<void> {
     ElMessage.success('个人信息已保存')
     editVisible.value = false
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     saving.value = false
   }
@@ -100,7 +101,7 @@ async function loadAwards(): Promise<void> {
   try {
     awards.value = await getMyAwards()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     awardsLoading.value = false
   }
@@ -121,7 +122,7 @@ async function openMedal(row: AwardRecord): Promise<void> {
   try {
     medal.value = await getMedal(row.medalId)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     medalLoading.value = false
   }
@@ -136,7 +137,7 @@ async function loadDevices(): Promise<void> {
   try {
     devices.value = await getMyDevices()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     devicesLoading.value = false
   }

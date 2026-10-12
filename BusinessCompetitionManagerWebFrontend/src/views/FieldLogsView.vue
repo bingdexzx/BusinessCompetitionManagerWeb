@@ -6,6 +6,7 @@ import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import { exportFieldLogs, getFieldLogs } from '@/api'
 import type { FieldLogItem, FieldLogQuery } from '@/api/types'
 import { formatDateTime, toDisplay, truncate } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 
@@ -65,7 +66,7 @@ async function load(): Promise<void> {
     total.value = page.total
     selectedRows.value = []
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }
@@ -114,7 +115,7 @@ async function exportLogs(): Promise<void> {
     URL.revokeObjectURL(url)
     ElMessage.success('导出成功')
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
 

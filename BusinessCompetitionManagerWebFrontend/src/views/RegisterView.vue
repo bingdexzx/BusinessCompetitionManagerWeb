@@ -6,6 +6,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import * as api from '@/api'
 import type { School } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -45,7 +46,7 @@ async function searchSchools(query: string): Promise<void> {
   try {
     schoolOptions.value = await api.getSchools(query.trim() || undefined)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '学校搜索失败')
+    ElMessage.error(errorMessage(err, '学校搜索失败'))
   } finally {
     schoolsLoading.value = false
   }
@@ -77,7 +78,7 @@ async function onSubmit(): Promise<void> {
     await auth.login(form.username.trim(), form.password)
     void router.push('/competitions')
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '注册失败，请稍后重试')
+    ElMessage.error(errorMessage(err, '注册失败，请稍后重试'))
   } finally {
     loading.value = false
   }

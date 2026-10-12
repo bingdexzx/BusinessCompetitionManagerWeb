@@ -20,6 +20,7 @@ import {
 } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const router = useRouter()
@@ -118,7 +119,7 @@ async function doTransition(action: NextAction): Promise<void> {
     competition.value = await api.transitionCompetition(props.cid, action.target)
     ElMessage.success(`已推进至「${statusText(action.target)}」`)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
 
@@ -157,7 +158,7 @@ async function openEdit(): Promise<void> {
   try {
     schools.value = await api.getSchools()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     schoolsLoading.value = false
   }
@@ -182,7 +183,7 @@ async function submitEdit(): Promise<void> {
     ElMessage.success('比赛信息已更新')
     showEdit.value = false
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     editing.value = false
   }
@@ -219,7 +220,7 @@ async function doImport(): Promise<void> {
     }
     uploadFile.value = null
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     importing.value = false
   }
@@ -230,7 +231,7 @@ async function loadPackages(): Promise<void> {
   try {
     packages.value = await api.getCompetitionPackages(props.cid)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     packagesLoading.value = false
   }
@@ -282,7 +283,7 @@ async function loadMembers(): Promise<void> {
   try {
     members.value = await api.getCompetitionMembers(props.cid)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     membersLoading.value = false
   }
@@ -305,7 +306,7 @@ async function submitAssign(): Promise<void> {
     showAssign.value = false
     await loadMembers()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     assigning.value = false
   }
@@ -335,7 +336,7 @@ async function submitEditMember(): Promise<void> {
     showEditMember.value = false
     await loadMembers()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     editingMember.value = false
   }
@@ -359,7 +360,7 @@ async function loadInvites(): Promise<void> {
   try {
     invites.value = await api.getInviteCodes(props.cid)
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     invitesLoading.value = false
   }
@@ -378,7 +379,7 @@ async function submitCreateInvite(): Promise<void> {
     showCreateInvite.value = false
     await loadInvites()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     creatingInvite.value = false
   }
@@ -415,7 +416,7 @@ async function loadCompetition(): Promise<void> {
       competition.value = null
       return
     }
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+    ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
   }

@@ -56,6 +56,33 @@ class DatabaseBackpressureMiddleware(MiddlewareMixin):
         return response
 
 
+class ApiErrorHtmlMiddleware(MiddlewareMixin):
+    """/api/* 的 HTML 错误页 → 简洁中文 JSON（DEBUG 404/500 页不直接抛给前端）。
+
+    前端只认 JSON {code,message,details}；URL 未匹配/未捕获异常在 DEBUG 下会返回
+    Django 调试页（大段 HTML），这里统一改写为中文 JSON，保证**所有错误提示简洁且中文**。
+    """
+
+    _MESSAGES = {404: '接口不存在', 500: '服务器内部错误，请稍后重试'}
+
+    def process_response(self, request, response):
+        if not request.path.startswith('/api/'):
+            return response
+        if response.status_code < 400:
+            return response
+        content_type = response.get('Content-Type', '')
+        if 'text/html' not in content_type:
+            return response
+        return JsonResponse(
+            {
+                'code': response.status_code,
+                'message': self._MESSAGES.get(response.status_code, '请求失败，请稍后重试'),
+                'details': request.path,
+            },
+            status=response.status_code,
+        )
+
+
 class CompetitionContextMiddleware(MiddlewareMixin):
     """解析比赛上下文（URL 参数 / X-Competition-Id 头），注册比赛库 alias。
 

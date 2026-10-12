@@ -19,6 +19,7 @@ import { useStockSync } from '@/composables/useStockSync'
 import { useNotifications } from '@/composables/useNotifications'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 echarts.use([
   CandlestickChart,
@@ -67,7 +68,7 @@ async function loadMarket(): Promise<void> {
   try {
     market.value = await getStockMarket(props.cid)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 
@@ -173,7 +174,7 @@ async function loadCandles(code: string): Promise<void> {
       renderChart()
     }
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     if (loadingCode === code) loadingCandles.value = false
   }
@@ -447,7 +448,7 @@ async function manualSync(): Promise<void> {
   try {
     await syncNow(false)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 
@@ -470,7 +471,7 @@ async function onAdvanceRound(): Promise<void> {
     await loadMarket()
     await syncNow(false) // 推进后立即增量同步校正（不拉全量）
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     advancing.value = false
   }
@@ -483,7 +484,7 @@ onMounted(() => {
   void loadMarket()
   // 首次进入（无游标）自动快照起步；已有游标则一次增量
   void syncNow(false).catch((e) => {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   })
 })
 
@@ -502,7 +503,7 @@ watch(
     candleCache.clear()
     void loadMarket()
     void syncNow(false).catch((e) => {
-      ElMessage.error(e instanceof Error ? e.message : '操作失败')
+      ElMessage.error(errorMessage(e, '操作失败'))
     })
   },
 )

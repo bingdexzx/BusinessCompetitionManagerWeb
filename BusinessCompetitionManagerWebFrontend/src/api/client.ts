@@ -119,7 +119,24 @@ async function parseBody(res: Response): Promise<unknown> {
 }
 
 function toApiError(res: Response, body: unknown): ApiError {
-  const fallback = `请求失败（HTTP ${res.status}）`
+  // 中文兜底（简洁描述问题；不把 HTML 错误页/技术细节直接抛给用户）
+  const STATUS_TEXT: Record<number, string> = {
+    400: '请求参数有误',
+    401: '登录已过期，请重新登录',
+    403: '没有权限执行此操作',
+    404: '请求的内容不存在',
+    405: '不支持的请求方法',
+    408: '请求超时，请稍后重试',
+    409: '操作冲突，请刷新后重试',
+    413: '上传内容过大',
+    422: '数据校验未通过',
+    429: '请求过于频繁，请稍后再试',
+    500: '服务器内部错误，请稍后重试',
+    502: '网关错误，请稍后重试',
+    503: '服务器繁忙，请稍后重试',
+    504: '服务器响应超时，请稍后重试',
+  }
+  const fallback = STATUS_TEXT[res.status] || `请求失败（HTTP ${res.status}）`
   if (body && typeof body === 'object') {
     const err = body as Partial<ApiErrorBody>
     return new ApiError(
@@ -129,7 +146,10 @@ function toApiError(res: Response, body: unknown): ApiError {
       err.details ?? body,
     )
   }
-  return new ApiError(typeof body === 'string' && body ? body : fallback, res.status, res.status, body)
+  // 字符串回包：只接受简短中文业务提示（HTML 错误页/英文堆栈一律换中文兜底）
+  const isShortChinese =
+    typeof body === 'string' && body.length <= 200 && /[\u4e00-\u9fa5]/.test(body)
+  return new ApiError(isShortChinese ? (body as string) : fallback, res.status, res.status, body)
 }
 
 let refreshPromise: Promise<boolean> | null = null

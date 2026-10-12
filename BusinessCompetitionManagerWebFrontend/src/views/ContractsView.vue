@@ -6,6 +6,7 @@ import { createContract, getCompanies, getContractTypes, getContracts, getFiscal
 import { useNotifications } from '@/composables/useNotifications'
 import type { Company, Contract, ContractType, FiscalYear } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
+import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const router = useRouter()
@@ -66,7 +67,7 @@ async function loadPage(nextPage = page.value): Promise<void> {
     page.value = result.page
     lastSyncAt.value = new Date().toISOString()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '加载失败')
+    ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     loading.value = false
   }
@@ -94,7 +95,7 @@ async function loadContracts(full = false): Promise<void> {
       await loadPage(page.value) // 增量失败回退当前页重拉
       lastSyncAt.value = new Date().toISOString()
     } catch {
-      ElMessage.error(e instanceof Error ? e.message : '同步失败')
+      ElMessage.error(errorMessage(e, '同步失败'))
     }
   } finally {
     syncing.value = false
@@ -228,7 +229,7 @@ async function submitCreate(): Promise<void> {
     await loadContracts()
     if (created?.id) openDetail(created)
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     creating.value = false
   }
@@ -246,7 +247,7 @@ async function loadBaseData(): Promise<void> {
     companies.value = comps
     fiscalYears.value = fys
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
+    ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 

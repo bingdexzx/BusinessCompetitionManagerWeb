@@ -13,6 +13,7 @@
 import { ref, shallowRef, toValue, type MaybeRefOrGetter } from 'vue'
 import { syncStockMarket } from '@/api'
 import { ApiError } from '@/api/client'
+import { errorMessage } from '@/utils/errors'
 import type {
   Stock,
   StockCandle,
@@ -195,11 +196,11 @@ async function runSync(full: boolean): Promise<void> {
     // 404 = 比赛不存在/已删除（旧页面残留）：终止同步，避免无限重试风暴
     if (e instanceof ApiError && e.status === 404) {
       missing.value = true
-      lastError.value = e.message
+      lastError.value = errorMessage(e, '比赛不存在或已删除')
       stop()
       throw e
     }
-    lastError.value = e instanceof Error ? e.message : '同步失败'
+    lastError.value = errorMessage(e, '同步失败')
     throw e
   } finally {
     syncing.value = false
