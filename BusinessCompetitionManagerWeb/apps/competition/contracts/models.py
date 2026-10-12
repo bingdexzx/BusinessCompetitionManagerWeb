@@ -176,6 +176,10 @@ class ContractCheck(models.Model):
     checkpoint = models.CharField('检查点', max_length=16, choices=Checkpoint.choices)
     problems = models.JSONField('检查问题列表（空=通过）', default=list, blank=True)
     passed = models.BooleanField('通过', default=True)
+    basis = models.JSONField(
+        '检查依据快照（当时的字段值）', default=dict, blank=True,
+        # {"buyer": {"cash": 1000}, ...} —— 重演时按账本链替换为重算值展示
+    )
     checked_by = models.BigIntegerField('执行人（全局库用户 ID）', null=True, blank=True)
     checked_by_username = models.CharField('执行人用户名', max_length=150, blank=True)
     checked_at = models.DateTimeField('检查时间', auto_now_add=True)

@@ -15,6 +15,7 @@ import type {
   ContractEffect,
   ContractSyncPage,
   ContractListPage,
+  ContractLedger,
   ContractType,
   CreateCompetitionPayload,
   CreateContractPayload,
@@ -324,6 +325,11 @@ export function confirmContract(cid: number | string, id: number): Promise<Contr
 
 export function getContractEffects(cid: number | string, id: number): Promise<ContractEffect[]> {
   return http.get<ContractEffect[]>(`/competitions/${cid}/contracts/${id}/effects`)
+}
+
+/** 资金账本链（查账）：该合同触及字段的全链——当时值（审计）+ 重演值（自动同步） */
+export function getContractLedger(cid: number | string, id: number): Promise<ContractLedger> {
+  return http.get<ContractLedger>(`/competitions/${cid}/contracts/${id}/ledger`)
 }
 
 export function requestContractModify(

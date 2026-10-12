@@ -124,11 +124,24 @@ def run_check(module, contract: Contract, *, basis=None) -> list:
     return [str(p) for p in (problems or [])]
 
 
+def run_check_ex(module, contract: Contract, *, basis=None) -> tuple:
+    """运行 check 并附带**检查依据快照**（当时字段值，供账本重演替换展示）。"""
+    context = build_context(contract, basis=basis)
+    problems = module.check(context)
+    problems = [str(p) for p in (problems or [])]
+    # 快照 {role: {field: value}}（仅本合同参与方的字段；体积=字段数，可控）
+    snapshot = {}
+    for (role, field), value in getattr(context, '_fields', {}).items():
+        snapshot.setdefault(role, {})[field] = value
+    return problems, snapshot
+
+
 def record_check(contract: Contract, checkpoint: str, problems: list, *, user=None,
-                 round_no=None):
+                 round_no=None, basis=None):
     """检查结果落库留痕（append-only，修改后界面按轮次回放当时的检查内容）。
 
-    round_no：事务回滚补记失败留痕时，显式指定检查所属轮次（可能与回滚后的合同轮次不同）。
+    - round_no：事务回滚补记失败留痕时，显式指定检查所属轮次（可能与回滚后的合同轮次不同）；
+    - basis：检查依据快照（当时的字段值），账本重演时按链上重算值替换展示（§查账同步）。
     """
     from apps.competition.contracts.models import ContractCheck
 
@@ -138,6 +151,7 @@ def record_check(contract: Contract, checkpoint: str, problems: list, *, user=No
         checkpoint=checkpoint,
         problems=list(problems or []),
         passed=not problems,
+        basis=basis or {},
         checked_by=getattr(user, 'id', None),
         checked_by_username=getattr(user, 'username', ''),
     )
@@ -397,8 +411,8 @@ def submit_contract(contract: Contract, *, user):
     if contract.status != Contract.Status.DRAFT:
         raise ContractError(f'当前状态 {contract.status} 不允许提交')
     module = load_contract_module(contract)
-    problems = run_check(module, contract)
-    record_check(contract, 'SUBMIT', problems, user=user)   # 检查内容落库（含失败留痕）
+    problems, check_basis = run_check_ex(module, contract)
+    record_check(contract, 'SUBMIT', problems, user=user, basis=check_basis)  # 检查内容+依据落库
     if problems:
         raise CheckFailedError('检查未通过：' + '；'.join(problems))
     contract.status = Contract.Status.PENDING_PARTY
@@ -494,8 +508,8 @@ def execute_and_post(contract: Contract):
             contract.save(update_fields=['status', 'executed_at', 'updated_at'])
 
             # 已执行 → 落账：再次运行检查（获取公司数据并执行检查）
-            problems = run_check(module, contract, basis=basis)
-            record_check(contract, 'RECHECK', problems, user=operator)  # 检查内容落库
+            problems, check_basis = run_check_ex(module, contract, basis=basis)
+            record_check(contract, 'RECHECK', problems, user=operator, basis=check_basis)
             if problems:
                 raise CheckFailedError('落账前再次检查未通过：' + '；'.join(problems))
 
@@ -685,10 +699,10 @@ def submit_changes(contract: Contract, *, user, inputs=None, parties=None):
     old_inputs, old_parties = contract.inputs, contract.parties
     contract.inputs, contract.parties = new_inputs, new_parties
     try:
-        check_problems = run_check(module, contract)
+        check_problems, check_basis = run_check_ex(module, contract)
     finally:
         contract.inputs, contract.parties = old_inputs, old_parties
-    record_check(contract, 'MODIFY', check_problems, user=user)  # 修改后新检查落库
+    record_check(contract, 'MODIFY', check_problems, user=user, basis=check_basis)  # 修改后新检查落库
     if check_problems:
         raise CheckFailedError('新的检查未通过：' + '；'.join(check_problems))
 
@@ -725,8 +739,8 @@ def _execute_after_modify(contract: Contract):
     contract.executed_at = timezone.now()
     contract.save(update_fields=['status', 'executed_at', 'updated_at'])
 
-    problems = run_check(module, contract, basis=basis)
-    record_check(contract, 'RECHECK', problems, user=operator)  # 重落账前检查落库
+    problems, check_basis = run_check_ex(module, contract, basis=basis)
+    record_check(contract, 'RECHECK', problems, user=operator, basis=check_basis)  # 重落账前检查落库
     if problems:
         raise CheckFailedError('重落账前检查未通过：' + '；'.join(problems))
 

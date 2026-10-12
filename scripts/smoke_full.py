@@ -257,6 +257,59 @@ def main():
     check('回滚与重落账字段日志', 'CONTRACT_ROLLBACK' in sources and 'CONTRACT_REPOST' in sources,
           str(sources))
 
+    # ====== 查账同步：账本重演（需求方场景：上游修改后下游数字自动同步） ======
+    print('\n== 查账同步（账本重演） ==')
+
+    def _post_contract(name, qty):
+        r = post(client, f'/api/competitions/{cid}/contracts', {
+            'contractTypeKey': 'purchase', 'name': name,
+            'parties': [{'role': 'buyer', 'companyId': comp1['id']},
+                        {'role': 'seller', 'companyId': comp2['id']}],
+            'inputs': {'product': 'p1', 'quantity': qty, 'unitPrice': 5},
+        }, p1, raw=True)
+        c = r.json()
+        post(client, f'/api/competitions/{cid}/contracts/{c["id"]}/submit', {}, p1, raw=True)
+        post(client, f'/api/competitions/{cid}/contracts/{c["id"]}/confirm', {}, p1, raw=True)
+        post(client, f'/api/competitions/{cid}/contracts/{c["id"]}/confirm', {}, p3, raw=True)
+        return c
+
+    contract_a = _post_contract('账本A（-200）', 40)   # 99900 → 99700（当时）
+    contract_b = _post_contract('账本B（-200）', 40)   # 99700 → 99500（当时）
+
+    def _cash_effect(cid_contract_x):
+        rows = client.get(
+            f'/api/competitions/{cid}/contracts/{cid_contract_x}/effects', **p1).json()
+        return next(e for e in rows if e['fieldKey'] == 'cash' and e['isCurrent'])
+
+    b0 = _cash_effect(contract_b['id'])
+    check('合同B 落账当时值（99700→99500）', b0['before'] == 99700 and b0['after'] == 99500,
+          f"{b0['before']}→{b0['after']}")
+
+    # 修改合同A：-200 → -100（完整修改流）
+    post(client, f'/api/competitions/{cid}/contracts/{contract_a["id"]}/request-modify',
+         {'reason': '金额修改'}, p1, raw=True)
+    post(client, f'/api/competitions/{cid}/contracts/{contract_a["id"]}/modify/review',
+         {'action': 'approve'}, admin, raw=True)
+    post(client, f'/api/competitions/{cid}/contracts/{contract_a["id"]}/modify/other-party',
+         {'action': 'approve'}, p3, raw=True)
+    post(client, f'/api/competitions/{cid}/contracts/{contract_a["id"]}/modify/submit',
+         {'inputs': {'product': 'p1', 'quantity': 20, 'unitPrice': 5}}, p1, raw=True)
+
+    b1 = _cash_effect(contract_b['id'])
+    check('合同B **重演值自动同步**（99800→99600）',
+          b1['replayBefore'] == 99800 and b1['replayAfter'] == 99600,
+          f"{b1['replayBefore']}→{b1['replayAfter']}")
+    check('合同B 当时值保留为审计（99700→99500）',
+          b1['before'] == 99700 and b1['after'] == 99500, f"{b1['before']}→{b1['after']}")
+
+    ledger_b = client.get(
+        f'/api/competitions/{cid}/contracts/{contract_b["id"]}/ledger', **p1).json()
+    cash_chain = next((c for c in ledger_b.get('chains', []) if c['fieldKey'] == 'cash'), {})
+    check('账本链当前值=99600（链条自洽）', cash_chain.get('currentValue') == 99600,
+          str(cash_chain.get('currentValue')))
+    check('检查依据带重演值（replayBasis）',
+          any('replayBasis' in c for c in ledger_b.get('checks', [])), '')
+
     # ================================================== M4：财年 / 补录
     print('\n== M4 财年与补录 ==')
     resp = post(client, f'/api/competitions/{cid}/fiscal-years/close', {}, admin, raw=True)

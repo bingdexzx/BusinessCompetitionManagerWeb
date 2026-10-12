@@ -6,6 +6,7 @@ import {
   confirmContract,
   getContract,
   getContractEffects,
+  getContractLedger,
   getTeams,
   requestContractModify,
   reviewBackfill,
@@ -14,7 +15,7 @@ import {
   submitContract,
   submitContractChanges,
 } from '@/api'
-import type { Contract, ContractCheck, ContractEffect, ContractParty, TimelineNode } from '@/api/types'
+import type { Contract, ContractCheck, ContractEffect, ContractLedger, ContractParty, TimelineNode } from '@/api/types'
 import { formatDateTime, toDisplay } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications } from '@/composables/useNotifications'
@@ -89,8 +90,19 @@ async function loadEffects(): Promise<void> {
   }
 }
 
-// ---------- 检查记录（§7.3 四检查点落库；修改后按轮次回放） ----------
-const checks = computed<ContractCheck[]>(() => contract.value?.checks ?? [])
+// ---------- 资金账本链（查账同步：当时值=审计，重演值=按当前内容重算） ----------
+const ledger = ref<ContractLedger | null>(null)
+
+async function loadLedger(): Promise<void> {
+  try {
+    ledger.value = await getContractLedger(props.cid, Number(props.id))
+  } catch {
+    ledger.value = null // 账本链为增强展示，失败不阻塞页面
+  }
+}
+
+// ---------- 检查记录（§7.3 四检查点落库；修改后按轮次回放；依据带重演值） ----------
+const checks = computed<ContractCheck[]>(() => ledger.value?.checks ?? contract.value?.checks ?? [])
 
 function effectRowClass({ row }: { row: ContractEffect }): string {
   return row.isCurrent ? '' : 'effect-rolled-back' // 已回滚轮次置灰（审计历史）
@@ -106,6 +118,7 @@ useNotifications((message) => {
     refreshTimer = null
     void load()
     void loadEffects()
+    void loadLedger()
   }, 1000)
 })
 
@@ -208,6 +221,8 @@ async function runAction(action: () => Promise<unknown>, success: string): Promi
     await action()
     ElMessage.success(success)
     await load()
+    await loadEffects()
+    await loadLedger()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '操作失败')
   } finally {
@@ -357,6 +372,7 @@ function submitChanges(): void {
 onMounted(() => {
   void load()
   void loadEffects()
+  void loadLedger()
   void loadMyCompanies()
 })
 
@@ -365,6 +381,7 @@ watch(
   () => {
     void load()
     void loadEffects()
+    void loadLedger()
   },
 )
 
@@ -609,6 +626,26 @@ function goBack(): void {
             </div>
           </template>
         </el-table-column>
+        <el-table-column label="检查依据（当时 → 重演）" min-width="240">
+          <template #default="{ row }">
+            <div v-if="row.basis && Object.keys(row.basis).length" class="basis-list">
+              <div v-for="(fields, role) in row.basis" :key="role" class="basis-row">
+                <span class="basis-role">{{ role }}：</span>
+                <template v-for="(val, field) in fields" :key="field">
+                  <span class="basis-item">
+                    {{ field }}
+                    <b class="basis-replay">{{ toDisplay(row.replayBasis?.[role]?.[field] ?? val) }}</b>
+                    <span
+                      v-if="toDisplay(row.replayBasis?.[role]?.[field] ?? val) !== toDisplay(val)"
+                      class="basis-audit"
+                    >（当时 {{ toDisplay(val) }}）</span>
+                  </span>
+                </template>
+              </div>
+            </div>
+            <span v-else class="num-empty">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="检查人 / 时间" width="220">
           <template #default="{ row }">
             {{ row.checkedBy }} · {{ formatDateTime(row.checkedAt) }}
@@ -651,6 +688,22 @@ function goBack(): void {
             <span class="effect-after">{{ toDisplay(row.after) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="重演（当前链）" min-width="220">
+          <template #default="{ row }">
+            <template v-if="row.isCurrent && row.replayBefore !== undefined">
+              <span
+                class="effect-replay"
+                :class="{ 'replay-drift': toDisplay(row.replayBefore) !== toDisplay(row.before) }"
+              >
+                {{ toDisplay(row.replayBefore) }} → {{ toDisplay(row.replayAfter) }}
+              </span>
+              <div v-if="toDisplay(row.replayBefore) !== toDisplay(row.before)" class="replay-tip">
+                上游已修改，按当前内容重算
+              </div>
+            </template>
+            <span v-else class="num-empty">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="轮次状态" width="150" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.isCurrent" type="success" size="small">
@@ -665,6 +718,45 @@ function goBack(): void {
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
       </el-table>
+    </section>
+
+    <!-- 资金账本链（查账同步：上游修改后下游重演值自动重算） -->
+    <section v-if="ledger?.chains?.length" class="panel ledger-panel">
+      <h2 class="section-title">资金账本链（重演 · 查账）</h2>
+      <div class="effects-hint">
+        按合同编号顺序重放**当前生效效果**：上游合同修改后，下游节点的重演值**自动同步**；
+        「当时值」为落账瞬间的不可变审计，两者不一致处以重演值为当前账目口径。
+      </div>
+      <div v-for="chain in ledger.chains" :key="`${chain.companyId}-${chain.fieldKey}`" class="ledger-chain">
+        <div class="ledger-head">
+          <span class="ledger-title">公司 #{{ chain.companyId }} · 字段 <b>{{ chain.fieldKey }}</b></span>
+          <span class="ledger-range">
+            初始 <b>{{ toDisplay(chain.initialValue) }}</b>
+            <span class="effect-arrow"> ⇒ </span>
+            当前（重演） <b class="effect-after">{{ toDisplay(chain.currentValue) }}</b>
+          </span>
+        </div>
+        <el-table :data="chain.nodes" border size="small" style="width: 100%">
+          <el-table-column label="合同" min-width="180">
+            <template #default="{ row }">
+              <span class="ledger-contract">{{ row.unifiedNumber || row.contractName }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="效果" width="120">
+            <template #default="{ row }">{{ row.op }} {{ toDisplay(row.value) }}</template>
+          </el-table-column>
+          <el-table-column label="重演（当前账目）" min-width="170">
+            <template #default="{ row }">
+              <span class="effect-replay">{{ toDisplay(row.replayBefore) }} → {{ toDisplay(row.replayAfter) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="当时（审计）" min-width="170">
+            <template #default="{ row }">
+              <span class="basis-audit">{{ toDisplay(row.auditBefore) }} → {{ toDisplay(row.auditAfter) }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </section>
 
     <!-- 申请修改弹窗 -->
@@ -962,5 +1054,64 @@ function goBack(): void {
 .check-problem {
   color: var(--color-danger, #ef4444);
   font-size: var(--font-sm);
+}
+.basis-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--font-sm);
+}
+.basis-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.basis-role {
+  color: var(--color-text-tertiary);
+}
+.basis-item {
+  color: var(--color-text-secondary);
+}
+.basis-replay {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.basis-audit {
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+
+// ---------- 重演值 / 资金账本链 ----------
+.effect-replay {
+  color: var(--color-accent, #8b5cf6);
+  font-weight: 600;
+}
+.replay-drift {
+  color: var(--color-warning, #f59e0b);
+}
+.replay-tip {
+  color: var(--color-warning, #f59e0b);
+  font-size: 12px;
+  margin-top: 2px;
+}
+.ledger-chain {
+  margin-bottom: 18px;
+}
+.ledger-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.ledger-title {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.ledger-range {
+  color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+}
+.ledger-contract {
+  font-weight: 500;
 }
 </style>

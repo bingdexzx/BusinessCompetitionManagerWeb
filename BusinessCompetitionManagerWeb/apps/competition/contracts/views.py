@@ -92,24 +92,11 @@ def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
 
 
 def _checks_data(contract: Contract) -> list:
-    """检查记录（§7.3 四检查点落库）：按轮次回放「当时的检查内容」。
+    """检查记录（§7.3 四检查点落库）：含依据快照（basis）与**依据重演**（replayBasis）——
+    上游合同修改后，检查依据数字按账本链重算值展示（查账同步）。"""
+    from apps.competition.contracts import ledger
 
-    roundStatus：ACTIVE=当前生效轮次；HISTORY=历史轮次（合同修改后旧检查成为历史）。
-    """
-    out = []
-    for c in contract.checks.all():
-        out.append({
-            'id': c.id,
-            'roundNo': c.round_no,
-            'checkpoint': c.checkpoint,
-            'checkpointLabel': c.get_checkpoint_display(),
-            'problems': c.problems,
-            'passed': c.passed,
-            'checkedBy': c.checked_by_username or (str(c.checked_by) if c.checked_by else '系统'),
-            'checkedAt': c.checked_at.isoformat(),
-            'roundStatus': 'ACTIVE' if c.round_no == contract.round_no else 'HISTORY',
-        })
-    return out
+    return ledger.annotate_checks(contract)
 
 
 def _timeline(contract: Contract) -> list:
@@ -324,24 +311,29 @@ class ContractConfirmView(APIView):
 
 
 class ContractEffectsView(APIView):
-    """效果审计（§7.2）：**每行标注轮次状态**——修改后旧轮效果为「已回滚」，
-    仅当前轮次（contract.round_no）为「生效中」，解决修改后展示混乱问题。"""
+    """效果审计（§7.2）：每行标注轮次状态 + **重演值**（replayBefore/replayAfter）——
+    修改上游合同后，下游合同的重演值自动重算（当时值保留为不可变审计，查账链条自洽）。"""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):
+        from apps.competition.contracts import ledger
+
         contract = get_object_or_404(Contract, pk=pk)
-        return Response([
-            {
-                'id': e.id, 'companyId': e.company_id, 'fieldKey': e.field_key,
-                'op': e.op, 'value': e.value_raw,
-                'before': e.before_raw, 'after': e.after_raw,
-                'roundNo': e.round_no, 'createdAt': e.created_at.isoformat(),
-                'roundStatus': 'ACTIVE' if e.round_no == contract.round_no else 'ROLLED_BACK',
-                'isCurrent': e.round_no == contract.round_no,
-            }
-            for e in contract.effects.order_by('-round_no', 'created_at', 'id')
-        ])
+        return Response(ledger.annotate_effects(contract))
+
+
+class ContractLedgerView(APIView):
+    """资金账本链（查账）：该合同触及的 (公司, 字段) 全链——
+    初始值 → 各合同节点（当时值 + 重演值 + 检查依据重演）→ 当前值。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid, pk):
+        from apps.competition.contracts import ledger
+
+        contract = get_object_or_404(Contract, pk=pk)
+        return Response(ledger.contract_ledger(contract))
 
 
 # ---------------------------------------------------------------- 修改流程（T6–T10）

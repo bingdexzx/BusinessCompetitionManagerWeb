@@ -335,6 +335,10 @@ export interface ContractCheck {
   checkedBy: string
   checkedAt: string
   roundStatus: 'ACTIVE' | 'HISTORY'
+  /** 检查依据快照（当时的字段值）：{"buyer": {"cash": 1000}} */
+  basis?: Record<string, Record<string, unknown>>
+  /** 依据重演值（账本链重算，上游合同修改后自动同步）：{"buyer": {"cash": 900}} */
+  replayBasis?: Record<string, Record<string, unknown>>
 }
 
 export interface ContractEffect {
@@ -350,6 +354,37 @@ export interface ContractEffect {
   /** ACTIVE=当前生效轮次；ROLLED_BACK=已回滚（合同修改后旧轮效果成为审计历史） */
   roundStatus: 'ACTIVE' | 'ROLLED_BACK'
   isCurrent: boolean
+  /** 重演值（按当前内容重算的链条值；与当时值不一致说明上游被修改过） */
+  replayBefore?: unknown
+  replayAfter?: unknown
+}
+
+/** 资金账本链节点（当时值=审计；重演值=按当前内容重算，自动同步） */
+export interface LedgerNode {
+  effectId: number
+  contractId: number
+  contractName: string
+  unifiedNumber: string
+  roundNo: number
+  op: string
+  value: unknown
+  auditBefore: unknown
+  auditAfter: unknown
+  replayBefore: unknown
+  replayAfter: unknown
+}
+
+export interface LedgerChain {
+  companyId: number
+  fieldKey: string
+  initialValue: unknown
+  currentValue: unknown
+  nodes: LedgerNode[]
+}
+
+export interface ContractLedger {
+  chains: LedgerChain[]
+  checks: ContractCheck[]
 }
 
 export interface ContractListPage {
