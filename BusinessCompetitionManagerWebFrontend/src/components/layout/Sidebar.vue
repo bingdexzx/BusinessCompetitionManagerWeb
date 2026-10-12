@@ -70,17 +70,19 @@
         </el-menu-item>
       </el-menu-item-group>
 
-      <el-menu-item index="/messages">
-        <el-icon><Bell /></el-icon>
-        <span>消息中心</span>
-      </el-menu-item>
+      <!-- 个人中心：系统级内容（独立于比赛，任何比赛上下文外都可访问） -->
+      <el-menu-item-group title="个人中心" class="sidebar-group">
+        <el-menu-item index="/messages">
+          <el-icon><Bell /></el-icon>
+          <span>消息中心</span>
+        </el-menu-item>
+        <el-menu-item index="/profile">
+          <el-icon><UserFilled /></el-icon>
+          <span>个人档案</span>
+        </el-menu-item>
+      </el-menu-item-group>
 
-      <el-menu-item index="/profile">
-        <el-icon><UserFilled /></el-icon>
-        <span>个人档案</span>
-      </el-menu-item>
-
-      <!-- 系统：仅系统超管可见 -->
+      <!-- 系统：系统级管理工具，仅系统超管可见 -->
       <el-menu-item-group v-if="auth.isSuperuser" title="系统" class="sidebar-group">
         <el-menu-item index="/logs">
           <el-icon><Monitor /></el-icon>

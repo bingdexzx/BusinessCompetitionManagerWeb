@@ -174,6 +174,7 @@ const SECTION_TITLES: Record<string, string> = {
   '': '比赛详情',
   teams: '组队管理',
   contracts: '合同工作台',
+  stocks: '股票市场',
   fiscal: '财年与补录',
   settlement: '结算与获奖',
   logs: '字段日志',
@@ -184,12 +185,16 @@ const currentPageTitle = computed(() => {
   const path = route.path
   const direct = PAGE_TITLES[path]
   if (direct) return direct
-  const match = /^\/competitions\/[^/]+(?:\/([^/]+))?/.exec(path)
+  const match = /^\/competitions\/[^/]+(?:\/([^/]+))?(?:\/([^/]+))?/.exec(path)
   if (match) {
     const section = match[1] ?? ''
+    const sub = match[2] ?? ''
     if (section === 'contracts') {
       // 合同详情页也归入合同工作台
       return /^\/competitions\/[^/]+\/contracts\/[^/]+$/.test(path) ? '合同详情' : '合同工作台'
+    }
+    if (section === 'stocks') {
+      return sub === 'manage' ? '股票交易管理' : '股票行情'
     }
     return SECTION_TITLES[section] ?? ''
   }
