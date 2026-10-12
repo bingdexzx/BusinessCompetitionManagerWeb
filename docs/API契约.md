@@ -104,7 +104,18 @@
 | GET | `/me/medals`、`/me/medals/{id}` | 电子奖牌（**仅在线展示**，D12） |
 | POST | `/medals` | 奖牌资产管理（系统超管） |
 
-## 9. 日志 / 消息 / 审计（M6，§14）
+## 9. 站内信 / 日志 / 审计（M6，§14）
+
+**站内信（系统级，独立于比赛）**：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/messages` | 收件箱（站内信/公告/系统通知统一收件箱；`?unread=1&kind=&limit&offset`，返回 total/unread/items） |
+| GET | `/messages/sent` | 我发送的（含收件人阅读状态） |
+| POST | `/messages/send` | 发送 `{title, body, recipientUserIds[], competitionIds[]}`——**个人自由**；**按比赛批量（公告）仅超管**；自动去重 |
+| POST | `/messages/{recipientId}/read` | 标记已读（按收件人记录） |
+| POST | `/messages/read-all` | 全部已读 |
+| GET | `/messages/address-book` | 收件人多选框数据：比赛（选中=全员）+ 个人 |
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -113,9 +124,6 @@
 | GET | `/logs/devices` | 设备管理（仅系统超管） |
 | GET | `/competitions/{cid}/logs/fields` | 字段日志（按可见公司过滤；`?companyId&fieldKey&contractId&operatorId&source&event&traceId&from&to`） |
 | POST | `.../logs/fields/export` | 导出字段日志 |
-| GET | `/competitions/{cid}/messages` | 本比赛消息（`?unread=1`） |
-| POST | `.../messages/{id}/read` | 标记已读 |
-| GET | `/me/messages` | 跨比赛消息汇总 |
 | GET | `/competitions/{cid}/audit-logs` | 比赛内审计（超管） |
 
 ## 10. 权限矩阵（§15.2 摘要）

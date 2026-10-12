@@ -9,7 +9,7 @@ from apps.common.context import get_competition_alias
 
 GLOBAL_APPS = {
     'accounts', 'schools', 'competitions', 'memberships', 'logs',
-    'teams', 'invites', 'profiles',
+    'teams', 'invites', 'profiles', 'inmail',
     'admin', 'auth', 'contenttypes', 'sessions', 'messages', 'staticfiles',
 }
 

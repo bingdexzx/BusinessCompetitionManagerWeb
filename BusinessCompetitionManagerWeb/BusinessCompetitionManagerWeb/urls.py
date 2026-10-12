@@ -22,12 +22,13 @@ urlpatterns = [
     path('api/', include('apps.global_.teams.urls')),
     path('api/', include('apps.global_.invites.urls')),
     path('api/', include('apps.global_.profiles.urls')),
+    # 系统级站内信（独立于比赛）
+    path('api/', include('apps.global_.messages.urls')),
     # 比赛域（/api/competitions/{cid}/... 由多库路由解析到对应比赛库）
     path('api/', include('apps.competition.companies.urls')),
     path('api/', include('apps.competition.contracts.urls')),
     path('api/', include('apps.competition.fiscal.urls')),
     path('api/', include('apps.competition.fieldlogs.urls')),
-    path('api/', include('apps.competition.messages.urls')),
     path('api/', include('apps.competition.audit.urls')),
     path('api/', include('apps.competition.settlement.urls')),
 ]

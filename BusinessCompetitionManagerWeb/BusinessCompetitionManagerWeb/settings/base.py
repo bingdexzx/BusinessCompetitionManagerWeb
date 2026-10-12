@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'apps.global_.teams',
     'apps.global_.invites',
     'apps.global_.profiles',
+    'apps.global_.messages',  # 系统级站内信（label=inmail）
     # 比赛域应用（apps/competition，路由到 comp_<id>）
     'apps.competition.companies',
     'apps.competition.industries',

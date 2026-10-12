@@ -294,10 +294,26 @@ def main():
     else:
         check('电子奖牌在线展示（D12）', False, '无奖牌记录')
 
-    # ================================================== M6：消息 / 权限
-    print('\n== M6 消息与权限 ==')
-    messages = client.get('/api/me/messages', **p1).json()
-    check('消息中心（跨比赛汇总）', bool(messages), f'{len(messages)} 条')
+    # ================================================== M6：站内信 / 权限
+    print('\n== M6 站内信与权限 ==')
+    p3_id = client.get('/api/me', **p3).json()['id']
+    inbox = client.get('/api/messages', **p1).json()
+    check('站内信收件箱（系统通知统一收件箱）', inbox.get('total', 0) > 0, f"{inbox.get('total')} 条")
+
+    resp = post(client, '/api/messages/send',
+                {'title': '个人消息', 'body': 'hello', 'recipientUserIds': [p3_id]}, p1, raw=True)
+    check('个人站内信自由发送', resp.status_code == 201, str(resp.status_code))
+    inbox3 = client.get('/api/messages', **p3).json()
+    check('收件人收到站内信', any(i.get('title') == '个人消息' for i in inbox3.get('items', [])),
+          str(inbox3.get('total')))
+
+    resp = post(client, '/api/messages/send',
+                {'title': '公告', 'body': 'bulk', 'competitionIds': [cid]}, p1, raw=True)
+    check('按比赛批量（公告）仅超管', resp.status_code == 403, str(resp.status_code))
+    resp = post(client, '/api/messages/send',
+                {'title': '公告', 'body': 'bulk', 'competitionIds': [cid]}, admin, raw=True)
+    check('超管按比赛批量发送成功', resp.status_code == 201, str(resp.status_code))
+
     resp = client.get('/api/logs/network', **p1)
     check('网络日志仅系统超管（§15.2）', resp.status_code == 403, str(resp.status_code))
     resp = client.get(f'/api/competitions/{cid}/logs/fields', **p2)

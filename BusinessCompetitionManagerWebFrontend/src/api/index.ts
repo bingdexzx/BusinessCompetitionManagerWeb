@@ -27,7 +27,10 @@ import type {
   InviteRedeemResult,
   LoginResponse,
   MedalAsset,
-  MessageItem,
+  AddressBook,
+  InmailMessage,
+  InmailPage,
+  SendInmailPayload,
   MyDevice,
   NetworkLogPage,
   NetworkLogQuery,
@@ -94,8 +97,48 @@ export function getMedal(id: number): Promise<MedalAsset> {
   return http.get<MedalAsset>(`/me/medals/${id}`)
 }
 
-export function getMyMessages(): Promise<MessageItem[]> {
-  return http.get<MessageItem[]>('/me/messages')
+export function getMyMessages(): Promise<InmailPage> {
+  return http.get<InmailPage>('/messages')
+}
+
+// ---------- 站内信（系统级，独立于比赛） ----------
+
+/** 收件箱（站内信/公告/系统通知统一收件箱，可筛未读/类型） */
+export function getInbox(
+  query: { unread?: boolean; kind?: string; limit?: number; offset?: number } = {},
+): Promise<InmailPage> {
+  return http.get<InmailPage>('/messages', {
+    query: {
+      unread: query.unread ? 1 : undefined,
+      kind: query.kind,
+      limit: query.limit,
+      offset: query.offset,
+    },
+  })
+}
+
+/** 我发送的站内信 */
+export function getSentInmails(): Promise<InmailMessage[]> {
+  return http.get<InmailMessage[]>('/messages/sent')
+}
+
+/** 发送站内信：收件人为「比赛（全员）+ 个人」混合多选；按比赛批量（公告）仅超管 */
+export function sendInmail(payload: SendInmailPayload): Promise<InmailMessage> {
+  return http.post<InmailMessage>('/messages/send', payload)
+}
+
+/** 标记已读（按收件人记录 id） */
+export function readInmail(recipientId: number): Promise<{ ok: boolean }> {
+  return http.post<{ ok: boolean }>(`/messages/${recipientId}/read`, {})
+}
+
+export function readAllInmails(): Promise<{ ok: boolean; updated: number }> {
+  return http.post<{ ok: boolean; updated: number }>('/messages/read-all', {})
+}
+
+/** 收件人通讯录（多选框数据：比赛 + 个人） */
+export function getAddressBook(): Promise<AddressBook> {
+  return http.get<AddressBook>('/messages/address-book')
 }
 
 // ---------- 学校 ----------
@@ -407,16 +450,6 @@ export function exportFieldLogs(
   ids?: number[],
 ): Promise<{ items: unknown[] }> {
   return http.post<{ items: unknown[] }>(`/competitions/${cid}/logs/fields/export`, ids ? { ids } : {})
-}
-
-export function getMessages(cid: number | string, unread?: boolean): Promise<MessageItem[]> {
-  return http.get<MessageItem[]>(`/competitions/${cid}/messages`, {
-    query: { unread: unread ? 1 : undefined },
-  })
-}
-
-export function readMessage(cid: number | string, id: number): Promise<{ ok: boolean }> {
-  return http.post<{ ok: boolean }>(`/competitions/${cid}/messages/${id}/read`, {})
 }
 
 export function getAuditLogs(

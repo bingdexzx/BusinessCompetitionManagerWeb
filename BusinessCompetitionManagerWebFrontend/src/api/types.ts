@@ -551,16 +551,41 @@ export interface FieldLogQuery {
   offset?: number
 }
 
-export interface MessageItem {
+// ---------- 站内信（系统级，独立于比赛） ----------
+
+export type InmailKind = 'PERSONAL' | 'ANNOUNCE' | 'SYSTEM'
+
+export interface InmailMessage {
   id: number
-  kind: string
+  kind: InmailKind
+  kindLabel: string
   title: string
   body: string
   payload: Record<string, unknown>
+  competitionId: number | null
+  senderId: number | null
+  senderName: string
   readAt: string | null
   createdAt: string
-  competitionId?: number
-  competitionName?: string
+  recipients?: Array<{ userId: number; username: string; readAt: string | null }>
+}
+
+export interface InmailPage {
+  total: number
+  unread: number
+  items: InmailMessage[]
+}
+
+export interface SendInmailPayload {
+  title: string
+  body?: string
+  recipientUserIds?: number[]
+  competitionIds?: number[]
+}
+
+export interface AddressBook {
+  competitions: Array<{ id: number; name: string; memberCount: number }>
+  users: Array<{ id: number; username: string; displayName: string }>
 }
 
 export interface AuditLogItem {
