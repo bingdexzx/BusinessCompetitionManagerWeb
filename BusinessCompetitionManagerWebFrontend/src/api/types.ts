@@ -320,6 +320,21 @@ export interface Contract {
   createdBy: number
   createdAt: string
   timeline?: TimelineNode[]
+  /** 检查记录（§7.3 四检查点落库；修改后按轮次回放当时的检查内容） */
+  checks?: ContractCheck[]
+}
+
+/** 检查记录条目（roundStatus：ACTIVE=当前生效轮次；HISTORY=历史轮次） */
+export interface ContractCheck {
+  id: number
+  roundNo: number
+  checkpoint: 'SUBMIT' | 'RECHECK' | 'MODIFY' | 'BACKFILL'
+  checkpointLabel: string
+  problems: string[]
+  passed: boolean
+  checkedBy: string
+  checkedAt: string
+  roundStatus: 'ACTIVE' | 'HISTORY'
 }
 
 export interface ContractEffect {
@@ -332,6 +347,9 @@ export interface ContractEffect {
   after: unknown
   roundNo: number
   createdAt: string
+  /** ACTIVE=当前生效轮次；ROLLED_BACK=已回滚（合同修改后旧轮效果成为审计历史） */
+  roundStatus: 'ACTIVE' | 'ROLLED_BACK'
+  isCurrent: boolean
 }
 
 export interface ContractListPage {

@@ -156,3 +156,32 @@ class NumberSequence(models.Model):
     class Meta:
         verbose_name = '合同编号序列'
         verbose_name_plural = '合同编号序列'
+
+
+class ContractCheck(models.Model):
+    """检查记录（§7.3 四个检查点）——**落库留痕**，修改后按轮次展示当时的检查内容。
+
+    为什么落库：check(ctx) 结果原先瞬时返回即丢弃，合同修改后界面无法还原
+    「当时检查了什么、结果如何」；落库后每轮次的检查内容可追溯、与效果审计对齐。
+    """
+
+    class Checkpoint(models.TextChoices):
+        SUBMIT = 'SUBMIT', '提交草稿检查'
+        RECHECK = 'RECHECK', '落账前再次检查'
+        MODIFY = 'MODIFY', '修改后新检查'
+        BACKFILL = 'BACKFILL', '补录基准检查'
+
+    contract = models.ForeignKey(Contract, on_delete=models.CASCADE, related_name='checks')
+    round_no = models.PositiveIntegerField('所属轮次', default=0)
+    checkpoint = models.CharField('检查点', max_length=16, choices=Checkpoint.choices)
+    problems = models.JSONField('检查问题列表（空=通过）', default=list, blank=True)
+    passed = models.BooleanField('通过', default=True)
+    checked_by = models.BigIntegerField('执行人（全局库用户 ID）', null=True, blank=True)
+    checked_by_username = models.CharField('执行人用户名', max_length=150, blank=True)
+    checked_at = models.DateTimeField('检查时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '合同检查记录'
+        verbose_name_plural = '合同检查记录'
+        ordering = ['-checked_at']
+        indexes = [models.Index(fields=['contract', 'round_no', 'checkpoint'])]

@@ -241,6 +241,17 @@ def main():
           and data.get('status') == 'POSTED' and data.get('roundNo') == 1,
           f'status={data.get("status")} round={data.get("roundNo")}')
 
+    # 修改后展示同步：效果按轮次标注、检查记录按轮次留痕
+    effects = client.get(f'/api/competitions/{cid}/contracts/{cid_contract}/effects', **p1).json()
+    statuses = {e['roundStatus'] for e in effects}
+    check('效果标注生效/已回滚轮次', 'ACTIVE' in statuses and 'ROLLED_BACK' in statuses,
+          str(statuses))
+    detail = client.get(f'/api/competitions/{cid}/contracts/{cid_contract}', **p1).json()
+    checks = detail.get('checks') or []
+    check('检查记录落库并按轮次回放', len(checks) >= 2
+          and any(c['roundStatus'] == 'ACTIVE' for c in checks)
+          and any(c['roundStatus'] == 'HISTORY' for c in checks), f'{len(checks)} 条')
+
     logs = client.get(f'/api/competitions/{cid}/logs/fields?contractId={cid_contract}', **admin).json()
     sources = {i['source'] for i in logs['items']}
     check('回滚与重落账字段日志', 'CONTRACT_ROLLBACK' in sources and 'CONTRACT_REPOST' in sources,

@@ -14,9 +14,10 @@ import {
   submitContract,
   submitContractChanges,
 } from '@/api'
-import type { Contract, ContractEffect, ContractParty, TimelineNode } from '@/api/types'
+import type { Contract, ContractCheck, ContractEffect, ContractParty, TimelineNode } from '@/api/types'
 import { formatDateTime, toDisplay } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
+import { useNotifications } from '@/composables/useNotifications'
 
 const props = defineProps<{ cid: string; id: string }>()
 const router = useRouter()
@@ -87,6 +88,26 @@ async function loadEffects(): Promise<void> {
     effectsLoading.value = false
   }
 }
+
+// ---------- 检查记录（§7.3 四检查点落库；修改后按轮次回放） ----------
+const checks = computed<ContractCheck[]>(() => contract.value?.checks ?? [])
+
+function effectRowClass({ row }: { row: ContractEffect }): string {
+  return row.isCurrent ? '' : 'effect-rolled-back' // 已回滚轮次置灰（审计历史）
+}
+
+// ---------- WS 自动同步：本合同被他人确认/修改后自动刷新（解决“修改后显示不同步”） ----------
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+useNotifications((message) => {
+  const payload = message.payload || {}
+  if (payload.contractId !== Number(props.id)) return
+  if (refreshTimer) return // 去抖：1s 内多条信号合并为一次刷新
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    void load()
+    void loadEffects()
+  }, 1000)
+})
 
 // ---------- 参与方 / 待确认方 ----------
 const sortedParties = computed<ContractParty[]>(() =>
@@ -556,10 +577,61 @@ function goBack(): void {
       </div>
     </section>
 
+    <!-- 检查记录（修改后按轮次回放当时的检查内容） -->
+    <section class="panel checks-panel">
+      <h2 class="section-title">检查记录（保证创建即能执行）</h2>
+      <el-table :data="checks" border stripe style="width: 100%">
+        <template #empty>
+          <el-empty description="暂无检查记录（提交/落账/修改时自动产生）" />
+        </template>
+        <el-table-column label="轮次" width="150" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.roundStatus === 'ACTIVE'" type="success" size="small">
+              第 {{ row.roundNo }} 轮·生效
+            </el-tag>
+            <el-tag v-else type="info" size="small">第 {{ row.roundNo }} 轮·历史</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="检查点" width="160">
+          <template #default="{ row }">{{ row.checkpointLabel }}</template>
+        </el-table-column>
+        <el-table-column label="结果" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.passed" type="success" size="small">通过</el-tag>
+            <el-tag v-else type="danger" size="small">未通过</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="检查内容（问题清单）" min-width="260">
+          <template #default="{ row }">
+            <span v-if="!row.problems || row.problems.length === 0" class="num-empty">无问题</span>
+            <div v-else class="check-problems">
+              <div v-for="(p, i) in row.problems" :key="i" class="check-problem">· {{ p }}</div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="检查人 / 时间" width="220">
+          <template #default="{ row }">
+            {{ row.checkedBy }} · {{ formatDateTime(row.checkedAt) }}
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
     <!-- 效果审计 -->
     <section class="panel effects-panel">
       <h2 class="section-title">效果审计（落账）</h2>
-      <el-table v-loading="effectsLoading" :data="effects" border stripe style="width: 100%">
+      <div class="effects-hint">
+        当前生效为 <b>第 {{ contract?.roundNo ?? 0 }} 轮</b>；修改合同后旧轮效果标记「已回滚」
+        （值为当时变更，仅作审计历史），生效轮次显示的是修改后重新落账的最新前后值。
+      </div>
+      <el-table
+        v-loading="effectsLoading"
+        :data="effects"
+        :row-class="effectRowClass"
+        border
+        stripe
+        style="width: 100%"
+      >
         <template #empty>
           <el-empty description="暂无落账效果" />
         </template>
@@ -579,8 +651,15 @@ function goBack(): void {
             <span class="effect-after">{{ toDisplay(row.after) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="轮次" width="80" align="center">
-          <template #default="{ row }">{{ row.roundNo }}</template>
+        <el-table-column label="轮次状态" width="150" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.isCurrent" type="success" size="small">
+              第 {{ row.roundNo }} 轮·生效中
+            </el-tag>
+            <el-tag v-else type="info" size="small" class="rolled-back-tag">
+              第 {{ row.roundNo }} 轮·已回滚
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
@@ -854,5 +933,34 @@ function goBack(): void {
 .effect-after {
   color: var(--color-primary);
   font-weight: 600;
+}
+.effects-hint {
+  color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+  margin-bottom: 10px;
+  line-height: 1.7;
+}
+// 已回滚轮次的置灰（审计历史，不代表当前生效值）
+:deep(tr.effect-rolled-back) {
+  opacity: 0.55;
+}
+:deep(tr.effect-rolled-back .effect-after) {
+  color: var(--color-text-tertiary);
+  font-weight: 400;
+  text-decoration: line-through;
+}
+.rolled-back-tag {
+  text-decoration: none;
+}
+
+// ---------- 检查记录 ----------
+.check-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.check-problem {
+  color: var(--color-danger, #ef4444);
+  font-size: var(--font-sm);
 }
 </style>

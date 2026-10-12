@@ -37,6 +37,10 @@ class ContractError(Exception):
     """业务错误（前置守卫不满足 / 检查不通过）。"""
 
 
+class CheckFailedError(ContractError):
+    """检查不通过（用于区分其它业务错误，失败检查也要补记留痕）。"""
+
+
 def comp_atomic():
     """比赛库事务（多库架构下事务必须落在比赛库连接上，§5.2）。"""
     return transaction.atomic(using=(ctx.get_competition_alias() or 'default'))
@@ -118,6 +122,25 @@ def run_check(module, contract: Contract, *, basis=None) -> list:
     """运行插件 check(ctx)（§7.3 四个检查点共用）。返回问题列表。"""
     problems = module.check(build_context(contract, basis=basis))
     return [str(p) for p in (problems or [])]
+
+
+def record_check(contract: Contract, checkpoint: str, problems: list, *, user=None,
+                 round_no=None):
+    """检查结果落库留痕（append-only，修改后界面按轮次回放当时的检查内容）。
+
+    round_no：事务回滚补记失败留痕时，显式指定检查所属轮次（可能与回滚后的合同轮次不同）。
+    """
+    from apps.competition.contracts.models import ContractCheck
+
+    return ContractCheck.objects.create(
+        contract=contract,
+        round_no=contract.round_no if round_no is None else round_no,
+        checkpoint=checkpoint,
+        problems=list(problems or []),
+        passed=not problems,
+        checked_by=getattr(user, 'id', None),
+        checked_by_username=getattr(user, 'username', ''),
+    )
 
 
 def run_apply(module, contract: Contract, *, basis=None) -> list:
@@ -375,8 +398,9 @@ def submit_contract(contract: Contract, *, user):
         raise ContractError(f'当前状态 {contract.status} 不允许提交')
     module = load_contract_module(contract)
     problems = run_check(module, contract)
+    record_check(contract, 'SUBMIT', problems, user=user)   # 检查内容落库（含失败留痕）
     if problems:
-        raise ContractError('检查未通过：' + '；'.join(problems))
+        raise CheckFailedError('检查未通过：' + '；'.join(problems))
     contract.status = Contract.Status.PENDING_PARTY
     contract.pending_party_index = 0
     contract.save(update_fields=['status', 'pending_party_index', 'updated_at'])
@@ -457,30 +481,36 @@ def execute_and_post(contract: Contract):
     source = FieldLog.Source.CONTRACT_REPOST if contract.round_no else FieldLog.Source.CONTRACT_POST
     operator = _actor(contract)
 
-    with comp_atomic():
-        basis = None
-        if contract.is_backfill and contract.fiscal_year_id:
-            basis = _backup_basis(contract)
+    try:
+        with comp_atomic():
+            basis = None
+            if contract.is_backfill and contract.fiscal_year_id:
+                basis = _backup_basis(contract)
 
-        # 待执行 → 已执行：apply() 产生效果
-        effects = run_apply(module, contract, basis=basis)
-        contract.status = Contract.Status.EXECUTED
-        contract.executed_at = timezone.now()
-        contract.save(update_fields=['status', 'executed_at', 'updated_at'])
+            # 待执行 → 已执行：apply() 产生效果
+            effects = run_apply(module, contract, basis=basis)
+            contract.status = Contract.Status.EXECUTED
+            contract.executed_at = timezone.now()
+            contract.save(update_fields=['status', 'executed_at', 'updated_at'])
 
-        # 已执行 → 落账：再次运行检查（获取公司数据并执行检查）
-        problems = run_check(module, contract, basis=basis)
-        if problems:
-            raise ContractError('落账前再次检查未通过：' + '；'.join(problems))
+            # 已执行 → 落账：再次运行检查（获取公司数据并执行检查）
+            problems = run_check(module, contract, basis=basis)
+            record_check(contract, 'RECHECK', problems, user=operator)  # 检查内容落库
+            if problems:
+                raise CheckFailedError('落账前再次检查未通过：' + '；'.join(problems))
 
-        apply_effects(contract, effects, source=source, operator=operator, basis=basis)
-        if contract.is_backfill:
-            _backfill_sync(contract, effects, operator)
+            apply_effects(contract, effects, source=source, operator=operator, basis=basis)
+            if contract.is_backfill:
+                _backfill_sync(contract, effects, operator)
 
-        contract.status = Contract.Status.POSTED
-        contract.posted_at = timezone.now()
-        contract.save(update_fields=['status', 'posted_at', 'updated_at'])
-        freeze_contract(contract)
+            contract.status = Contract.Status.POSTED
+            contract.posted_at = timezone.now()
+            contract.save(update_fields=['status', 'posted_at', 'updated_at'])
+            freeze_contract(contract)
+    except CheckFailedError as exc:
+        # 检查失败 → 整个事务回滚（不落半账）；失败留痕在此补记（回滚会连带撤销库内记录）
+        record_check(contract, 'RECHECK', [str(exc)], user=operator)
+        raise
     return contract
 
 
@@ -658,21 +688,28 @@ def submit_changes(contract: Contract, *, user, inputs=None, parties=None):
         check_problems = run_check(module, contract)
     finally:
         contract.inputs, contract.parties = old_inputs, old_parties
+    record_check(contract, 'MODIFY', check_problems, user=user)  # 修改后新检查落库
     if check_problems:
-        raise ContractError('新的检查未通过：' + '；'.join(check_problems))
+        raise CheckFailedError('新的检查未通过：' + '；'.join(check_problems))
 
     operator = user
-    with comp_atomic():
-        old_round = contract.round_no
-        contract.inputs = new_inputs
-        contract.parties = new_parties
-        contract.status = Contract.Status.PENDING_EXEC
-        contract.round_no += 1
-        contract.save(update_fields=['inputs', 'parties', 'status', 'round_no', 'updated_at'])
-        rollback_round(contract, operator=operator, round_no=old_round)  # 回滚旧落账
-        mod.status = ContractModRequest.Status.APPROVED
-        mod.save(update_fields=['status', 'updated_at'])
-        _execute_after_modify(contract)
+    try:
+        with comp_atomic():
+            old_round = contract.round_no
+            contract.inputs = new_inputs
+            contract.parties = new_parties
+            contract.status = Contract.Status.PENDING_EXEC
+            contract.round_no += 1
+            contract.save(update_fields=['inputs', 'parties', 'status', 'round_no', 'updated_at'])
+            rollback_round(contract, operator=operator, round_no=old_round)  # 回滚旧落账
+            mod.status = ContractModRequest.Status.APPROVED
+            mod.save(update_fields=['status', 'updated_at'])
+            _execute_after_modify(contract)
+    except CheckFailedError as exc:
+        # 重落账检查失败 → 整个修改事务回滚（合同维持原落账）；补记失败留痕（新轮次号）
+        record_check(contract, 'RECHECK', [str(exc)], user=user,
+                     round_no=contract.round_no + 1)
+        raise
     return contract
 
 
@@ -689,8 +726,9 @@ def _execute_after_modify(contract: Contract):
     contract.save(update_fields=['status', 'executed_at', 'updated_at'])
 
     problems = run_check(module, contract, basis=basis)
+    record_check(contract, 'RECHECK', problems, user=operator)  # 重落账前检查落库
     if problems:
-        raise ContractError('重落账前检查未通过：' + '；'.join(problems))
+        raise CheckFailedError('重落账前检查未通过：' + '；'.join(problems))
 
     apply_effects(contract, effects, source=FieldLog.Source.CONTRACT_REPOST,
                   operator=operator, basis=basis)

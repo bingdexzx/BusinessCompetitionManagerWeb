@@ -87,7 +87,29 @@ def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
         data['inputs'] = contract.inputs
     if with_timeline:
         data['timeline'] = _timeline(contract)
+        data['checks'] = _checks_data(contract)
     return data
+
+
+def _checks_data(contract: Contract) -> list:
+    """检查记录（§7.3 四检查点落库）：按轮次回放「当时的检查内容」。
+
+    roundStatus：ACTIVE=当前生效轮次；HISTORY=历史轮次（合同修改后旧检查成为历史）。
+    """
+    out = []
+    for c in contract.checks.all():
+        out.append({
+            'id': c.id,
+            'roundNo': c.round_no,
+            'checkpoint': c.checkpoint,
+            'checkpointLabel': c.get_checkpoint_display(),
+            'problems': c.problems,
+            'passed': c.passed,
+            'checkedBy': c.checked_by_username or (str(c.checked_by) if c.checked_by else '系统'),
+            'checkedAt': c.checked_at.isoformat(),
+            'roundStatus': 'ACTIVE' if c.round_no == contract.round_no else 'HISTORY',
+        })
+    return out
 
 
 def _timeline(contract: Contract) -> list:
@@ -302,6 +324,9 @@ class ContractConfirmView(APIView):
 
 
 class ContractEffectsView(APIView):
+    """效果审计（§7.2）：**每行标注轮次状态**——修改后旧轮效果为「已回滚」，
+    仅当前轮次（contract.round_no）为「生效中」，解决修改后展示混乱问题。"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):
@@ -312,8 +337,10 @@ class ContractEffectsView(APIView):
                 'op': e.op, 'value': e.value_raw,
                 'before': e.before_raw, 'after': e.after_raw,
                 'roundNo': e.round_no, 'createdAt': e.created_at.isoformat(),
+                'roundStatus': 'ACTIVE' if e.round_no == contract.round_no else 'ROLLED_BACK',
+                'isCurrent': e.round_no == contract.round_no,
             }
-            for e in contract.effects.all()
+            for e in contract.effects.order_by('-round_no', 'created_at', 'id')
         ])
 
 
