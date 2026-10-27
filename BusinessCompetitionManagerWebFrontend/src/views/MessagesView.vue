@@ -18,7 +18,7 @@ import type { AddressBook, InmailKind, InmailMessage, SendInmailPayload } from '
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
-import { useNotifications } from '@/composables/useNotifications'
+import { useNotifications, useResourceRefresh } from '@/composables/useNotifications'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -264,9 +264,12 @@ onMounted(() => {
   void loadInbox()
 })
 
-// 实时站内信：/api/messages 不参与资源广播，改由 WebSocket notification 帧驱动自动重拉
+// 实时站内信：新消息走 WebSocket notification 帧；已读状态等资源变更走 messages 事件
 useNotifications((message) => {
   if (message.type === 'notification') void load()
+})
+useResourceRefresh(['messages'], () => {
+  void load()
 })
 </script>
 

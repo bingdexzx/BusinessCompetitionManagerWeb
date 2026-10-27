@@ -447,8 +447,8 @@ watch(
   },
 )
 
-// 比赛/成员/队伍/用户变更后 400ms 去抖重拉，按权限决定加载范围
-useResourceRefresh(['competitions', 'members', 'teams', 'users'], () => {
+// 比赛/成员/队伍/用户/激活码/比赛包变更后 400ms 去抖重拉，按权限决定加载范围
+useResourceRefresh(['competitions', 'members', 'teams', 'users', 'invites', 'packages'], () => {
   void loadCompetition()
   void loadPackages()
   if (isSystemAdmin.value) void loadMembers()

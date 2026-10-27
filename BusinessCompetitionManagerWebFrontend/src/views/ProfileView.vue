@@ -8,6 +8,7 @@ import type { AwardRecord, MedalAsset, Membership, MyDevice, School } from '@/ap
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
+import { useResourceRefresh } from '@/composables/useNotifications'
 
 const auth = useAuthStore()
 const user = computed(() => auth.user)
@@ -161,6 +162,12 @@ function membershipTagType(m: Membership): TagType {
 onMounted(() => {
   void loadAwards()
   void loadDevices()
+})
+
+// 奖项发放/奖牌变更/管理员改资料后自动重拉（资源名与后端按路径推导的一致）
+useResourceRefresh(['awards', 'medals', 'users'], () => {
+  void loadAwards()
+  void auth.fetchMe()
 })
 </script>
 

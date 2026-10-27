@@ -34,8 +34,8 @@ function onFilterChange(): void {
   void load()
 }
 
-// 实时刷新：插件注册表变更广播（400ms 去抖合并）后重拉，保留当前类型筛选
-useResourceRefresh(['plugins'], load)
+// 实时刷新：插件版本由比赛包导入注册（发 packages 事件），故两者都订阅
+useResourceRefresh(['plugins', 'packages'], load)
 
 // 复制完整 SHA-256（表格里只展示短哈希）
 async function copySha(row: PluginRecord): Promise<void> {

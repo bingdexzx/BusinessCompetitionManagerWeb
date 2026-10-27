@@ -540,9 +540,9 @@ watch(
   { immediate: true },
 );
 
-// 区域/需求/公司等变更后 400ms 去抖重拉
+// 区域/需求/公司等变更后 400ms 去抖重拉（地图节点写入走 basedata，故无需 map_nodes）
 useResourceRefresh(
-  ["regions", "consumer-demands", "companies", "contracts", "basedata", "map_nodes"],
+  ["regions", "consumer-demands", "companies", "contracts", "basedata"],
   () => {
     void reloadAll();
   },

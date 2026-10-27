@@ -368,8 +368,11 @@ watch(
   { immediate: true },
 )
 
-// 聚合相关资源变更后 400ms 去抖重拉，保留当前产业页签
-useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regions', 'packages'], load)
+// 聚合相关资源变更后 400ms 去抖重拉，保留当前产业页签（dashboard=布局保存）
+useResourceRefresh(
+  ['contracts', 'companies', 'fiscal-years', 'basedata', 'regions', 'packages', 'dashboard'],
+  load,
+)
 </script>
 
 <style scoped>

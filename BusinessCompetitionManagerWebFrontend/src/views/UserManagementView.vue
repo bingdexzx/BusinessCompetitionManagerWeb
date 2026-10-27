@@ -44,8 +44,8 @@ async function loadUsers(): Promise<void> {
   }
 }
 
-// 实时刷新：账号 / 学校 / 比赛身份 变更广播（400ms 去抖合并）后重拉当前页，保留页码与搜索词
-useResourceRefresh(['users', 'schools', 'memberships'], loadUsers)
+// 实时刷新：账号 / 学校 / 比赛成员身份 变更广播（400ms 去抖合并）后重拉当前页，保留页码与搜索词
+useResourceRefresh(['users', 'schools', 'members'], loadUsers)
 
 function search(): void {
   page.value = 1

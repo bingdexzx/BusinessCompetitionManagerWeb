@@ -60,8 +60,8 @@ function togglePayload(id: number): void {
   expandedId.value = expandedId.value === id ? null : id
 }
 
-// 资源变更广播（400ms 去抖合并）：审计/字段日志写操作后自动重拉（本地过滤条件保留）
-useResourceRefresh(['audit-logs', 'logs'], load)
+// 资源变更广播（400ms 去抖合并）：审计条目由合同/股票写操作产生，故一并订阅（本地过滤条件保留）
+useResourceRefresh(['audit-logs', 'logs', 'contracts', 'stock'], load)
 
 onMounted(() => void load())
 </script>
