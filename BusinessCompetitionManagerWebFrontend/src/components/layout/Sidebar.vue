@@ -34,6 +34,10 @@
           <el-icon><InfoFilled /></el-icon>
           <span>比赛详情</span>
         </el-menu-item>
+        <el-menu-item :index="`/competitions/${activeCid}/dashboard`">
+          <el-icon><Odometer /></el-icon>
+          <span>仪表盘</span>
+        </el-menu-item>
         <el-menu-item :index="`/competitions/${activeCid}/teams`">
           <el-icon><User /></el-icon>
           <span>组队管理</span>
@@ -45,6 +49,10 @@
         <el-menu-item :index="`/competitions/${activeCid}/basedata`">
           <el-icon><Grid /></el-icon>
           <span>数据管理</span>
+        </el-menu-item>
+        <el-menu-item :index="`/competitions/${activeCid}/region-overview`">
+          <el-icon><MapLocation /></el-icon>
+          <span>区域总览</span>
         </el-menu-item>
         <!-- 股票市场：行情看板 / 交易管理 / 股票管理（超管） -->
         <el-sub-menu index="stocks-group" class="sidebar-group">
@@ -99,6 +107,18 @@
         <el-menu-item index="/plugins">
           <el-icon><Box /></el-icon>
           <span>插件管理</span>
+        </el-menu-item>
+        <el-menu-item index="/users">
+          <el-icon><User /></el-icon>
+          <span>用户管理</span>
+        </el-menu-item>
+        <el-menu-item index="/schools">
+          <el-icon><School /></el-icon>
+          <span>学校管理</span>
+        </el-menu-item>
+        <el-menu-item index="/settings">
+          <el-icon><Setting /></el-icon>
+          <span>系统设置</span>
         </el-menu-item>
       </el-menu-item-group>
     </el-menu>

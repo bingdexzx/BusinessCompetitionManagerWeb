@@ -9,12 +9,15 @@ import type { Competition, School } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
+import { useResourceRefresh } from '@/composables/useNotifications'
 
 const router = useRouter()
 const auth = useAuthStore()
 
 const competitions = ref<Competition[]>([])
 const loading = ref(false)
+// 错误就地提示（保留 ElMessage 兜底，页面顶部同时给出可重试提示）
+const errorText = ref('')
 
 // ---------- 创建比赛（系统超管） ----------
 const showCreate = ref(false)
@@ -59,12 +62,18 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     competitions.value = await api.getCompetitions()
+    errorText.value = ''
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    const message = errorMessage(err, '操作失败')
+    errorText.value = message
+    ElMessage.error(message)
   } finally {
     loading.value = false
   }
 }
+
+// 实时刷新：比赛 / 学校 变更广播（400ms 去抖合并）后重拉列表，保留当前筛选与滚动状态
+useResourceRefresh(['competitions', 'schools'], load)
 
 /** 打开创建弹窗前加载学校选项 */
 async function openCreate(): Promise<void> {
@@ -139,7 +148,10 @@ onMounted(() => void load())
   <div class="competitions-page">
     <!-- 标题栏 -->
     <div class="page-toolbar">
-      <h2 class="page-title">比赛列表</h2>
+      <div class="page-heading">
+        <h2 class="page-title">比赛列表</h2>
+        <span v-if="competitions.length" class="page-count">共 {{ competitions.length }} 场</span>
+      </div>
       <div class="page-actions">
         <el-button @click="showJoin = true">
           <el-icon><Key /></el-icon>
@@ -152,40 +164,67 @@ onMounted(() => void load())
       </div>
     </div>
 
-    <!-- 加载 / 空态 -->
-    <div v-if="loading" v-loading="loading" class="comp-grid-loading"></div>
-    <el-empty v-else-if="competitions.length === 0" description="暂无可见的比赛，可用激活码加入" />
+    <!-- 加载失败：就地提示 + 重试（不整页弹窗） -->
+    <div v-if="errorText" class="notice notice--danger page-error" role="alert">
+      <el-icon class="notice__icon"><WarningFilled /></el-icon>
+      <span class="page-error-text">{{ errorText }}</span>
+      <el-button size="small" class="page-error-retry" @click="load">重试</el-button>
+    </div>
 
-    <!-- 比赛卡片墙 -->
-    <div v-else class="comp-grid">
+    <!-- 首屏骨架：与真实卡片同构，避免先空一下再跳出来 -->
+    <div v-if="!competitions.length && loading" class="comp-grid">
+      <div v-for="n in 6" :key="n" class="panel comp-skeleton">
+        <div class="skeleton skeleton-line comp-skeleton-title"></div>
+        <div class="skeleton skeleton-line"></div>
+        <div class="skeleton skeleton-line"></div>
+        <div class="skeleton skeleton-line"></div>
+      </div>
+    </div>
+    <el-empty
+      v-else-if="!competitions.length && !errorText"
+      description="暂无可见的比赛，可用激活码加入"
+    />
+
+    <!-- 比赛卡片墙：每卡突出「名称 + 状态 + 关键元信息 + 创建时间」 -->
+    <div v-else-if="competitions.length" class="comp-grid anim-stagger">
       <el-card
         v-for="comp in competitions"
         :key="comp.id"
-        class="comp-card"
+        class="comp-card hover-lift pressable"
         shadow="hover"
+        role="link"
         tabindex="0"
         @click="openCompetition(comp)"
         @keydown.enter="openCompetition(comp)"
       >
         <div class="comp-card-head">
-          <h3 class="comp-name">{{ comp.name }}</h3>
-          <el-tag :type="statusTagType(comp.status)" size="small">{{ comp.statusLabel }}</el-tag>
+          <h3 class="comp-name" :title="comp.name">{{ comp.name }}</h3>
+          <el-tag :type="statusTagType(comp.status)" size="small" class="comp-status">
+            {{ comp.statusLabel }}
+          </el-tag>
         </div>
-        <div class="comp-row">
-          <span class="comp-label">编码</span>
-          <span class="comp-value">{{ comp.code || '—' }}</span>
+
+        <div class="comp-meta">
+          <div class="comp-meta-row">
+            <el-icon class="comp-meta-icon"><Ticket /></el-icon>
+            <span class="comp-meta-label">编码</span>
+            <span class="comp-meta-value">{{ comp.code || '—' }}</span>
+          </div>
+          <div class="comp-meta-row">
+            <el-icon class="comp-meta-icon"><Location /></el-icon>
+            <span class="comp-meta-label">地点</span>
+            <span class="comp-meta-value">{{ comp.location || '—' }}</span>
+          </div>
+          <div class="comp-meta-row">
+            <el-icon class="comp-meta-icon"><School /></el-icon>
+            <span class="comp-meta-label">办赛学校</span>
+            <span class="comp-meta-value">{{ comp.hostSchoolName || '—' }}</span>
+          </div>
         </div>
-        <div class="comp-row">
-          <span class="comp-label">地点</span>
-          <span class="comp-value">{{ comp.location || '—' }}</span>
-        </div>
-        <div class="comp-row">
-          <span class="comp-label">办赛学校</span>
-          <span class="comp-value">{{ comp.hostSchoolName || '—' }}</span>
-        </div>
-        <div class="comp-row">
-          <span class="comp-label">创建时间</span>
-          <span class="comp-value">{{ formatDateTime(comp.createdAt) }}</span>
+
+        <div class="comp-card-foot">
+          <span class="comp-meta-label">创建时间</span>
+          <span class="comp-time value-num">{{ formatDateTime(comp.createdAt) }}</span>
         </div>
       </el-card>
     </div>
@@ -269,21 +308,56 @@ onMounted(() => void load())
 <style scoped lang="scss">
 .page-toolbar {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  row-gap: 10px;
+  margin-bottom: 16px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 与全局 .page-title 的 16px 下边距合并为标题栏自身的间距 */
+.page-heading .page-title {
+  margin-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-count {
+  flex-shrink: 0;
+  font-size: var(--font-sm);
+  color: var(--color-text-tertiary);
 }
 
 .page-actions {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
-.comp-grid-loading {
-  min-height: 240px;
-  border-radius: var(--radius-md);
+/* 错误就地提示：同一行给原因与重试，避免只弹 toast 后页面空着 */
+.page-error {
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.page-error-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.page-error-retry {
+  flex-shrink: 0;
 }
 
 .comp-grid {
@@ -292,51 +366,102 @@ onMounted(() => void load())
   gap: 16px;
 }
 
-.comp-card {
-  cursor: pointer;
-  outline: none;
-  animation: fade-in-up var(--dur-slow) var(--ease-out-expo) both;
+.comp-skeleton {
+  padding: 20px;
+}
 
-  &:focus-visible {
-    box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.2);
-  }
+.comp-skeleton .comp-skeleton-title {
+  width: 70%;
+  height: 16px;
+  margin-bottom: 16px;
+}
+
+.comp-skeleton .skeleton-line:last-child {
+  width: 40%;
+}
+
+.comp-card {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+}
+
+/* 交错入场只在首帧做位移：结束后交还 transform，悬停轻抬/按下微缩才生效 */
+.comp-grid .comp-card {
+  animation-fill-mode: backwards;
 }
 
 .comp-card-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 12px;
 }
 
-.comp-name {
-  font-size: var(--font-lg);
-  font-weight: 600;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.comp-status {
+  flex-shrink: 0;
 }
 
-.comp-row {
+.comp-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-lg);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text-primary);
+  /* 长比赛名最多两行，状态标签始终可见 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.comp-meta {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  line-height: 1.9;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+}
+
+.comp-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: var(--font-sm);
 }
 
-.comp-label {
+.comp-meta-icon {
   flex-shrink: 0;
   color: var(--color-text-tertiary);
 }
 
-.comp-value {
+.comp-meta-label {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.comp-meta-value {
   color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.comp-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+  font-size: var(--font-xs);
+}
+
+.comp-time {
+  color: var(--color-text-secondary);
 }
 
 .school-region {

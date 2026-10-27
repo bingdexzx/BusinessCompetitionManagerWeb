@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import { exportFieldLogs, getFieldLogs } from '@/api'
 import type { FieldLogItem, FieldLogQuery } from '@/api/types'
+import { useResourceRefresh } from '@/composables/useNotifications'
 import { formatDateTime, toDisplay, truncate } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
 import { opLabel } from '@/utils/fieldOps'
@@ -132,6 +133,9 @@ function changeText(row: FieldLogItem): string {
   return `${toDisplay(row.before)} → ${toDisplay(row.after)}`
 }
 
+// 资源变更广播（400ms 去抖合并）：日志/合同/公司/基础数据写操作后重拉当前页（分页与过滤条件保留）
+useResourceRefresh(['logs', 'contracts', 'companies', 'basedata'], load)
+
 onMounted(() => void load())
 </script>
 
@@ -139,7 +143,7 @@ onMounted(() => void load())
   <div class="field-logs-page">
     <h1 class="page-title">字段日志</h1>
 
-    <el-card shadow="never" class="section-card">
+    <el-card shadow="never" class="section-card anim-fade-in-up">
       <template #header>
         <div class="card-head">
           <span class="card-title">字段日志检索</span>
@@ -152,8 +156,8 @@ onMounted(() => void load())
         </div>
       </template>
 
-      <!-- 过滤栏 -->
-      <el-form :inline="true" class="filter-bar" @submit.prevent>
+      <!-- 过滤栏（单条工具条：所有筛选项 + 查询/重置在一行内换行排列） -->
+      <el-form :inline="true" class="filter-bar query-toolbar" @submit.prevent>
         <el-form-item label="字段键">
           <el-input
             v-model="filters.fieldKey"
@@ -225,7 +229,9 @@ onMounted(() => void load())
       >
         <el-table-column type="selection" width="44" />
         <el-table-column label="时间" width="165">
-          <template #default="{ row }">{{ formatDateTime(row.occurredAt) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ formatDateTime(row.occurredAt) }}</span>
+          </template>
         </el-table-column>
         <el-table-column prop="companyName" label="公司" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.companyName || '—' }}</template>
@@ -254,13 +260,19 @@ onMounted(() => void load())
         <el-table-column prop="operatorUsername" label="操作人" width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ row.operatorUsername || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="roundNo" label="轮次" width="80" />
-        <el-table-column label="Trace ID" width="130">
+        <el-table-column prop="roundNo" label="轮次" width="80">
           <template #default="{ row }">
-            <span :title="row.traceId">{{ truncate(row.traceId, 12) }}</span>
+            <span class="value-num">{{ row.roundNo }}</span>
           </template>
         </el-table-column>
-        <template #empty>暂无字段日志</template>
+        <el-table-column label="Trace ID" width="130">
+          <template #default="{ row }">
+            <span class="mono value-num" :title="row.traceId">{{ truncate(row.traceId, 12) }}</span>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="暂无字段日志" :image-size="72" />
+        </template>
       </el-table>
 
       <!-- 分页 -->
@@ -305,8 +317,27 @@ onMounted(() => void load())
   gap: 8px;
   flex-wrap: wrap;
 }
-.filter-bar {
-  margin-bottom: 4px;
+/* 一条工具条：所有筛选项集中在一块浅底面板里，标签弱化、控件紧凑 */
+.query-toolbar {
+  padding: 12px 14px 2px;
+  margin-bottom: 14px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.query-toolbar :deep(.el-form-item) {
+  margin-bottom: 10px;
+  margin-right: 12px;
+}
+
+.query-toolbar :deep(.el-form-item__label) {
+  color: var(--color-text-secondary);
+  font-size: var(--font-xs);
+}
+
+.mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 .pager {
   display: flex;

@@ -309,21 +309,36 @@ body {
 }
 
 // ===================== Route transition =====================
-.fade-slide-enter-active {
-  transition: opacity var(--dur-slow) var(--ease-out-expo),
-    transform var(--dur-slow) var(--ease-out-expo);
+// 页面切换：离场快速淡出上移，入场从容落位（mode="out-in"，见 App.vue）。
+// 只动 opacity + 极小位移，避免长列表整页重排造成的卡顿/眩晕。
+.page-shift-enter-active {
+  transition:
+    opacity var(--dur-transition-in) var(--ease-out-expo),
+    transform var(--dur-transition-in) var(--ease-out-expo);
 }
-.fade-slide-leave-active {
-  transition: opacity var(--dur-base) var(--ease-standard),
-    transform var(--dur-base) var(--ease-standard);
+.page-shift-leave-active {
+  transition:
+    opacity var(--dur-transition-out) var(--ease-standard),
+    transform var(--dur-transition-out) var(--ease-standard);
+  pointer-events: none;
 }
-.fade-slide-enter-from {
+.page-shift-enter-from {
   opacity: 0;
-  transform: translateY(12px) scale(0.99);
+  transform: translateY(var(--motion-distance));
 }
-.fade-slide-leave-to {
+.page-shift-leave-to {
   opacity: 0;
-  transform: translateY(-6px) scale(0.995);
+  transform: translateY(calc(var(--motion-distance-sm) * -1));
+}
+
+// 转场宿主：包住每个页面，保证 Transition 永远只有一个根节点；
+// 同时保持 .route-wrap 的纵向 flex 语义（页面可用 flex:1 撑满）。
+.page-shift-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
 }
 
 // ===================== Entrance animations =====================
@@ -359,9 +374,236 @@ body {
   animation-delay: var(--anim-delay, 0ms);
 }
 
-// Stagger children: parent sets this, children use --anim-delay via nth-child
+// 交错入场：父级加 .anim-stagger，子级按 nth-child 自动错峰（纯 CSS，无需 JS 下标）。
+// 前 12 个错峰；更多元素共用最后一档，避免长列表末尾等待过久。
 .anim-stagger > * {
-  --anim-delay: calc((var(--stagger-index, 0)) * 60ms);
+  animation: fade-in-up var(--dur-slow) var(--ease-out-expo) both;
+  animation-delay: calc(var(--stagger-index, 0) * var(--dur-stagger));
+}
+@for $i from 1 through 12 {
+  .anim-stagger > *:nth-child(#{$i}) {
+    --stagger-index: #{$i - 1};
+  }
+}
+
+// ===================== 交互反馈原语 =====================
+// 键盘可达性：只在键盘聚焦（:focus-visible）时显示焦点环，鼠标点击不出现，
+// 既保证无障碍又不增加视觉噪音。
+a:focus-visible,
+button:focus-visible,
+.el-button:focus-visible,
+.el-tabs__item:focus-visible,
+.el-menu-item:focus-visible,
+.el-pagination button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid rgba(var(--color-primary-rgb), 0.55);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+// 可点击元素：按下微缩（精致克制，不用回弹）；键盘可达时给可见焦点环。
+.pressable {
+  transition:
+    transform var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
+  &:active {
+    transform: scale(0.98);
+  }
+  &:focus-visible {
+    outline: 2px solid rgba(var(--color-primary-rgb), 0.55);
+    outline-offset: 2px;
+  }
+}
+
+// 卡片/行悬停轻抬：位移 2px + 阴影加深，暗示可交互，不改变布局尺寸。
+.hover-lift {
+  transition:
+    transform var(--dur-base) var(--ease-out-expo),
+    box-shadow var(--dur-base) var(--ease-out-expo),
+    border-color var(--dur-base) var(--ease-standard);
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--color-border-strong);
+  }
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+// 实时数据刷新高亮：值被 WS 推更新时短暂泛一层品牌底色（页面用 class 切换 + 定时移除）
+.flash-updated {
+  animation: flash-update 1s var(--ease-out-expo);
+}
+@keyframes flash-update {
+  0% {
+    background-color: rgba(var(--color-primary-rgb), 0.16);
+    box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.12);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+// ===================== 数字与度量（信息展示原语） =====================
+// 等宽数字：表格/行情/金额纵向对齐，避免跳动。
+.value-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+// 关键指标卡：标签在上（弱）、数值在下（强、等宽数字），可选涨跌标。
+.metric-card {
+  position: relative;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+  transition:
+    transform var(--dur-base) var(--ease-out-expo),
+    box-shadow var(--dur-base) var(--ease-out-expo);
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+  // 左上角品牌渐变细线：低成本质感，不干扰读数
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 44px;
+    height: 3px;
+    border-radius: 0 0 3px 0;
+    background: var(--gradient-brand);
+    opacity: 0.9;
+  }
+}
+.metric-label {
+  font-size: var(--font-xs);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+.metric-value {
+  margin-top: 6px;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  word-break: break-all;
+}
+.metric-unit {
+  margin-left: 4px;
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+}
+.metric-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: var(--font-xs);
+  font-weight: 600;
+  &.is-up {
+    color: var(--color-success);
+  }
+  &.is-down {
+    color: var(--color-danger);
+  }
+  &.is-flat {
+    color: var(--color-text-tertiary);
+  }
+}
+
+// 区块小标题（卡片内部分组用，区别于页面主标题）
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: var(--font-md);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+// 详情页底部常驻操作条：滚动时始终可达
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  margin-top: 16px;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-top: 1px solid var(--color-border);
+}
+
+// ===================== 骨架屏 =====================
+// 首屏/切换比赛时用骨架代替空白，避免布局跳动（信息流更连贯）。
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.72),
+      transparent
+    );
+    animation: skeleton-sweep 1.4s var(--ease-standard) infinite;
+  }
+}
+.skeleton-line {
+  height: 12px;
+  margin-bottom: 10px;
+  &:last-child {
+    margin-bottom: 0;
+    width: 60%;
+  }
+}
+.skeleton-card {
+  height: 92px;
+}
+@keyframes skeleton-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+// ===================== 表格与列表动效（轻量） =====================
+// 行悬停只过渡背景色（583 处表格，避免任何逐行位移动画带来的重排成本）。
+.el-table__body tr > td.el-table__cell {
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+// 表头吸附：**按需开启**（长表滚动时列名不丢）。
+// 刻意不做全局默认——多层堆叠的表格各带 sticky 表头会在 top:0 互相覆盖，
+// 页面需要时给 el-table 加 class="table--sticky-head" 即可。
+.table--sticky-head .el-table__header-wrapper {
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 // ===================== Loading =====================
@@ -656,5 +898,29 @@ body {
   .el-table .cell {
     padding-left: 8px;
     padding-right: 8px;
+  }
+}
+
+// ==========================================================================
+// 无障碍：尊重系统「减少动态效果」偏好（§ 全量 UI 优化）。
+// 必须放在文件末尾：用 !important 覆盖上面所有动画/过渡/滚动行为。
+// 注意只压缩「时长」而不移除属性，这样依赖 transitionend 的逻辑仍会触发。
+// ==========================================================================
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  // 悬停/按下位移全部取消（避免前庭不适），保留颜色与阴影反馈
+  .hover-lift:hover,
+  .metric-card:hover,
+  .pressable:active {
+    transform: none !important;
   }
 }

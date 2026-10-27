@@ -77,6 +77,27 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // 会话补齐去重：启动时的 init() 与路由守卫的 ensureSession() 可能同时触发，
+  // 不能并发拉两次 /me（否则互相覆盖 user，并多打一次请求）。
+  let sessionPromise: Promise<void> | null = null
+
+  /**
+   * 确保「已登录且用户资料已加载」。
+   *
+   * 刷新页面或直接打开深链时，`main.ts` 的 `init()` 是异步的，而路由守卫同步执行——
+   * 此刻 `user` 还是 null，`isSuperuser` / `memberships` 都是空，权限判断会把
+   * 系统超管误判成无权限、把深链重定向回比赛列表。守卫必须先 await 这里。
+   */
+  async function ensureSession(): Promise<void> {
+    if (!accessToken.value || user.value) return
+    if (!sessionPromise) {
+      sessionPromise = init().finally(() => {
+        sessionPromise = null
+      })
+    }
+    await sessionPromise
+  }
+
   async function updateProfile(payload: UpdateMePayload): Promise<void> {
     applyUser(await api.updateMe(payload))
   }
@@ -113,6 +134,7 @@ export const useAuthStore = defineStore('auth', () => {
     register,
     fetchMe,
     init,
+    ensureSession,
     updateProfile,
     selectCompetition,
     logout,

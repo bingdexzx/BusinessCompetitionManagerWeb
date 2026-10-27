@@ -16,7 +16,8 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { advanceStockRound, getStockCandles, getStockMarket } from '@/api'
 import type { Stock, StockCandle, StockMarketOverview } from '@/api/types'
 import { useStockSync } from '@/composables/useStockSync'
-import { useNotifications } from '@/composables/useNotifications'
+import { useCountUp, useFlash } from '@/composables/useMotion'
+import { useNotifications, useResourceRefresh } from '@/composables/useNotifications'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
@@ -46,6 +47,7 @@ const {
   round,
   syncing,
   lastSyncAt,
+  lastError,
   missing,
   syncNow,
   scheduleSync,
@@ -71,6 +73,9 @@ async function loadMarket(): Promise<void> {
     ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
+
+// 资源变更实时刷新：股票/公司数据被其他端写入后自动重拉概览（股票表由 useStockSync 信号驱动）
+useResourceRefresh(['stock', 'companies'], loadMarket)
 
 // 同步响应里的轮次最新，概览轮次跟随同步实时刷新
 watch(round, (value) => {
@@ -114,6 +119,20 @@ const selectedCode = ref('')
 const selectedStock = computed<Stock | null>(
   () => stocks.value.find((s) => s.code === selectedCode.value) ?? null,
 )
+
+// ---------- 数值动效（克制：只在数值变化时轻微提示） ----------
+const { flashing: quoteFlashing, flash: flashQuote } = useFlash()
+
+/** 概览轮次：同步结果优先，回退概览接口（0 视为未知，仍显示 —） */
+const overviewRound = computed(() => round.value || market.value?.round || 0)
+const roundShown = useCountUp(overviewRound, { precision: 0 })
+const stockCount = computed(() => market.value?.stockCount ?? stocks.value.length)
+const stockCountShown = useCountUp(stockCount, { precision: 0 })
+
+/** 选中股现价：2 位小数滚动，变化时闪一下（不改变任何价格取值） */
+const selectedPrice = computed(() => num(selectedStock.value?.currentPrice))
+const selectedPriceShown = useCountUp(selectedPrice, { precision: 2 })
+watch(selectedPrice, () => flashQuote())
 
 /** K 线缓存：code -> (round -> candle)，增量合并去重 */
 const candleCache = new Map<string, Map<number, StockCandle>>()
@@ -528,6 +547,16 @@ watch(
       </template>
     </el-alert>
 
+    <!-- 同步失败：就地提示（后台信号同步不弹 toast，避免提示风暴） -->
+    <el-alert
+      v-if="lastError && !missing"
+      type="error"
+      show-icon
+      :closable="false"
+      :title="lastError"
+      class="sync-error"
+    />
+
     <!-- 工具栏 -->
     <div class="mm-toolbar">
       <h2 class="mm-title">股票行情</h2>
@@ -549,27 +578,27 @@ watch(
       </div>
     </div>
 
-    <!-- 市场概览（轮次 / 股票数 / 更新时间） -->
-    <div class="market-overview anim-fade-in-up">
-      <div class="ov-item">
-        <span class="ov-label">当前轮次</span>
-        <b class="ov-value">{{ round || market?.round || '—' }}</b>
+    <!-- 市场概览（轮次 / 股票数 / 更新时间 / 同步状态）：实时数值 → 指标卡 -->
+    <div class="metric-grid overview-grid anim-fade-in-up">
+      <div class="metric-card">
+        <span class="metric-label">当前轮次</span>
+        <div class="metric-value">{{ roundShown || '—' }}</div>
       </div>
-      <div class="ov-item">
-        <span class="ov-label">股票数</span>
-        <b class="ov-value">{{ market?.stockCount ?? stocks.length }}</b>
+      <div class="metric-card">
+        <span class="metric-label">股票数</span>
+        <div class="metric-value">{{ stockCountShown }}</div>
       </div>
-      <div class="ov-item">
-        <span class="ov-label">更新时间</span>
-        <b class="ov-value ov-time">{{ formatDateTime(market?.updatedAt || lastSyncAt) }}</b>
+      <div class="metric-card">
+        <span class="metric-label">更新时间</span>
+        <div class="metric-value ov-time">{{ formatDateTime(market?.updatedAt || lastSyncAt) }}</div>
       </div>
-      <div class="ov-item">
-        <span class="ov-label">同步状态</span>
-        <b class="ov-value">
+      <div class="metric-card">
+        <span class="metric-label">同步状态</span>
+        <div class="metric-value ov-status">
           <el-tag v-if="syncing" size="small" type="primary" effect="plain">同步中</el-tag>
           <el-tag v-else-if="lastSyncAt" size="small" type="success" effect="plain">已同步</el-tag>
           <el-tag v-else size="small" type="info" effect="plain">待同步</el-tag>
-        </b>
+        </div>
       </div>
     </div>
 
@@ -587,8 +616,12 @@ watch(
         </div>
       </template>
 
+      <!-- 首屏加载：骨架代替空表，避免「暂无数据」误判与布局跳动 -->
+      <div v-if="loadingStocks" class="table-skeleton">
+        <div v-for="i in 6" :key="i" class="skeleton skeleton-line" />
+      </div>
       <el-table
-        v-loading="loadingStocks"
+        v-else
         :data="pagedStocks"
         border
         stripe
@@ -605,12 +638,14 @@ watch(
         <el-table-column prop="name" label="名称" min-width="150" />
         <el-table-column label="现价（元）" width="130" align="right">
           <template #default="{ row }">
-            <span class="stock-price">{{ fmtPrice(row.currentPrice) }}</span>
+            <span class="stock-price value-num">{{ fmtPrice(row.currentPrice) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="涨跌幅" width="110" align="right">
           <template #default="{ row }">
-            <span class="chg" :class="changeClass(row.changePct)">{{ fmtPct(row.changePct) }}</span>
+            <span class="chg value-num" :class="changeClass(row.changePct)">
+              {{ fmtPct(row.changePct) }}
+            </span>
           </template>
         </el-table-column>
         <el-table-column prop="round" label="轮次" width="80" align="center" />
@@ -639,10 +674,13 @@ watch(
           <span v-if="selectedStock" class="chart-quote">
             <b>{{ selectedStock.name }}</b>
             <span class="chart-code">{{ selectedStock.code }}</span>
-            <span class="chart-price" :class="changeClass(selectedStock.changePct)">
-              ¥{{ fmtPrice(selectedStock.currentPrice) }}
+            <span
+              class="chart-price value-num"
+              :class="[changeClass(selectedStock.changePct), { 'flash-updated': quoteFlashing }]"
+            >
+              ¥{{ selectedPriceShown.toFixed(2) }}
             </span>
-            <span class="chg" :class="changeClass(selectedStock.changePct)">
+            <span class="chg value-num" :class="changeClass(selectedStock.changePct)">
               {{ fmtPct(selectedStock.changePct) }}
             </span>
           </span>
@@ -680,35 +718,22 @@ watch(
   flex-wrap: wrap;
 }
 
-/* ===== 市场概览 ===== */
-.market-overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+/* ===== 市场概览（指标卡：标签弱、数值强） ===== */
+.overview-grid {
   margin-bottom: 16px;
 }
-.ov-item {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 14px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.sync-error {
+  margin-bottom: 16px;
 }
-.ov-label {
-  font-size: var(--font-sm);
-  color: var(--color-text-tertiary);
-}
-.ov-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
-}
+/* 时间/状态不是「大数字」，压低字号，保持一排指标卡的阅读节奏 */
 .ov-time {
   font-size: 15px;
-  line-height: 1.8;
+  font-weight: 600;
+  line-height: 1.9;
+  color: var(--color-text-secondary);
+}
+.ov-status {
+  font-size: var(--font-sm);
 }
 
 .card-head {
@@ -736,21 +761,34 @@ watch(
 .stock-price {
   font-weight: 600;
   color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
 }
 
-/* 红涨绿跌（中国股票惯例） */
+/* 红涨绿跌（中国股票惯例）：统一走语义色 token */
 .up {
-  color: #f5483b;
+  color: var(--color-danger);
   font-weight: 600;
 }
 .down {
-  color: #16a34a;
+  color: var(--color-success);
   font-weight: 600;
 }
 .chg {
-  font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+
+/* 首屏骨架行：高度贴近真实行，减少加载完成后的跳动 */
+.table-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+.table-skeleton .skeleton-line {
+  height: 38px;
+  margin-bottom: 0;
+}
+.table-skeleton .skeleton-line:last-child {
+  width: 100%;
 }
 
 .pager {
@@ -782,7 +820,8 @@ watch(
 .chart-price {
   font-size: 16px;
   font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
 }
 .chart-ma-legend {
   margin-left: auto;
@@ -839,11 +878,6 @@ watch(
 }
 
 /* ===== 响应式 ===== */
-@media (max-width: 1024px) {
-  .market-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 @media (max-width: 640px) {
   .stock-search {
     width: 100%;

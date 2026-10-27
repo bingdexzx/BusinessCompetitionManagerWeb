@@ -164,11 +164,11 @@ onMounted(() => void loadLogs())
   <div class="logs-view">
     <h1 class="page-title">网络日志中心</h1>
 
-    <el-card shadow="never" class="log-card">
+    <el-card shadow="never" class="log-card anim-fade-in-up">
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <!-- ===== 网络日志 ===== -->
         <el-tab-pane label="网络日志" name="network">
-          <div class="filter-bar">
+          <div class="filter-bar query-toolbar">
             <el-select v-model="filters.method" placeholder="方法" clearable style="width: 110px">
               <el-option label="GET" value="GET" />
               <el-option label="POST" value="POST" />
@@ -258,7 +258,9 @@ onMounted(() => void loadLogs())
               </template>
             </el-table-column>
             <el-table-column label="时间" width="160">
-              <template #default="{ row }">{{ formatDateTime(row.occurredAt) }}</template>
+              <template #default="{ row }">
+                <span class="value-num">{{ formatDateTime(row.occurredAt) }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="方法" width="90">
               <template #default="{ row }">
@@ -272,10 +274,14 @@ onMounted(() => void loadLogs())
               </template>
             </el-table-column>
             <el-table-column label="耗时(ms)" width="90">
-              <template #default="{ row }">{{ row.durationMs ?? '—' }}</template>
+              <template #default="{ row }">
+                <span class="value-num">{{ row.durationMs ?? '—' }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="IP" min-width="125">
-              <template #default="{ row }">{{ row.ip || '—' }}</template>
+              <template #default="{ row }">
+                <span class="value-num">{{ row.ip || '—' }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="用户" width="120" show-overflow-tooltip>
               <template #default="{ row }">
@@ -335,10 +341,14 @@ onMounted(() => void loadLogs())
               <template #default="{ row }">{{ row.ip || '—' }}</template>
             </el-table-column>
             <el-table-column label="首次登录" width="165">
-              <template #default="{ row }">{{ formatDateTime(row.firstLoginAt) }}</template>
+              <template #default="{ row }">
+                <span class="value-num">{{ formatDateTime(row.firstLoginAt) }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="最近登录" width="165">
-              <template #default="{ row }">{{ formatDateTime(row.lastLoginAt) }}</template>
+              <template #default="{ row }">
+                <span class="value-num">{{ formatDateTime(row.lastLoginAt) }}</span>
+              </template>
             </el-table-column>
             <template #empty>
               <el-empty description="暂无设备记录" :image-size="72" />
@@ -370,6 +380,14 @@ onMounted(() => void loadLogs())
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+/* 网络日志筛选：集中成一条浅底工具条，与表格分开 */
+.query-toolbar {
+  padding: 12px 14px 4px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
 }
 
 /* 展开行：请求/响应摘要等详情 */

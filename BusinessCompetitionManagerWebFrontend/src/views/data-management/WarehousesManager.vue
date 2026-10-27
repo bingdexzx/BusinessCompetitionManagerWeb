@@ -8,14 +8,30 @@
       </div>
     </div>
 
-    <div v-if="!cid" class="no-comp-warning">
+    <div v-if="!cid" class="notice notice--warning">
       请先在「比赛管理」中选择一个比赛
     </div>
 
-    <el-table v-if="!isPhone" v-loading="loading" :data="filteredData" border stripe style="width: 100%">
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="capacity" label="容量" />
-      <el-table-column prop="price" label="价格" />
+    <el-table
+      v-if="!isPhone"
+      v-loading="loading"
+      :data="filteredData"
+      border
+      stripe
+      class="anim-fade-in-up"
+      style="width: 100%"
+    >
+      <el-table-column prop="name" label="名称" min-width="160" />
+      <el-table-column prop="capacity" label="容量" align="right" min-width="120">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.capacity }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="price" label="价格" align="right" min-width="120">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.price }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="种类">
         <template #default="{ row }">
           <el-tag :type="typeTag(row.type)">{{ typeLabel(row.type) }}</el-tag>
@@ -25,9 +41,18 @@
         <template #default="{ row }">
           <el-button size="small" @click="showDetail(row)">详情</el-button>
           <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+            >删除</el-button
+          >
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty
+          v-if="!loading"
+          :image-size="72"
+          :description="searchText ? '没有匹配的记录' : '暂无仓库数据'"
+        />
+      </template>
     </el-table>
 
     <MobileCards
@@ -36,6 +61,8 @@
       :columns="warehouseColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
+      :empty-text="searchText ? '没有匹配的记录' : '暂无仓库数据'"
+      class="anim-fade-in-up"
     >
       <template #type="{ row }">
         <el-tag :type="typeTag(row.type)">{{ typeLabel(row.type) }}</el-tag>
@@ -43,15 +70,21 @@
       <template #actions="{ row }">
         <el-button size="small" @click="showDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+          >删除</el-button
+        >
       </template>
     </MobileCards>
 
     <el-dialog append-to-body v-model="detailVisible" title="仓库详情" width="500px">
       <el-descriptions v-if="detailData" :column="1" border>
         <el-descriptions-item label="名称">{{ detailData.name }}</el-descriptions-item>
-        <el-descriptions-item label="容量">{{ detailData.capacity }}</el-descriptions-item>
-        <el-descriptions-item label="价格">{{ detailData.price }}</el-descriptions-item>
+        <el-descriptions-item label="容量">
+          <span class="value-num">{{ detailData.capacity }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="价格">
+          <span class="value-num">{{ detailData.price }}</span>
+        </el-descriptions-item>
         <el-descriptions-item label="种类">
           <el-tag :type="typeTag(detailData.type)">{{ typeLabel(detailData.type) }}</el-tag>
         </el-descriptions-item>
@@ -118,6 +151,7 @@ import MobileCards from "@/components/common/MobileCards.vue";
 import SearchToggle from "@/components/common/SearchToggle.vue";
 import BigNumberInput from "@/components/common/BigNumberInput.vue";
 import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useResourceRefresh } from "@/composables/useNotifications";
 
 interface Warehouse {
   id: number;
@@ -186,6 +220,9 @@ const formRules: FormRules = {
 };
 
 onMounted(loadData);
+
+// 资源变更实时刷新：basedata 变更时自动重拉当前列表（保留搜索/选中状态）
+useResourceRefresh(["basedata"], loadData);
 
 async function loadData() {
   loading.value = true;
@@ -298,11 +335,21 @@ function typeTag(t: string): "" | "success" | "warning" | "danger" {
 </script>
 
 <style scoped>
+/* ------------------------------------------------------------------
+   数据管理统一骨架（9 个管理器共用同一约定）：
+   工具条（标题 + 搜索 + 新建）→ 提示 / 表格（或移动端卡片）；间距统一 16px
+   ------------------------------------------------------------------ */
+.warehouses-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 .pm-toolbar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
 }
 .pm-title {
   font-size: 20px;
@@ -313,15 +360,5 @@ function typeTag(t: string): "" | "success" | "warning" | "danger" {
 .pm-actions {
   display: flex;
   gap: 8px;
-}
-.no-comp-warning {
-  text-align: center;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--color-warning-soft);
-  border: 1px solid rgba(var(--color-warning-soft-rgb), 0.3);
-  border-radius: 6px;
-  color: #b45309;
-  font-size: 13px;
 }
 </style>

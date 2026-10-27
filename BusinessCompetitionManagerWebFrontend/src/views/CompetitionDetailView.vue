@@ -19,6 +19,7 @@ import {
   type School,
 } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
+import { useResourceRefresh } from '@/composables/useNotifications'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
 
@@ -53,6 +54,12 @@ const statusChain = COMPETITION_STATUS_CHAIN
 const statusIndex = computed(() =>
   (statusChain as readonly string[]).indexOf(competition.value?.status ?? ''),
 )
+/** 当前处于状态链的第几步（从 1 开始，用于卡片头部的进度说明） */
+const statusStep = computed(() => {
+  const index = statusIndex.value
+  if (index < 0) return 1
+  return Math.min(index + 1, statusChain.length)
+})
 function statusText(status: string): string {
   return STATUS_LABELS[status] ?? status
 }
@@ -423,12 +430,15 @@ function quickLink(path: string): void {
 
 // ---------- 数据加载 ----------
 const missing = ref(false)
+// 加载失败原因：就地提示 + 重试（ElMessage 同时保留）
+const loadError = ref('')
 
 async function loadCompetition(): Promise<void> {
   loading.value = true
   try {
     competition.value = await api.getCompetition(props.cid)
     missing.value = false
+    loadError.value = ''
     auth.selectCompetition(props.cid)
   } catch (err) {
     // 404 = 比赛不存在/已删除（旧链接/被清理）：友好状态而非错误弹窗
@@ -437,7 +447,9 @@ async function loadCompetition(): Promise<void> {
       competition.value = null
       return
     }
-    ElMessage.error(errorMessage(err, '操作失败'))
+    const message = errorMessage(err, '操作失败')
+    loadError.value = message
+    ElMessage.error(message)
   } finally {
     loading.value = false
   }
@@ -453,6 +465,15 @@ watch(
     if (canManage.value) void loadInvites()
   },
 )
+
+// 资源变更广播（400ms 去抖合并）：比赛/成员/队伍/用户写操作后自动重拉本页数据
+// （与 onMounted 的加载集合一致：比赛信息 + 比赛包列表 + 成员/激活码按权限重拉）
+useResourceRefresh(['competitions', 'members', 'teams', 'users'], () => {
+  void loadCompetition()
+  void loadPackages()
+  if (isSystemAdmin.value) void loadMembers()
+  if (canManage.value) void loadInvites()
+})
 
 onMounted(() => {
   void loadCompetition()
@@ -479,6 +500,18 @@ onMounted(() => {
     </template>
   </el-alert>
 
+  <!-- 加载失败：就地提示 + 重试（不整页弹窗） -->
+  <el-alert
+    v-else-if="loadError"
+    type="error"
+    show-icon
+    :closable="false"
+    :title="loadError"
+    class="detail-alert"
+  >
+    <el-button size="small" @click="loadCompetition">重试</el-button>
+  </el-alert>
+
   <div v-if="competition" class="detail-page">
     <!-- ===== 顶部：标题 + 基本信息 ===== -->
     <div class="page-toolbar">
@@ -491,7 +524,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <el-card class="info-card" shadow="never">
+    <el-card class="info-card anim-fade-in-up" shadow="never">
       <el-descriptions :column="2" border>
         <el-descriptions-item label="比赛编码">
           <span class="mono">{{ competition.code || '—' }}</span>
@@ -513,11 +546,26 @@ onMounted(() => {
     </el-card>
 
     <!-- ===== 生命周期推进 ===== -->
-    <el-card class="lifecycle-card" shadow="never">
-      <template #header>生命周期</template>
-      <el-steps :active="statusIndex" align-center finish-status="success">
-        <el-step v-for="s in statusChain" :key="s" :title="statusText(s)" />
-      </el-steps>
+    <el-card class="lifecycle-card anim-fade-in-up" style="--anim-delay: 60ms" shadow="never">
+      <template #header>
+        <div class="lifecycle-head">
+          <span>生命周期</span>
+          <el-tag :type="statusTagType(competition.status)" size="small">
+            {{ competition.statusLabel }}
+          </el-tag>
+          <span class="lifecycle-step-count">第 {{ statusStep }} / {{ statusChain.length }} 步</span>
+        </div>
+      </template>
+      <div class="lifecycle-steps-scroll">
+        <el-steps
+          class="lifecycle-steps"
+          :active="competition.status === 'CLOSED' ? statusChain.length : statusIndex"
+          align-center
+          finish-status="success"
+        >
+          <el-step v-for="s in statusChain" :key="s" :title="statusText(s)" />
+        </el-steps>
+      </div>
       <div class="lifecycle-actions">
         <el-alert
           v-if="competition.status === 'CREATED'"
@@ -542,7 +590,7 @@ onMounted(() => {
     </el-card>
 
     <!-- ===== 快捷入口 ===== -->
-    <div class="quick-links">
+    <div class="quick-links anim-fade-in-up" style="--anim-delay: 100ms">
       <el-button @click="quickLink('/teams')">
         <el-icon><User /></el-icon><span>组队管理</span>
       </el-button>
@@ -561,7 +609,7 @@ onMounted(() => {
     </div>
 
     <!-- ===== 功能分区 ===== -->
-    <el-tabs v-model="activeTab" class="detail-tabs">
+    <el-tabs v-model="activeTab" class="detail-tabs anim-fade-in-up" style="--anim-delay: 140ms">
       <!-- a) 比赛包导入 -->
       <el-tab-pane label="比赛包导入" name="package">
         <el-card shadow="never">
@@ -595,75 +643,122 @@ onMounted(() => {
         </el-card>
 
         <!-- 导入报告可视化 -->
-        <el-card v-if="activeReport" shadow="never" class="report-card">
+        <el-card v-if="activeReport" shadow="never" class="report-card anim-fade-in-up">
           <template #header>
             <div class="report-head">
-              <span>导入报告</span>
-              <el-tag :type="activeReport.status === 'SUCCESS' ? 'success' : 'danger'" size="small">
-                {{ activeReport.status === 'SUCCESS' ? '导入成功' : '导入失败' }}
-              </el-tag>
-              <span class="muted">建库：{{ activeReport.createdDatabase || '未创建数据库' }}</span>
-              <span class="muted">合同实例：{{ activeReport.contractsCreated ?? 0 }}</span>
+              <div class="report-head-main">
+                <span class="report-title">导入报告</span>
+                <el-tag :type="activeReport.status === 'SUCCESS' ? 'success' : 'danger'" size="small">
+                  {{ activeReport.status === 'SUCCESS' ? '导入成功' : '导入失败' }}
+                </el-tag>
+              </div>
+              <div class="report-head-meta">
+                <span class="report-meta">
+                  <span class="report-meta-label">建库</span>
+                  <span class="report-meta-value">
+                    {{ activeReport.createdDatabase || '未创建数据库' }}
+                  </span>
+                </span>
+                <span class="report-meta">
+                  <span class="report-meta-label">合同实例</span>
+                  <span class="report-meta-value">
+                    <span class="value-num">{{ activeReport.contractsCreated ?? 0 }}</span>
+                    <template v-if="activeReport.contractsSkipped">
+                      （跳过重复 <span class="value-num">{{ activeReport.contractsSkipped }}</span>）
+                    </template>
+                  </span>
+                </span>
+              </div>
             </div>
           </template>
 
-          <el-alert
-            v-for="(err, i) in activeReport.errors"
-            :key="`err-${i}`"
-            type="error"
-            :title="err"
-            :closable="false"
-            show-icon
-            class="report-alert"
-          />
-          <el-alert
-            v-for="(warn, i) in activeReport.warnings"
-            :key="`warn-${i}`"
-            type="warning"
-            :title="warn"
-            :closable="false"
-            show-icon
-            class="report-alert"
-          />
+          <!-- 校验结果：错误/警告单独成区，长报告不再一坨堆在顶部 -->
+          <section
+            v-if="activeReport.errors?.length || activeReport.warnings?.length"
+            class="report-section"
+          >
+            <h4 class="section-title">
+              问题与提示（错误 {{ activeReport.errors?.length ?? 0 }} ·
+              警告 {{ activeReport.warnings?.length ?? 0 }}）
+            </h4>
+            <el-alert
+              v-for="(err, i) in activeReport.errors"
+              :key="`err-${i}`"
+              type="error"
+              :title="err"
+              :closable="false"
+              show-icon
+              class="report-alert"
+            />
+            <el-alert
+              v-for="(warn, i) in activeReport.warnings"
+              :key="`warn-${i}`"
+              type="warning"
+              :title="warn"
+              :closable="false"
+              show-icon
+              class="report-alert"
+            />
+          </section>
 
-          <h4 class="report-section-title">插件（{{ activeReport.plugins?.length ?? 0 }}）</h4>
-          <el-table :data="activeReport.plugins" size="small" border>
-            <el-table-column prop="file" label="文件" min-width="140" />
-            <el-table-column prop="key" label="Key" min-width="110" />
-            <el-table-column label="类型" width="110">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.kind === 'CONTRACT' ? 'primary' : 'success'">
-                  {{ row.kind }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="version" label="版本" width="90" />
-            <el-table-column label="SHA-256" width="130">
-              <template #default="{ row }">
-                <span class="mono" :title="row.sha256">{{ shortSha(row.sha256) }}</span>
-              </template>
-            </el-table-column>
-          </el-table>
+          <section class="report-section">
+            <h4 class="section-title">插件（{{ activeReport.plugins?.length ?? 0 }}）</h4>
+            <el-table :data="activeReport.plugins" size="small" border>
+              <el-table-column prop="file" label="文件" min-width="140" />
+              <el-table-column prop="key" label="Key" min-width="110" />
+              <el-table-column label="类型" width="110">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.kind === 'CONTRACT' ? 'primary' : 'success'">
+                    {{ row.kind }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="version" label="版本" width="90" />
+              <el-table-column label="SHA-256" width="130">
+                <template #default="{ row }">
+                  <span class="mono" :title="row.sha256">{{ shortSha(row.sha256) }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
 
-          <h4 class="report-section-title">
-            字段迁移（{{ activeReport.fieldMigrations?.length ?? 0 }}）
-          </h4>
-          <el-table :data="activeReport.fieldMigrations" size="small" border>
-            <el-table-column prop="industryKey" label="产业类型" min-width="120" />
-            <el-table-column label="新增字段" width="100">
-              <template #default="{ row }">+{{ row.added }}</template>
-            </el-table-column>
-            <el-table-column label="更新字段" width="100">
-              <template #default="{ row }">~{{ row.updated }}</template>
-            </el-table-column>
-            <el-table-column prop="total" label="字段总数" width="100" />
-          </el-table>
+          <section class="report-section">
+            <h4 class="section-title">
+              字段迁移（{{ activeReport.fieldMigrations?.length ?? 0 }}）
+            </h4>
+            <el-table :data="activeReport.fieldMigrations" size="small" border>
+              <el-table-column prop="industryKey" label="产业类型" min-width="120" />
+              <el-table-column label="新增字段" width="100">
+                <template #default="{ row }">
+                  <span class="value-num">+{{ row.added }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="更新字段" width="100">
+                <template #default="{ row }">
+                  <span class="value-num">~{{ row.updated }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="字段总数" width="100">
+                <template #default="{ row }">
+                  <span class="value-num">{{ row.total }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
 
-          <h4 class="report-section-title">基础数据导入</h4>
-          <el-table :data="basedataEntries" size="small" border>
-            <el-table-column prop="key" label="数据表" min-width="140" />
-            <el-table-column prop="count" label="导入行数" width="120" />
-          </el-table>
+          <section class="report-section">
+            <h4 class="section-title">
+              基础数据导入（{{ basedataEntries.length }} 张表）
+            </h4>
+            <el-table :data="basedataEntries" size="small" border>
+              <el-table-column prop="key" label="数据表" min-width="140" />
+              <el-table-column label="导入行数" width="120">
+                <template #default="{ row }">
+                  <span class="value-num">{{ row.count }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </el-card>
 
         <!-- 导入历史 -->
@@ -926,29 +1021,58 @@ onMounted(() => {
     </el-dialog>
   </div>
 
-  <!-- 加载中占位 -->
-  <div v-else v-loading="loading" class="detail-loading"></div>
+  <!-- 首屏骨架：与真实版式同尺寸，避免加载完成后的跳动 -->
+  <div v-else-if="loading" class="detail-skeleton">
+    <div class="panel detail-skeleton-panel">
+      <div class="skeleton skeleton-line detail-skeleton-title"></div>
+      <div class="skeleton skeleton-line"></div>
+      <div class="skeleton skeleton-line"></div>
+    </div>
+    <div class="panel detail-skeleton-panel">
+      <div class="skeleton skeleton-line detail-skeleton-title"></div>
+      <div class="skeleton skeleton-line"></div>
+    </div>
+  </div>
 </template>
 
 <style scoped lang="scss">
 .page-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
+  row-gap: 10px;
   margin-bottom: 8px;
+}
+
+/* 比赛名较长：标题占满剩余宽度并可换行，操作按钮在窄屏换到下一行 */
+.page-toolbar > .page-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
 }
 
 .page-actions {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .info-card,
 .lifecycle-card,
 .report-card,
 .history-card {
+  margin-bottom: 16px;
+}
+
+/* 入场动画结束后交还 transform：el-card 的悬停轻抬仍然生效 */
+.detail-page .anim-fade-in-up {
+  animation-fill-mode: backwards;
+}
+
+.detail-alert {
   margin-bottom: 16px;
 }
 
@@ -960,6 +1084,72 @@ onMounted(() => {
 .muted {
   color: var(--color-text-tertiary);
   font-size: var(--font-sm);
+}
+
+/* ===== 生命周期：当前步醒目、已完成步收敛 ===== */
+.lifecycle-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lifecycle-step-count {
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+}
+
+.lifecycle-steps {
+  margin: 4px 0 0;
+}
+
+/* 窄屏：6 步链条保持单行，横向可滚，避免标签折行挤在一起 */
+.lifecycle-steps-scroll {
+  overflow: hidden;
+}
+
+.lifecycle-steps :deep(.el-step__title) {
+  font-size: var(--font-sm);
+  transition: color var(--dur-base) var(--ease-standard);
+}
+
+/* 已完成/未开始：收敛为弱化文字，不抢当前步 */
+.lifecycle-steps :deep(.el-step__title.is-success),
+.lifecycle-steps :deep(.el-step__title.is-wait) {
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+}
+
+.lifecycle-steps :deep(.el-step__title.is-process) {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+
+.lifecycle-steps :deep(.el-step__head.is-success .el-step__icon) {
+  background: var(--color-success-soft);
+  border-color: transparent;
+  color: var(--color-success);
+}
+
+.lifecycle-steps :deep(.el-step__head.is-wait .el-step__icon) {
+  color: var(--color-text-tertiary);
+  border-color: var(--color-border-strong);
+}
+
+/* 当前步：品牌渐变圆点 + 外环，一眼看出当前位置 */
+.lifecycle-steps :deep(.el-step__head.is-process .el-step__icon) {
+  background: var(--gradient-brand);
+  border-color: transparent;
+  color: var(--color-surface);
+  box-shadow: 0 0 0 4px rgba(var(--color-primary-rgb), 0.12);
+}
+
+.lifecycle-steps :deep(.el-step__head .el-step__icon) {
+  transition:
+    background var(--dur-base) var(--ease-standard),
+    box-shadow var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
 }
 
 .lifecycle-actions {
@@ -990,22 +1180,61 @@ onMounted(() => {
   font-size: 13px;
 }
 
+/* ===== 导入报告：标题/元信息分行，正文按分区归组 ===== */
 .report-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.report-head-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.report-title {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.report-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.report-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--font-xs);
+}
+
+.report-meta-label {
+  color: var(--color-text-tertiary);
+}
+
+.report-meta-value {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.report-section + .report-section {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-border);
 }
 
 .report-alert {
   margin-bottom: 8px;
 }
 
-.report-section-title {
-  margin: 16px 0 8px;
-  font-size: var(--font-base);
-  font-weight: 600;
-  color: var(--color-text-primary);
+.report-alert:last-child {
+  margin-bottom: 0;
 }
 
 .tab-toolbar {
@@ -1020,7 +1249,36 @@ onMounted(() => {
   margin-left: 8px;
 }
 
-.detail-loading {
-  min-height: 320px;
+/* ===== 首屏骨架 ===== */
+.detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-skeleton-panel {
+  padding: 20px 24px;
+  min-height: 132px;
+}
+
+.detail-skeleton .detail-skeleton-title {
+  width: 32%;
+  height: 16px;
+  margin-bottom: 18px;
+}
+
+.detail-skeleton .detail-skeleton-panel:last-child {
+  min-height: 104px;
+}
+
+@media (max-width: 640px) {
+  .lifecycle-steps-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+  }
+  .lifecycle-steps {
+    min-width: 540px;
+  }
 }
 </style>

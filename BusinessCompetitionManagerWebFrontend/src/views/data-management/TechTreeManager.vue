@@ -3,14 +3,14 @@
     <div class="tt-toolbar">
       <h2 class="tt-title">{{ canManage ? "科技树管理" : "科技树" }}</h2>
       <div class="tt-actions">
-        <el-button v-if="canManage" type="primary" @click="openCreate">+ 新建节点</el-button>
         <el-button @click="viewMode = viewMode === 'tree' ? 'table' : 'tree'">
           {{ viewMode === "tree" ? "表格模式" : "可视化模式" }}
         </el-button>
+        <el-button v-if="canManage" type="primary" @click="openCreate">+ 新建节点</el-button>
       </div>
     </div>
 
-    <div v-if="!cid" class="no-comp-warning">
+    <div v-if="!cid" class="notice notice--warning">
       请先在「比赛管理」中选择一个比赛
     </div>
 
@@ -24,21 +24,27 @@
           <span class="tt-info-label">描述</span>{{ selectedNode.description || "-" }}
         </div>
         <div class="tt-info-row">
-          <span class="tt-info-label">层级</span>{{ selectedNode.tier }}
+          <span class="tt-info-label">层级</span><span class="value-num">{{ selectedNode.tier }}</span>
         </div>
         <div class="tt-info-row">
-          <span class="tt-info-label">研发费用</span>{{ selectedNode.researchCost ?? 0 }}
+          <span class="tt-info-label">研发费用</span
+          ><span class="value-num">{{ selectedNode.researchCost ?? 0 }}</span>
         </div>
         <div class="tt-info-row">
           <span class="tt-info-label">前置依赖</span>
           <span v-if="selectedNode.prerequisites?.length">
             {{ selectedNode.prerequisites.map((p: any) => p.prerequisite?.name).join("、") }}
           </span>
-          <span v-else style="color: #c0c4cc">无</span>
+          <span v-else class="cell-empty">无</span>
         </div>
         <div class="tt-info-actions">
           <el-button v-if="canManage" size="small" @click="editNode(selectedNode)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(selectedNode)"
+          <el-button
+            v-if="canManage"
+            size="small"
+            type="danger"
+            plain
+            @click="handleDelete(selectedNode)"
             >删除</el-button
           >
         </div>
@@ -46,12 +52,28 @@
     </div>
 
     <div v-show="viewMode !== 'tree'">
-      <el-table v-if="!isPhone" v-loading="loading" :data="nodes" border stripe>
-        <el-table-column prop="name" label="名称" />
-        <el-table-column prop="description" label="描述" />
-        <el-table-column prop="tier" label="层级" />
-        <el-table-column prop="researchCost" label="研发费用" />
-        <el-table-column label="前置依赖">
+      <el-table
+        v-if="!isPhone"
+        v-loading="loading"
+        :data="nodes"
+        border
+        stripe
+        class="anim-fade-in-up"
+        style="width: 100%"
+      >
+        <el-table-column prop="name" label="名称" min-width="160" />
+        <el-table-column prop="description" label="描述" min-width="180" />
+        <el-table-column prop="tier" label="层级" align="right" min-width="90">
+          <template #default="{ row }">
+            <span class="value-num">{{ row.tier }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="researchCost" label="研发费用" align="right" min-width="120">
+          <template #default="{ row }">
+            <span class="value-num">{{ row.researchCost }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="前置依赖" min-width="180">
           <template #default="{ row }">
             <span v-if="row.prerequisites?.length">
               <el-tag
@@ -63,18 +85,21 @@
                 {{ p.prerequisite?.name }}
               </el-tag>
             </span>
-            <span v-else style="color: #c0c4cc">无</span>
+            <span v-else class="cell-empty">无</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="canManage" label="操作" width="220" fixed="right">
+        <el-table-column v-if="canManage" label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="showDetail(row)">详情</el-button>
             <el-button v-if="canManage" size="small" @click="editNode(row)">编辑</el-button>
-            <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)"
+            <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
               >删除</el-button
             >
           </template>
         </el-table-column>
+        <template #empty>
+          <el-empty v-if="!loading" :image-size="72" description="暂无科技节点" />
+        </template>
       </el-table>
       <MobileCards
         v-else
@@ -82,6 +107,8 @@
         :columns="techColumns"
         :loading="loading"
         :row-key="(row: any) => row.id"
+        empty-text="暂无科技节点"
+        class="anim-fade-in-up"
       >
         <template #prereqs="{ row }">
           <span v-if="row.prerequisites?.length">
@@ -94,12 +121,12 @@
               {{ p.prerequisite?.name }}
             </el-tag>
           </span>
-          <span v-else style="color: #c0c4cc">无</span>
+          <span v-else class="cell-empty">无</span>
         </template>
         <template #actions="{ row }">
           <el-button size="small" @click="showDetail(row)">详情</el-button>
           <el-button v-if="canManage" size="small" @click="editNode(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)"
+          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
             >删除</el-button
           >
         </template>
@@ -110,8 +137,12 @@
       <el-descriptions v-if="detailData" :column="1" border>
         <el-descriptions-item label="名称">{{ detailData.name }}</el-descriptions-item>
         <el-descriptions-item label="描述">{{ detailData.description || "-" }}</el-descriptions-item>
-        <el-descriptions-item label="层级">{{ detailData.tier }}</el-descriptions-item>
-        <el-descriptions-item label="研发费用">{{ detailData.researchCost ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="层级">
+          <span class="value-num">{{ detailData.tier }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="研发费用">
+          <span class="value-num">{{ detailData.researchCost ?? 0 }}</span>
+        </el-descriptions-item>
         <el-descriptions-item label="前置依赖">
           <template v-if="detailData.prerequisites?.length">
             <el-tag
@@ -123,7 +154,7 @@
               {{ p.prerequisite?.name }}
             </el-tag>
           </template>
-          <span v-else style="color: #c0c4cc">无</span>
+          <span v-else class="cell-empty">无</span>
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDateTime(detailData.createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime(detailData.updatedAt) }}</el-descriptions-item>
@@ -171,6 +202,7 @@ import { formatDateTime } from "@/utils/format";
 import BigNumberInput from "@/components/common/BigNumberInput.vue";
 import MobileCards from "@/components/common/MobileCards.vue";
 import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useResourceRefresh } from "@/composables/useNotifications";
 
 const props = defineProps<{ cid: string }>();
 const authStore = useAuthStore();
@@ -226,6 +258,9 @@ const form = reactive<{
 });
 
 onMounted(loadData);
+
+// 资源变更实时刷新：basedata 变更时自动重拉当前列表（保留视图模式/选中节点）
+useResourceRefresh(["basedata"], loadData);
 
 onBeforeUnmount(() => {
   if (resizeHandler) {
@@ -569,11 +604,21 @@ async function handleDelete(row: any) {
 </script>
 
 <style scoped>
+/* ------------------------------------------------------------------
+   数据管理统一骨架（9 个管理器共用同一约定）：
+   工具条（标题 + 视图切换 + 新建）→ 提示 / 表格（或移动端卡片）；间距统一 16px
+   ------------------------------------------------------------------ */
+.techtree-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 .tt-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin: 0;
 }
 .tt-title {
   font-size: 20px;
@@ -584,6 +629,10 @@ async function handleDelete(row: any) {
 .tt-actions {
   display: flex;
   gap: 8px;
+}
+/* 关系列为空时的占位「无」：统一弱化色 */
+.cell-empty {
+  color: var(--color-text-tertiary);
 }
 .tt-tree-container {
   display: flex;
@@ -639,15 +688,5 @@ async function handleDelete(row: any) {
   gap: 8px;
   margin-top: auto;
   padding-top: 12px;
-}
-.no-comp-warning {
-  text-align: center;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--color-warning-soft);
-  border: 1px solid rgba(var(--color-warning-soft-rgb), 0.3);
-  border-radius: 6px;
-  color: #b45309;
-  font-size: 13px;
 }
 </style>

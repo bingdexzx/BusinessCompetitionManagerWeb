@@ -6,6 +6,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import * as api from '@/api'
 import type { Company, CompetitionMember, StockAccount, StockAdmin } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useResourceRefresh } from '@/composables/useNotifications'
 import { errorMessage } from '@/utils/errors'
 import { toDisplay } from '@/utils/format'
 
@@ -132,6 +133,9 @@ function load(): void {
   void loadAccounts()
   void loadRefs()
 }
+
+// 资源变更实时刷新：股票数据被其他端写入后自动重拉列表/账户/关联项
+useResourceRefresh(['stock'], load)
 
 // ---------- 股票新增 / 编辑弹窗 ----------
 interface StockForm {
@@ -435,18 +439,30 @@ watch(
 
     <template v-else>
       <!-- 股票管理 -->
-      <el-card shadow="never" class="section-card">
+      <el-card shadow="never" class="section-card anim-fade-in-up">
         <template #header>
           <div class="card-header">
             <span class="card-title">股票管理</span>
-            <el-button type="primary" size="small" @click="openStockCreate">
-              <el-icon><Plus /></el-icon>
-              <span>新增股票</span>
-            </el-button>
+            <div class="card-tools">
+              <el-tag v-if="stockRows.length" size="small" type="info" effect="plain">
+                共 {{ stockRows.length }} 只
+              </el-tag>
+              <el-button type="primary" size="small" @click="openStockCreate">
+                <el-icon><Plus /></el-icon>
+                <span>新增股票</span>
+              </el-button>
+            </div>
           </div>
         </template>
 
-        <el-table v-loading="stockLoading" :data="stockRows" border stripe empty-text="暂无数据">
+        <!-- 首屏加载：骨架代替空表，避免「暂无数据」误判 -->
+        <div v-if="stockLoading && !stockRows.length" class="table-skeleton">
+          <div v-for="i in 6" :key="i" class="skeleton skeleton-line" />
+        </div>
+        <el-table v-else v-loading="stockLoading" :data="stockRows" border stripe>
+          <template #empty>
+            <el-empty description="暂无股票数据" :image-size="60" />
+          </template>
           <el-table-column label="代码" width="100">
             <template #default="{ row }">{{ toDisplay(row.code) }}</template>
           </el-table-column>
@@ -454,42 +470,73 @@ watch(
             <template #default="{ row }">{{ toDisplay(row.name) }}</template>
           </el-table-column>
           <el-table-column label="现价" width="100" align="right">
-            <template #default="{ row }">{{ toDisplay(row.currentPrice) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ toDisplay(row.currentPrice) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="发行价" width="100" align="right">
-            <template #default="{ row }">{{ toDisplay(row.initPrice) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ toDisplay(row.initPrice) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="股本" min-width="110" align="right">
-            <template #default="{ row }">{{ toDisplay(row.totalShares) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ toDisplay(row.totalShares) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="净利润" min-width="110" align="right">
-            <template #default="{ row }">{{ toDisplay(row.initNetProfit) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ toDisplay(row.initNetProfit) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="轮次" width="70" align="center">
             <template #default="{ row }">{{ toDisplay(row.round) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="130" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" link type="primary" @click="openStockEdit(row)">编辑</el-button>
-              <el-button size="small" link type="danger" @click="removeStock(row)">删除</el-button>
+              <div class="row-actions">
+                <el-button size="small" link type="primary" @click="openStockEdit(row)">
+                  编辑
+                </el-button>
+                <el-button
+                  size="small"
+                  link
+                  type="danger"
+                  class="danger-op"
+                  @click="removeStock(row)"
+                >
+                  删除
+                </el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
       </el-card>
 
       <!-- 资金账户管理 -->
-      <el-card shadow="never" class="section-card">
+      <el-card shadow="never" class="section-card anim-fade-in-up">
         <template #header>
           <div class="card-header">
             <span class="card-title">资金账户管理</span>
-            <el-button type="primary" size="small" @click="openAccountCreate">
-              <el-icon><Plus /></el-icon>
-              <span>新增账户</span>
-            </el-button>
+            <div class="card-tools">
+              <el-tag v-if="accountRows.length" size="small" type="info" effect="plain">
+                共 {{ accountRows.length }} 个
+              </el-tag>
+              <el-button type="primary" size="small" @click="openAccountCreate">
+                <el-icon><Plus /></el-icon>
+                <span>新增账户</span>
+              </el-button>
+            </div>
           </div>
         </template>
 
-        <el-table v-loading="accountLoading" :data="accountRows" border stripe empty-text="暂无数据">
+        <div v-if="accountLoading && !accountRows.length" class="table-skeleton">
+          <div v-for="i in 5" :key="i" class="skeleton skeleton-line" />
+        </div>
+        <el-table v-else v-loading="accountLoading" :data="accountRows" border stripe>
+          <template #empty>
+            <el-empty description="暂无资金账户" :image-size="60" />
+          </template>
           <el-table-column label="账户名" min-width="130">
             <template #default="{ row }">{{ toDisplay(row.name) }}</template>
           </el-table-column>
@@ -502,15 +549,29 @@ watch(
             </template>
           </el-table-column>
           <el-table-column label="现金余额" min-width="110" align="right">
-            <template #default="{ row }">{{ toDisplay(row.cashBalance) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ toDisplay(row.cashBalance) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="绑定字段" width="100" align="center">
             <template #default="{ row }">{{ toDisplay(row.bindFieldId) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="130" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" link type="primary" @click="openAccountEdit(row)">编辑</el-button>
-              <el-button size="small" link type="danger" @click="removeAccount(row)">删除</el-button>
+              <div class="row-actions">
+                <el-button size="small" link type="primary" @click="openAccountEdit(row)">
+                  编辑
+                </el-button>
+                <el-button
+                  size="small"
+                  link
+                  type="danger"
+                  class="danger-op"
+                  @click="removeAccount(row)"
+                >
+                  删除
+                </el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -668,9 +729,46 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .card-title {
   font-weight: 600;
+}
+
+/* 工具条分组：主操作与计数收敛到右侧一组，和标题分成两个视觉块 */
+.card-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 行内操作：主次分明，危险操作默认弱化 */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.section-card :deep(.danger-op) {
+  color: var(--color-text-tertiary);
+}
+.section-card :deep(.danger-op:hover) {
+  color: var(--color-danger);
+}
+
+/* 首屏骨架行：高度贴近真实行，减少加载完成后的跳动 */
+.table-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+.table-skeleton .skeleton-line {
+  height: 38px;
+  margin-bottom: 0;
+}
+.table-skeleton .skeleton-line:last-child {
+  width: 100%;
 }
 </style>

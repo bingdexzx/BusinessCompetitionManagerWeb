@@ -8,17 +8,23 @@
       </div>
     </div>
 
-    <div v-if="!cid" class="no-comp-warning">
+    <div v-if="!cid" class="notice notice--warning">
       请先在「比赛管理」中选择一个比赛
     </div>
 
-    <el-table v-if="!isPhone" v-loading="loading" :data="filteredData" border stripe style="width: 100%">
+    <el-table
+      v-if="!isPhone"
+      v-loading="loading"
+      :data="filteredData"
+      border
+      stripe
+      class="anim-fade-in-up"
+      style="width: 100%"
+    >
       <el-table-column prop="name" label="名称" min-width="160" />
       <el-table-column label="零件配比" min-width="200">
         <template #default="{ row }">
-          <span v-if="!row._parts?.length && !row.productParts?.length" style="color: #c0c4cc"
-            >-</span
-          >
+          <span v-if="!row._parts?.length && !row.productParts?.length" class="cell-empty">-</span>
           <el-tag
             v-for="pp in row.productParts || row._parts || []"
             :key="pp.id || pp.partId"
@@ -33,9 +39,18 @@
         <template #default="{ row }">
           <el-button size="small" @click="showDetail(row)">详情</el-button>
           <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+            >删除</el-button
+          >
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty
+          v-if="!loading"
+          :image-size="72"
+          :description="searchText ? '没有匹配的记录' : '暂无产品数据'"
+        />
+      </template>
     </el-table>
 
     <MobileCards
@@ -44,9 +59,11 @@
       :columns="productColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
+      :empty-text="searchText ? '没有匹配的记录' : '暂无产品数据'"
+      class="anim-fade-in-up"
     >
       <template #parts="{ row }">
-        <span v-if="!row._parts?.length && !row.productParts?.length" style="color: #c0c4cc">-</span>
+        <span v-if="!row._parts?.length && !row.productParts?.length" class="cell-empty">-</span>
         <el-tag
           v-for="pp in row.productParts || row._parts || []"
           :key="pp.id || pp.partId"
@@ -59,7 +76,9 @@
       <template #actions="{ row }">
         <el-button size="small" @click="showDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+          >删除</el-button
+        >
       </template>
     </MobileCards>
 
@@ -69,7 +88,7 @@
         <el-descriptions-item label="零件配比">
           <span
             v-if="!detailData.productParts?.length && !detailData._parts?.length"
-            style="color: #c0c4cc"
+            class="cell-empty"
             >无</span
           >
           <el-tag
@@ -182,6 +201,7 @@ import { formatDateTime } from "@/utils/format";
 import MobileCards from "@/components/common/MobileCards.vue";
 import SearchToggle from "@/components/common/SearchToggle.vue";
 import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useResourceRefresh } from "@/composables/useNotifications";
 
 interface PartRow {
   partId: number | null;
@@ -274,6 +294,9 @@ onMounted(() => {
   loadPartOptions();
   loadTechOptions();
 });
+
+// 资源变更实时刷新：basedata 变更时自动重拉当前列表（保留搜索/选中状态）
+useResourceRefresh(["basedata"], loadData);
 
 /**
  * 行内关联归一化：新契约 products 行带 relations.parts / relations.techRequirements
@@ -470,14 +493,21 @@ function resetForm() {
 </script>
 
 <style scoped>
+/* ------------------------------------------------------------------
+   数据管理统一骨架（9 个管理器共用同一约定）：
+   工具条（标题 + 搜索 + 新建）→ 提示 / 表格（或移动端卡片）；间距统一 16px
+   ------------------------------------------------------------------ */
 .products-manager {
-  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .prm-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin: 0;
 }
 .prm-title {
   font-size: 20px;
@@ -488,6 +518,10 @@ function resetForm() {
 .prm-actions {
   display: flex;
   gap: 8px;
+}
+/* 关系列为空时的占位「-」/「无」：统一弱化色（不再写死 #c0c4cc） */
+.cell-empty {
+  color: var(--color-text-tertiary);
 }
 .sub-table-wrap {
   width: 100%;
@@ -513,15 +547,5 @@ function resetForm() {
   padding: 8px 12px;
   border-top: 1px solid #ebeef5;
   gap: 8px;
-}
-.no-comp-warning {
-  text-align: center;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--color-warning-soft);
-  border: 1px solid rgba(var(--color-warning-soft-rgb), 0.3);
-  border-radius: 6px;
-  color: #b45309;
-  font-size: 13px;
 }
 </style>

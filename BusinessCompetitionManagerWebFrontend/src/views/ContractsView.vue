@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { createContract, getCompanies, getContractTypes, getContracts, getFiscalYears, syncContracts } from '@/api'
-import { useNotifications } from '@/composables/useNotifications'
+import { subscribeCompetition, useNotifications, useResourceRefresh } from '@/composables/useNotifications'
 import type { Company, Contract, ContractType, FiscalYear } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
@@ -31,11 +31,31 @@ function statusMeta(status: string): { label: string; type: TagType } {
   return STATUS_META[status] ?? { label: status, type: 'info' }
 }
 
+/** 状态语义色：只用于列表状态列的视觉分组，状态文案与业务取值原样保留 */
+type StatusTone = 'neutral' | 'pending' | 'active' | 'done' | 'alert'
+
+const TAG_TONE: Record<TagType, StatusTone> = {
+  info: 'neutral',
+  warning: 'pending',
+  primary: 'active',
+  success: 'done',
+  danger: 'alert',
+}
+
+function statusTone(status: string): StatusTone {
+  return TAG_TONE[statusMeta(status).type]
+}
+
 const STATUS_OPTIONS = Object.keys(STATUS_META)
 
 // ---------- 合同列表（服务端分页 + 增量同步） ----------
 const contracts = ref<Contract[]>([])
 const loading = ref(false)
+/** 是否已完成首次加载（决定骨架屏） */
+const loaded = ref(false)
+/** 加载失败的就地提示（不替代原有的 ElMessage） */
+const loadError = ref('')
+const initialLoading = computed(() => !loaded.value)
 const statusFilter = ref('')
 const keyword = ref('')
 /** 服务端分页（2000+ 合同不能整表拉取） */
@@ -55,6 +75,7 @@ function partiesSummary(row: Contract): string {
 /** 加载指定页（服务端分页 + 状态/关键字过滤，薄字段响应） */
 async function loadPage(nextPage = page.value): Promise<void> {
   loading.value = true
+  loadError.value = ''
   try {
     const result = await getContracts(props.cid, {
       page: nextPage,
@@ -67,9 +88,11 @@ async function loadPage(nextPage = page.value): Promise<void> {
     page.value = result.page
     lastSyncAt.value = new Date().toISOString()
   } catch (e) {
+    loadError.value = errorMessage(e, '加载失败')
     ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 
@@ -125,6 +148,13 @@ useNotifications((message) => {
   if (isContractEvent || payload.contractId != null) {
     void loadContracts(false)
   }
+})
+
+/** 资源变更广播（400ms 去抖合并）：合同/公司/财年/基础数据/比赛包写操作后自动刷新 */
+const REFRESH_RESOURCES = ['contracts', 'companies', 'fiscal-years', 'basedata', 'packages']
+useResourceRefresh(REFRESH_RESOURCES, () => {
+  void loadContracts(false) // 增量同步合并进当前页（不重置分页/过滤）
+  void loadBaseData()
 })
 
 function openDetail(row: Contract): void {
@@ -252,6 +282,7 @@ async function loadBaseData(): Promise<void> {
 }
 
 onMounted(() => {
+  subscribeCompetition(props.cid) // 订阅资源变更广播（重连自动恢复、断线 seq 重放）
   void loadContracts(true) // 首次全量，此后增量
   void loadBaseData()
 })
@@ -261,6 +292,7 @@ watch(
   () => {
     contracts.value = []
     lastSyncAt.value = '1970-01-01T00:00:00Z'
+    subscribeCompetition(props.cid)
     void loadContracts(true)
     void loadBaseData()
   },
@@ -269,14 +301,21 @@ watch(
 
 <template>
   <div class="contracts-page">
+    <!-- 筛选与操作收成一条工具条 -->
     <div class="page-toolbar">
       <h1 class="page-title">合同工作台</h1>
-      <div class="page-actions">
+      <div class="page-actions filters-bar">
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="搜索名称 / 统一编号"
+          class="filter-search"
+        />
         <el-select
           v-model="statusFilter"
           clearable
           placeholder="按状态筛选"
-          style="width: 160px"
+          class="filter-status"
         >
           <el-option
             v-for="s in STATUS_OPTIONS"
@@ -285,80 +324,100 @@ watch(
             :value="s"
           />
         </el-select>
-        <el-input
-          v-model="keyword"
-          clearable
-          placeholder="搜索名称 / 统一编号"
-          style="width: 220px"
-        />
+        <span class="filters-divider" aria-hidden="true" />
         <el-button :loading="syncing" @click="loadContracts(false)">同步</el-button>
         <el-button type="primary" @click="openCreate">创建合同</el-button>
       </div>
     </div>
 
-    <el-table
-      v-loading="loading"
-      :data="contracts"
-      border
-      stripe
-      class="clickable-table"
-      style="width: 100%"
-      @row-click="openDetail"
-    >
-      <template #empty>
-        <el-empty description="暂无合同" />
-      </template>
-      <el-table-column prop="name" label="合同名称" min-width="180">
-        <template #default="{ row }">
-          <span class="contract-name">{{ row.name || `合同 #${row.id}` }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="contractTypeKey" label="类型" min-width="130" />
-      <el-table-column label="统一编号" min-width="160">
-        <template #default="{ row }">
-          <span v-if="row.unifiedNumber" class="unified-number">{{ row.unifiedNumber }}</span>
-          <span v-else class="num-empty">未编号</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="130" align="center">
-        <template #default="{ row }">
-          <el-tag :type="statusMeta(row.status).type">{{ statusMeta(row.status).label }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="轮次" width="70" align="center">
-        <template #default="{ row }">{{ row.roundNo }}</template>
-      </el-table-column>
-      <el-table-column label="补录" width="80" align="center">
-        <template #default="{ row }">
-          <el-tag v-if="row.isBackfill" type="warning" size="small">补录</el-tag>
-          <span v-else class="num-empty">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="财年" width="80" align="center">
-        <template #default="{ row }">{{ row.fiscalYear ?? '—' }}</template>
-      </el-table-column>
-      <el-table-column label="参与方" min-width="220">
-        <template #default="{ row }">
-          <span class="party-summary">{{ partiesSummary(row) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="创建时间" width="170">
-        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
-      </el-table-column>
-    </el-table>
+    <!-- 错误就地提示（原有 ElMessage 保留） -->
+    <div v-if="loadError" class="notice notice--danger contracts-error">
+      <span>{{ loadError }}</span>
+      <el-button link type="primary" @click="loadPage(page)">重试</el-button>
+    </div>
 
-    <!-- 服务端分页（2000+ 合同只渲染当前页 50 行） -->
-    <el-pagination
-      class="contracts-pager"
-      background
-      layout="total, sizes, prev, pager, next"
-      :total="total"
-      :current-page="page"
-      :page-size="pageSize"
-      :page-sizes="[20, 50, 100]"
-      @current-change="onPageChange"
-      @size-change="onSizeChange"
-    />
+    <!-- 首屏骨架 -->
+    <div v-if="initialLoading" class="skeleton-table panel" aria-busy="true">
+      <div v-for="n in 8" :key="n" class="skeleton skeleton-line skeleton-row" />
+    </div>
+
+    <template v-else>
+      <div class="table-block anim-stagger">
+        <el-table
+          v-loading="loading"
+          :data="contracts"
+          border
+          stripe
+          class="clickable-table"
+          style="width: 100%"
+          @row-click="openDetail"
+        >
+          <template #empty>
+            <el-empty description="暂无合同" />
+          </template>
+          <el-table-column prop="name" label="合同名称" min-width="160">
+            <template #default="{ row }">
+              <span class="contract-name">{{ row.name || `合同 #${row.id}` }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="contractTypeKey" label="类型" min-width="118" />
+          <el-table-column label="统一编号" min-width="148">
+            <template #default="{ row }">
+              <span v-if="row.unifiedNumber" class="unified-number value-num">
+                {{ row.unifiedNumber }}
+              </span>
+              <span v-else class="num-empty">未编号</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="126" align="center">
+            <template #default="{ row }">
+              <span class="status-pill" :class="`tone-${statusTone(row.status)}`">
+                {{ statusMeta(row.status).label }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="轮次" width="70" align="right">
+            <template #default="{ row }">
+              <span class="value-num">{{ row.roundNo }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="补录" width="74" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.isBackfill" type="warning" size="small">补录</el-tag>
+              <span v-else class="num-empty">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="财年" width="80" align="right">
+            <template #default="{ row }">
+              <span class="value-num">{{ row.fiscalYear ?? '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="参与方" min-width="190">
+            <template #default="{ row }">
+              <span class="party-summary">{{ partiesSummary(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="164">
+            <template #default="{ row }">
+              <span class="value-num">{{ formatDateTime(row.createdAt) }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <!-- 服务端分页（2000+ 合同只渲染当前页 50 行） -->
+        <el-pagination
+          class="contracts-pager"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :current-page="page"
+          :page-size="pageSize"
+          :page-sizes="[20, 50, 100]"
+          @current-change="onPageChange"
+          @size-change="onSizeChange"
+        />
+      </div>
+    </template>
 
     <!-- 创建合同 -->
     <el-dialog v-model="showCreate" title="创建合同" width="640px" append-to-body>
@@ -472,31 +531,161 @@ watch(
 </template>
 
 <style scoped lang="scss">
+.contracts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .page-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 .page-toolbar .page-title {
   margin-bottom: 0;
 }
-.page-actions {
+
+/* 筛选 + 操作：一条工具条，而不是散落的控件 */
+.filters-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
+  padding: 8px 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.filter-search {
+  width: 220px;
+}
+
+.filter-status {
+  width: 150px;
+}
+
+.filters-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--color-border);
+}
+
+.contracts-error {
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 首屏骨架：保持表格行高节奏，避免空白与跳动 */
+.skeleton-table {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+}
+
+.skeleton-row {
+  height: 18px;
+  margin-bottom: 0;
+}
+
+.skeleton-row:nth-child(even) {
+  width: 82%;
+}
+
+/* 表格与分页作为一个整体入场：行内不做位移动画，避免增量同步时整表重放 */
+.table-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
 }
 
 .clickable-table :deep(.el-table__row) {
   cursor: pointer;
 }
 
+/* 行悬停：整行底色（全局）+ 首列品牌色细条，快速定位当前行 */
+.clickable-table :deep(.el-table__body tr > td.el-table__cell) {
+  transition: background-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+
+.clickable-table :deep(.el-table__body tr:hover > td.el-table__cell:first-child) {
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.clickable-table :deep(.el-table__body tr:hover .contract-name) {
+  color: var(--color-primary);
+}
+
+/* 状态列：色彩语义（圆点 + 底色）+ 简短文案 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+
+  &::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-text-tertiary);
+  }
+
+  &.tone-neutral {
+    color: var(--color-text-secondary);
+    background: var(--surface-sunken);
+  }
+
+  &.tone-pending {
+    background: var(--color-warning-soft);
+
+    &::before {
+      background: var(--color-warning);
+    }
+  }
+
+  &.tone-active {
+    background: rgba(var(--color-primary-rgb), 0.1);
+
+    &::before {
+      background: var(--color-primary);
+    }
+  }
+
+  &.tone-done {
+    background: var(--color-success-soft);
+
+    &::before {
+      background: var(--color-success);
+    }
+  }
+
+  &.tone-alert {
+    background: var(--color-danger-soft);
+
+    &::before {
+      background: var(--color-danger);
+    }
+  }
+}
+
 .contract-name {
   font-weight: 600;
   color: var(--color-text-primary);
+  transition: color var(--dur-fast) var(--ease-standard);
 }
 
 .unified-number {
@@ -514,6 +703,10 @@ watch(
   font-size: var(--font-sm);
 }
 
+.contracts-pager {
+  justify-content: flex-end;
+}
+
 .type-summary {
   background: var(--surface-sunken);
   border: 1px solid var(--color-border);
@@ -526,6 +719,32 @@ watch(
 
   b {
     color: var(--color-text-secondary);
+  }
+}
+
+/* 窄屏：工具条控件换行占满，不挤压表格 */
+@media (max-width: 1024px) {
+  .filter-search {
+    width: 180px;
+  }
+
+  .filter-status {
+    width: 130px;
+  }
+}
+
+@media (max-width: 640px) {
+  .filters-bar {
+    width: 100%;
+  }
+
+  .filter-search,
+  .filter-status {
+    width: 100%;
+  }
+
+  .filters-divider {
+    display: none;
   }
 }
 </style>

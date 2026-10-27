@@ -44,13 +44,26 @@
   --shadow-glow-sm: 0 4px 12px rgba(99, 102, 241, 0.18);
 
   // ===== Motion =====
+  // 统一动效刻度（2026-10 全量 UI 优化）：位移 8–16px、时长 160–400ms、只用 ease-out；
+  // 弹簧缓动仅用于「强调」场景（新增项落位、操作反馈），不用于页面级转场。
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
   --dur-fast: 0.16s;
   --dur-base: 0.24s;
   --dur-slow: 0.4s;
   --dur-xslow: 0.6s;
+  // 路由转场：离场要快（不拖住用户），入场略长（信息落位更从容）
+  --dur-transition-out: 0.12s;
+  --dur-transition-in: 0.28s;
+  // 动效位移刻度
+  --motion-distance-sm: 8px;
+  --motion-distance: 12px;
+  --motion-distance-lg: 16px;
+  // 列表交错入场步长（CSS 实现，无需 JS 计算下标）
+  --dur-stagger: 36ms;
+  --dur-count-up: 0.6s;
 
   // ===== Layout =====
   --sidebar-width: 240px;

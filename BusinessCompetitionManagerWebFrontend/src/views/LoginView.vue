@@ -13,6 +13,8 @@ const auth = useAuthStore()
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
+// 服务端失败原因：就地显示在提交按钮上方（ElMessage 同时保留，便于跨页面可见）
+const errorText = ref('')
 
 const form = reactive({
   username: '',
@@ -28,6 +30,7 @@ async function handleLogin(): Promise<void> {
   if (!formRef.value) return
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
+  errorText.value = ''
   loading.value = true
   try {
     await auth.login(form.username.trim(), form.password)
@@ -36,7 +39,9 @@ async function handleLogin(): Promise<void> {
     const redirect = route.query.redirect
     void router.push(typeof redirect === 'string' && redirect ? redirect : '/competitions')
   } catch (err) {
-    ElMessage.error(errorMessage(err, '登录失败，请稍后重试'))
+    const message = errorMessage(err, '登录失败，请稍后重试')
+    errorText.value = message
+    ElMessage.error(message)
   } finally {
     loading.value = false
   }
@@ -45,7 +50,7 @@ async function handleLogin(): Promise<void> {
 
 <template>
   <div class="login-page">
-    <div class="login-card">
+    <div class="login-card anim-fade-in-up">
       <!-- 品牌渐变头部 -->
       <div class="login-header">
         <img class="login-logo" src="@/assets/logo.svg" alt="logo" />
@@ -61,26 +66,38 @@ async function handleLogin(): Promise<void> {
         label-width="0"
         @keyup.enter="handleLogin"
       >
-        <el-form-item prop="username">
-          <el-input
-            v-model="form.username"
-            placeholder="用户名"
-            :prefix-icon="User"
-            size="large"
-            autocomplete="username"
-          />
-        </el-form-item>
-        <el-form-item prop="password">
-          <el-input
-            v-model="form.password"
-            type="password"
-            placeholder="密码"
-            :prefix-icon="Lock"
-            size="large"
-            show-password
-            autocomplete="current-password"
-          />
-        </el-form-item>
+        <div class="form-group">
+          <div class="section-title">账号信息</div>
+          <el-form-item prop="username">
+            <el-input
+              v-model="form.username"
+              placeholder="用户名"
+              :prefix-icon="User"
+              size="large"
+              autocomplete="username"
+              @input="errorText = ''"
+            />
+          </el-form-item>
+          <el-form-item prop="password">
+            <el-input
+              v-model="form.password"
+              type="password"
+              placeholder="密码"
+              :prefix-icon="Lock"
+              size="large"
+              show-password
+              autocomplete="current-password"
+              @input="errorText = ''"
+            />
+          </el-form-item>
+        </div>
+
+        <!-- 错误就地显示：贴近字段与提交按钮，不用等 toast 消失 -->
+        <div v-if="errorText" class="notice notice--danger login-error" role="alert">
+          <el-icon class="notice__icon"><WarningFilled /></el-icon>
+          <span>{{ errorText }}</span>
+        </div>
+
         <el-form-item>
           <el-button
             type="primary"
@@ -138,22 +155,11 @@ async function handleLogin(): Promise<void> {
   z-index: 1;
   width: min(400px, calc(100vw - 32px));
   padding-bottom: 28px;
-  background: #fff;
+  background: var(--color-surface);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--color-border);
   overflow: hidden;
-  animation: cardFloat 0.5s var(--ease-spring) both;
-}
-@keyframes cardFloat {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 /* 品牌渐变头部 */
 .login-header {
@@ -185,7 +191,20 @@ async function handleLogin(): Promise<void> {
   letter-spacing: 0.08em;
 }
 .login-form {
-  padding: 26px 32px 4px;
+  padding: 24px 32px 4px;
+}
+/* 字段分组：单列聚焦，账号类字段归为一组 */
+.form-group + .form-group {
+  margin-top: 4px;
+}
+.login-form .section-title {
+  margin-bottom: 10px;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.login-error {
+  margin-bottom: 16px;
 }
 .login-btn {
   width: 100%;

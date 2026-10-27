@@ -78,6 +78,21 @@ function titleFor(row: any): string {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+  /* 新增卡片入场上浮：key 稳定时只有新插入的卡片会播放，已有卡片不重播 */
+  animation: fade-in-up var(--dur-base) var(--ease-out-expo) both;
+}
+/* 前 4 张依次错峰，避免整屏卡片同时出现（纯 CSS，无需 JS 下标） */
+.mc-card:nth-child(1) {
+  animation-delay: 0ms;
+}
+.mc-card:nth-child(2) {
+  animation-delay: 28ms;
+}
+.mc-card:nth-child(3) {
+  animation-delay: 56ms;
+}
+.mc-card:nth-child(4) {
+  animation-delay: 84ms;
 }
 .mc-card-head {
   padding: 10px 14px;

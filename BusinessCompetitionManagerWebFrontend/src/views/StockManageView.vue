@@ -6,7 +6,8 @@ import { ElMessage } from 'element-plus'
 import { cancelStockOrder, placeStockOrder } from '@/api'
 import type { StockOrder, StockOrderSide, StockOrderStatus } from '@/api/types'
 import { useStockSync } from '@/composables/useStockSync'
-import { useNotifications } from '@/composables/useNotifications'
+import { useCountUp } from '@/composables/useMotion'
+import { useNotifications, useResourceRefresh } from '@/composables/useNotifications'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
 
@@ -21,6 +22,7 @@ const {
   round,
   syncing,
   lastSyncAt,
+  lastError,
   missing,
   syncNow,
   scheduleSync,
@@ -103,6 +105,29 @@ const accountViews = computed<AccountView[]>(() =>
     }
   }),
 )
+
+// ---------- 账户合计（一排指标卡：只是展示聚合，不参与下单/校验） ----------
+const accountTotals = computed(() => {
+  let cash = 0
+  let marketValue = 0
+  for (const a of accountViews.value) {
+    cash += a.cashBalance
+    marketValue += a.marketValue
+  }
+  return { cash, marketValue, total: cash + marketValue }
+})
+
+const cashShown = useCountUp(computed(() => accountTotals.value.cash), { precision: 2 })
+const marketShown = useCountUp(computed(() => accountTotals.value.marketValue), {
+  precision: 2,
+})
+const totalShown = useCountUp(computed(() => accountTotals.value.total), { precision: 2 })
+
+/** 首屏：还没有同步游标、也没有失败记录 → 骨架屏（同步完成或失败后立即让位给真实空态） */
+const initialLoading = computed(() => !lastSyncAt.value && !lastError.value)
+
+/** 首次同步且还没有任何账户：骨架屏代替「暂无资金账户」 */
+const accountsInitialLoading = computed(() => initialLoading.value && accounts.value.length === 0)
 
 // ---------- 持仓表（50/页） ----------
 const PAGE_SIZE = 50
@@ -309,6 +334,9 @@ async function manualSync(): Promise<void> {
   }
 }
 
+// 资源变更实时刷新：股票数据被其他端写入后自动增量重拉（保留分页/筛选）
+useResourceRefresh(['stock'], manualSync)
+
 // ---------- 初始化 ----------
 onMounted(() => {
   start()
@@ -355,6 +383,16 @@ watch(
       </template>
     </el-alert>
 
+    <!-- 同步失败：就地提示（后台信号同步不弹 toast，避免提示风暴） -->
+    <el-alert
+      v-if="lastError && !missing"
+      type="error"
+      show-icon
+      :closable="false"
+      :title="lastError"
+      class="sync-error"
+    />
+
     <!-- 工具栏 -->
     <div class="mm-toolbar">
       <h2 class="mm-title">交易管理</h2>
@@ -378,7 +416,32 @@ watch(
           <span class="card-sub">现金 + 持仓市值 = 总资产</span>
         </div>
       </template>
-      <div v-if="accountViews.length" class="account-grid">
+      <!-- 汇总：一排指标卡（现金 / 持仓市值 / 总资产），读数优先 -->
+      <div v-if="accountViews.length" class="metric-grid account-summary">
+        <div class="metric-card">
+          <span class="metric-label">现金余额合计</span>
+          <div class="metric-value">
+            {{ cashShown.toFixed(2) }}<span class="metric-unit">元</span>
+          </div>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">持仓市值合计</span>
+          <div class="metric-value">
+            {{ marketShown.toFixed(2) }}<span class="metric-unit">元</span>
+          </div>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">总资产合计</span>
+          <div class="metric-value">
+            {{ totalShown.toFixed(2) }}<span class="metric-unit">元</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="accountsInitialLoading" class="account-grid">
+        <div v-for="i in 2" :key="i" class="skeleton account-skeleton" />
+      </div>
+      <div v-else-if="accountViews.length" class="account-grid">
         <div v-for="a in accountViews" :key="a.id" class="account-card">
           <div class="account-name">
             {{ a.name }}
@@ -388,15 +451,15 @@ watch(
           <div class="account-stats">
             <div class="account-stat">
               <span>现金余额（元）</span>
-              <b>{{ fmtMoney(a.cashBalance) }}</b>
+              <b class="value-num">{{ fmtMoney(a.cashBalance) }}</b>
             </div>
             <div class="account-stat">
               <span>持仓市值（元）</span>
-              <b>{{ fmtMoney(a.marketValue) }}</b>
+              <b class="value-num">{{ fmtMoney(a.marketValue) }}</b>
             </div>
             <div class="account-stat">
               <span>总资产（元）</span>
-              <b class="total">{{ fmtMoney(a.totalAssets) }}</b>
+              <b class="total value-num">{{ fmtMoney(a.totalAssets) }}</b>
             </div>
           </div>
         </div>
@@ -452,8 +515,10 @@ watch(
           </el-form-item>
 
           <div class="est-line">
-            预计金额：<b>{{ fmtMoney(estAmount) }}</b> 元
-            <span v-if="form.side === 'SELL'" class="muted">（可卖 {{ sellableShares }} 股）</span>
+            预计金额：<b class="value-num">{{ fmtMoney(estAmount) }}</b> 元
+            <span v-if="form.side === 'SELL'" class="muted">
+              （可卖 <span class="value-num">{{ sellableShares }}</span> 股）
+            </span>
           </div>
 
           <el-button
@@ -477,27 +542,40 @@ watch(
             <span class="card-sub">共 {{ holdingViews.length }} 条</span>
           </div>
         </template>
-        <el-table :data="pagedHoldings" border stripe style="width: 100%">
+        <div v-if="initialLoading" class="table-skeleton">
+          <div v-for="i in 5" :key="i" class="skeleton skeleton-line" />
+        </div>
+        <el-table v-else :data="pagedHoldings" border stripe style="width: 100%">
           <template #empty>
             <el-empty description="暂无持仓" :image-size="60" />
           </template>
           <el-table-column prop="stockCode" label="代码" width="100" />
           <el-table-column prop="stockName" label="名称" min-width="120" />
           <el-table-column label="股数" width="110" align="right">
-            <template #default="{ row }">{{ row.shares }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ row.shares }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="成本价（元）" width="120" align="right">
-            <template #default="{ row }">{{ fmtMoney(row.costPrice) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ fmtMoney(row.costPrice) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="现价（元）" width="110" align="right">
-            <template #default="{ row }">{{ fmtMoney(row.currentPrice) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ fmtMoney(row.currentPrice) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="市值（元）" width="130" align="right">
-            <template #default="{ row }">{{ fmtMoney(row.marketValue) }}</template>
+            <template #default="{ row }">
+              <span class="value-num">{{ fmtMoney(row.marketValue) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="浮动盈亏（元）" width="140" align="right">
             <template #default="{ row }">
-              <span :class="row.profit >= 0 ? 'up' : 'down'">{{ fmtMoney(row.profit) }}</span>
+              <span class="value-num" :class="row.profit >= 0 ? 'up' : 'down'">
+                {{ fmtMoney(row.profit) }}
+              </span>
             </template>
           </el-table-column>
         </el-table>
@@ -534,7 +612,10 @@ watch(
         </div>
       </template>
 
-      <el-table :data="pagedOrders" border stripe style="width: 100%">
+      <div v-if="initialLoading" class="table-skeleton">
+        <div v-for="i in 5" :key="i" class="skeleton skeleton-line" />
+      </div>
+      <el-table v-else :data="pagedOrders" border stripe style="width: 100%">
         <template #empty>
           <el-empty description="暂无委托" :image-size="60" />
         </template>
@@ -552,10 +633,14 @@ watch(
           </template>
         </el-table-column>
         <el-table-column label="委托价（元）" width="120" align="right">
-          <template #default="{ row }">{{ fmtMoney(row.price) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ fmtMoney(row.price) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="数量（股）" width="110" align="right">
-          <template #default="{ row }">{{ num(row.quantity) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ num(row.quantity) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
@@ -638,8 +723,19 @@ watch(
 .block-card {
   margin-bottom: 16px;
 }
+.sync-error {
+  margin-bottom: 16px;
+}
 
 /* ===== 资金账户 ===== */
+/* 汇总指标卡：一排读数优先，明细账户卡在下 */
+.account-summary {
+  margin-bottom: 16px;
+}
+.account-skeleton {
+  height: 118px;
+  border-radius: var(--radius-sm);
+}
 .account-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -689,6 +785,13 @@ watch(
   gap: 16px;
   align-items: start;
 }
+/* 下单区吸附：滚动看持仓时下单入口始终在同一位置，不随滚动上下乱跳 */
+@media (min-width: 1101px) {
+  .order-card {
+    position: sticky;
+    top: 12px;
+  }
+}
 .order-form {
   margin-top: 4px;
 }
@@ -712,13 +815,13 @@ watch(
   line-height: 1.6;
 }
 
-/* 红涨绿跌（中国股票惯例） */
+/* 红涨绿跌（中国股票惯例）：统一走语义色 token */
 .up {
-  color: #f5483b;
+  color: var(--color-danger);
   font-weight: 600;
 }
 .down {
-  color: #16a34a;
+  color: var(--color-success);
   font-weight: 600;
 }
 .num-empty {
@@ -729,6 +832,21 @@ watch(
   display: flex;
   justify-content: flex-end;
   margin-top: 14px;
+}
+
+/* 首屏骨架行：高度贴近真实行，减少加载完成后的跳动 */
+.table-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+.table-skeleton .skeleton-line {
+  height: 38px;
+  margin-bottom: 0;
+}
+.table-skeleton .skeleton-line:last-child {
+  width: 100%;
 }
 
 /* 买卖按钮：红买绿卖 */

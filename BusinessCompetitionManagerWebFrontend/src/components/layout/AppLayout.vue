@@ -14,7 +14,7 @@
     ></div>
     <div class="app-main">
       <TopBar :show-menu-toggle="isCompact" @toggle="mobileNavOpen = !mobileNavOpen" />
-      <div class="app-content">
+      <div ref="contentRef" class="app-content">
         <div class="route-wrap">
           <!-- 其他视图的页面内容统一渲染在此处 -->
           <slot />
@@ -29,6 +29,11 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import TopBar from './TopBar.vue'
+import {
+  subscribeCompetition,
+  subscribeGlobal,
+  unsubscribeCompetition,
+} from '@/composables/useNotifications'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -62,22 +67,46 @@ watch(
     mobileNavOpen.value = false
   },
 )
+
+// 切换页面后滚动回顶部：内容滚动容器是 .app-content（不是 window），
+// 否则从长列表进入下一页会停在半空，像是「信息断了一截」。
+// 用瞬时归零（不做平滑滚动）：跨页长距离动画会让人失去位置感。
+const contentRef = ref<HTMLElement | null>(null)
+watch(
+  () => route.path,
+  (_to, from) => {
+    if (!from) return
+    const el = contentRef.value
+    if (el) el.scrollTop = 0
+  },
+)
 // 放大回桌面尺寸时强制收起，恢复固定侧栏布局
 watch(isCompact, (compact) => {
   if (!compact) mobileNavOpen.value = false
 })
 
-// 进入 /competitions/:cid/... 页面时同步当前比赛上下文（API 请求头 X-Competition-Id 依赖它）
+// 系统级资源变更订阅（全局库）：登录后常驻，任何页面都能收到全局广播
+subscribeGlobal()
+
+// 进入 /competitions/:cid/... 页面时同步当前比赛上下文（API 请求头 X-Competition-Id 依赖它），
+// 并**集中订阅该比赛的资源变更广播**——这样每个比赛页面都无需各自订阅即可实时同步。
+let subscribedCid = ''
 watch(
   () => route.params.cid,
   (cid) => {
     // 只接受纯数字 id：拦截 undefined/null/非法值污染上下文（曾致 /competitions/undefined 请求）
-    if (typeof cid === 'string' && /^\d+$/.test(cid)) {
-      auth.selectCompetition(cid)
-    }
+    if (typeof cid !== 'string' || !/^\d+$/.test(cid)) return
+    auth.selectCompetition(cid)
+    if (subscribedCid && subscribedCid !== cid) unsubscribeCompetition(subscribedCid)
+    subscribedCid = cid
+    subscribeCompetition(cid)
   },
   { immediate: true },
 )
+
+onBeforeUnmount(() => {
+  if (subscribedCid) unsubscribeCompetition(subscribedCid)
+})
 </script>
 
 <style scoped>

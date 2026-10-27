@@ -168,6 +168,8 @@ export interface Team {
   industryAdjustAccepted: string[]
   industryFinal: string
   companyId: number | null
+  /** 已分配公司名称（未分配时为空串） */
+  companyName?: string
   members: TeamMemberInfo[]
   createdAt: string
 }
@@ -225,6 +227,8 @@ export interface ImportReport {
   fieldMigrations: Array<{ industryKey: string; added: number; updated: number; total: number }>
   basedataRows: Record<string, number>
   contractsCreated: number
+  /** 重导入去重：已存在（同类型+名称+参与方+输入）而跳过的合同数 */
+  contractsSkipped?: number
   errors: string[]
   warnings: string[]
 }
@@ -248,6 +252,13 @@ export interface ContractType {
   partyRoles: Array<{ role: string; label: string; optional?: boolean }>
   inputSchema: Array<{ key: string; label: string; type: string; min?: number; required?: boolean }>
   errors?: string[]
+}
+
+/** 本比赛已导入的产业插件选项（GET /competitions/{cid}/industries） */
+export interface IndustryOption {
+  key: string
+  name: string
+  version?: string
 }
 
 export type PluginKind = 'CONTRACT' | 'INDUSTRY'
@@ -459,6 +470,7 @@ export interface FiscalYearBackup {
 }
 
 // ---------- 结算 / 获奖 / 奖牌 ----------
+// 2026-10 需求变更：结算只算分与名次；奖项由超管人工定义（个人奖 / 集体奖）并人工发放。
 
 export interface ScoringCriterion {
   id: number
@@ -470,31 +482,92 @@ export interface ScoringCriterion {
   enabled: boolean
 }
 
-export interface AwardRule {
+/** 奖项类型：个人奖（发放给 1 人）/ 集体奖（发放给所选公司队伍全员） */
+export type AwardKind = 'INDIVIDUAL' | 'COLLECTIVE'
+
+/** 奖项定义（人工维护；medalLevel 可选，关联电子奖牌样式） */
+export interface AwardDefinition {
   id: number
-  awardLevel: string
-  rankFrom: number
-  rankTo: number
-  medalLevel: string
+  name: string
+  kind: AwardKind
+  kindLabel: string
+  description: string
+  medalLevel: string | null
 }
 
 export interface ScoringConfig {
   criteria: ScoringCriterion[]
-  awardRules: AwardRule[]
+  awards: AwardDefinition[]
 }
 
+/** 结算结果条目：只有得分与名次（获奖等级改为人工发放，不再自动评级） */
 export interface SettlementEntry {
   companyId: number
   companyName: string
   rank: number
   score: number
-  awardLevel: string
   detail: Record<string, { value: number; normalized: number; weight: number; score: number }>
 }
 
 export interface SettlementResult {
   run: { id: number; createdAt: string; criteria: unknown[] } | null
   entries: SettlementEntry[]
+}
+
+/** 结算配置新增请求体（kind 为配置项判别符，awardKind 才是奖项类型） */
+export type SettlementConfigPayload =
+  | {
+      kind: 'criterion'
+      name: string
+      fieldKey: string
+      aggregation: ScoringCriterion['aggregation']
+      direction: ScoringCriterion['direction']
+      weight: number
+    }
+  | {
+      kind: 'award'
+      name: string
+      awardKind: AwardKind
+      description?: string
+      medalLevel?: string
+    }
+
+/** 个人奖候选人（本比赛全部成员，可按关键字搜索） */
+export interface AwardCandidate {
+  userId: number
+  username: string
+  displayName: string
+  companyId: number | null
+  companyName: string
+}
+
+/** 奖项发放记录（个人奖 = 1 人；集体奖 = 所选公司队伍全员） */
+export interface AwardGrant {
+  id: number
+  awardId: number
+  awardName: string
+  kind: AwardKind
+  kindLabel: string
+  medalLevel: string | null
+  userId: number | null
+  userName: string
+  companyId: number | null
+  companyName: string
+  recipientCount: number
+  note: string
+  grantedByUsername: string
+  grantedAt: string
+}
+
+/** 发放请求体：个人奖给 userId；集体奖给 companyId 与可选备注 */
+export type AwardGrantPayload =
+  | { awardId: number; userId: number }
+  | { awardId: number; companyId: number; note?: string }
+
+export interface AwardGrantResult {
+  id: number
+  recipientCount: number
+  recipients: Array<{ userId: number; userName: string }>
 }
 
 export interface AwardInfo {
@@ -505,13 +578,16 @@ export interface AwardInfo {
   awardLevel: string
 }
 
+/** 个人档案获奖记录（人工发放写入；集体奖对每个受益成员各记一条） */
 export interface AwardRecord {
   id: number
   competitionId: number
   competitionName: string
   teamName: string
+  awardName: string
+  awardKind: string
+  awardKindLabel: string
   rank: number | null
-  awardLevel: string
   score: number | null
   medalId: number | null
   medalName: string | null

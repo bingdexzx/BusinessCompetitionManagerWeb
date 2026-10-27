@@ -8,25 +8,66 @@
       </div>
     </div>
 
-    <div v-if="!cid" class="no-comp-warning">
+    <div v-if="!cid" class="notice notice--warning">
       请先在「比赛管理」中选择一个比赛
     </div>
 
-    <el-table v-if="!isPhone" v-loading="loading" :data="filteredData" border stripe style="width: 100%">
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="fuelConsumptionPerKm" label="每公里油耗" />
-      <el-table-column prop="maxMaterialCargo" label="最大原料载货量" />
-      <el-table-column prop="maxPartCargo" label="最大零件载货量" />
-      <el-table-column prop="maxProductCargo" label="最大产品载货量" />
-      <el-table-column prop="price" label="价格" />
-      <el-table-column prop="carbonEmission" label="碳排放系数" />
+    <el-table
+      v-if="!isPhone"
+      v-loading="loading"
+      :data="filteredData"
+      border
+      stripe
+      class="anim-fade-in-up"
+      style="width: 100%"
+    >
+      <el-table-column prop="name" label="名称" min-width="160" />
+      <el-table-column prop="fuelConsumptionPerKm" label="每公里油耗" align="right" min-width="120">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.fuelConsumptionPerKm }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="maxMaterialCargo" label="最大原料载货量" align="right" min-width="140">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.maxMaterialCargo }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="maxPartCargo" label="最大零件载货量" align="right" min-width="140">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.maxPartCargo }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="maxProductCargo" label="最大产品载货量" align="right" min-width="140">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.maxProductCargo }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="price" label="价格" align="right" min-width="120">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.price }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="carbonEmission" label="碳排放系数" align="right" min-width="120">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.carbonEmission }}</span>
+        </template>
+      </el-table-column>
       <el-table-column v-if="canManage" label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="showDetail(row)">详情</el-button>
           <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+            >删除</el-button
+          >
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty
+          v-if="!loading"
+          :image-size="72"
+          :description="searchText ? '没有匹配的记录' : '暂无载具数据'"
+        />
+      </template>
     </el-table>
 
     <MobileCards
@@ -35,24 +76,45 @@
       :columns="vehicleColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
+      :empty-text="searchText ? '没有匹配的记录' : '暂无载具数据'"
+      class="anim-fade-in-up"
     >
       <template #actions="{ row }">
         <el-button size="small" @click="showDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+          >删除</el-button
+        >
       </template>
     </MobileCards>
 
     <el-dialog append-to-body v-model="detailVisible" title="载具详情" width="560px">
       <el-descriptions v-if="detailData" :column="1" border>
         <el-descriptions-item label="名称">{{ detailData.name }}</el-descriptions-item>
-        <el-descriptions-item label="每公里油耗">{{ detailData.fuelConsumptionPerKm }}</el-descriptions-item>
-        <el-descriptions-item label="最大原料载货量">{{ detailData.maxMaterialCargo }}</el-descriptions-item>
-        <el-descriptions-item label="最大零件载货量">{{ detailData.maxPartCargo }}</el-descriptions-item>
-        <el-descriptions-item label="最大产品载货量">{{ detailData.maxProductCargo }}</el-descriptions-item>
-        <el-descriptions-item label="价格">{{ (detailData as any).price }}</el-descriptions-item>
-        <el-descriptions-item label="碳排放系数">{{ (detailData as any).carbonEmission }}</el-descriptions-item>
-        <el-descriptions-item label="燃料">{{ getFuelName(detailData.fuelId) }}</el-descriptions-item>
+        <el-descriptions-item label="每公里油耗">
+          <span class="value-num">{{ detailData.fuelConsumptionPerKm }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="最大原料载货量">
+          <span class="value-num">{{ detailData.maxMaterialCargo }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="最大零件载货量">
+          <span class="value-num">{{ detailData.maxPartCargo }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="最大产品载货量">
+          <span class="value-num">{{ detailData.maxProductCargo }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="价格">
+          <span class="value-num">{{ (detailData as any).price }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="碳排放系数">
+          <span class="value-num">{{ (detailData as any).carbonEmission }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="燃料">
+          <el-tag v-if="detailData.fuelId" size="small">{{
+            getFuelName(detailData.fuelId)
+          }}</el-tag>
+          <span v-else class="cell-empty">-</span>
+        </el-descriptions-item>
         <el-descriptions-item label="可通过路径类型">
           <template v-if="(detailData as any).vehiclePathTypes?.length">
             <el-tag
@@ -64,7 +126,7 @@
               {{ vpt.pathType?.name || getPathTypeNameById(vpt.pathTypeId) }}
             </el-tag>
           </template>
-          <span v-else style="color: #c0c4cc">-</span>
+          <span v-else class="cell-empty">-</span>
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDateTime((detailData as any).createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime((detailData as any).updatedAt) }}</el-descriptions-item>
@@ -179,6 +241,7 @@ import MobileCards from "@/components/common/MobileCards.vue";
 import SearchToggle from "@/components/common/SearchToggle.vue";
 import BigNumberInput from "@/components/common/BigNumberInput.vue";
 import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useResourceRefresh } from "@/composables/useNotifications";
 
 interface VehicleItem {
   id: number;
@@ -279,6 +342,9 @@ onMounted(() => {
   loadFuelOptions();
   loadPathTypeOptions();
 });
+
+// 资源变更实时刷新：basedata 变更时自动重拉当前列表（保留搜索/选中状态）
+useResourceRefresh(["basedata"], loadData);
 
 /**
  * 行内路径类型归一化：新契约 relations.pathTypes = [{ id, pathTypeId, pathTypeName }]
@@ -470,14 +536,21 @@ function resetForm() {
 </script>
 
 <style scoped>
+/* ------------------------------------------------------------------
+   数据管理统一骨架（9 个管理器共用同一约定）：
+   工具条（标题 + 搜索 + 新建）→ 提示 / 表格（或移动端卡片）；间距统一 16px
+   ------------------------------------------------------------------ */
 .vehicles-manager {
-  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .vm-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin: 0;
 }
 .vm-title {
   font-size: 20px;
@@ -489,14 +562,8 @@ function resetForm() {
   display: flex;
   gap: 8px;
 }
-.no-comp-warning {
-  text-align: center;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--color-warning-soft);
-  border: 1px solid rgba(var(--color-warning-soft-rgb), 0.3);
-  border-radius: 6px;
-  color: #b45309;
-  font-size: 13px;
+/* 关系列为空时的占位「-」：统一弱化色（不再写死 #c0c4cc） */
+.cell-empty {
+  color: var(--color-text-tertiary);
 }
 </style>

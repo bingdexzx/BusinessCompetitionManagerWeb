@@ -4,7 +4,9 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import * as api from '@/api'
-import type { Team, TeamJoinCode } from '@/api/types'
+import type { IndustryOption, Team, TeamJoinCode } from '@/api/types'
+import { useResourceRefresh } from '@/composables/useNotifications'
+import { useCountUp, useFlash } from '@/composables/useMotion'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
@@ -14,6 +16,29 @@ const auth = useAuthStore()
 
 const teams = ref<Team[]>([])
 const loading = ref(false)
+/** 是否已完成首次加载（决定骨架屏 / 空态） */
+const loaded = ref(false)
+/** 加载失败的就地提示（不替代原有的 ElMessage） */
+const loadError = ref('')
+const initialLoading = computed(() => !loaded.value)
+
+/** 列表汇总：纯展示派生，不参与任何业务判断 */
+const summary = computed(() => {
+  const total = teams.value.length
+  const assigned = teams.value.filter((team) => team.companyName).length
+  const members = teams.value.reduce((count, team) => count + (team.members?.length ?? 0), 0)
+  return { total, assigned, unassigned: total - assigned, members }
+})
+const shownTeamCount = useCountUp(computed<number | null | undefined>(() => summary.value.total), {
+  duration: 400,
+})
+const { flashing: summaryFlashing, flash: flashSummary } = useFlash(1200)
+
+/** 成员头像取首字（仅展示用） */
+function initial(name: string): string {
+  const trimmed = (name || '').trim()
+  return trimmed ? Array.from(trimmed)[0]!.toUpperCase() : '?'
+}
 
 // ---------- 创建队伍 ----------
 const showCreate = ref(false)
@@ -58,12 +83,18 @@ function isCaptain(team: Team): boolean {
 
 async function load(): Promise<void> {
   loading.value = true
+  loadError.value = ''
+  const hadData = loaded.value
   try {
     teams.value = await api.getTeams(props.cid)
+    // 已有首屏数据时的（WS / 资源广播触发的）刷新：轻微闪一下，提示列表已更新
+    if (hadData) flashSummary()
   } catch (err) {
+    loadError.value = errorMessage(err, '操作失败')
     ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     loading.value = false
+    loaded.value = true
   }
 }
 
@@ -171,6 +202,72 @@ async function submitAdjust(): Promise<void> {
   }
 }
 
+// ---------- 分配公司（管理员） ----------
+const showAssign = ref(false)
+const assigning = ref(false)
+const assignTarget = ref<Team | null>(null)
+const industries = ref<IndustryOption[]>([])
+const industriesLoading = ref(false)
+const assignForm = ref({
+  industryKey: '',
+  companyName: '',
+})
+
+/** 产业下拉：打开弹窗时懒加载本比赛已导入的产业插件 */
+async function loadIndustries(): Promise<void> {
+  industriesLoading.value = true
+  try {
+    industries.value = await api.getIndustries(props.cid)
+    if (!assignForm.value.industryKey) {
+      assignForm.value.industryKey = industries.value[0]?.key ?? ''
+    }
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '产业列表加载失败'))
+  } finally {
+    industriesLoading.value = false
+  }
+}
+
+/** 管理员打开分配公司弹窗（默认产业：最终产业 → 首个产业志愿 → 首个已导入产业） */
+async function openAssign(team: Team): Promise<void> {
+  assignTarget.value = team
+  assignForm.value = {
+    industryKey: team.industryFinal || team.industryChoice?.[0] || '',
+    companyName: team.companyName || team.name,
+  }
+  showAssign.value = true
+  await loadIndustries()
+}
+
+async function submitAssign(): Promise<void> {
+  const target = assignTarget.value
+  if (!target) return
+  const industryKey = assignForm.value.industryKey.trim()
+  const companyName = assignForm.value.companyName.trim()
+  if (!industryKey) {
+    ElMessage.warning('请选择产业')
+    return
+  }
+  if (!companyName) {
+    ElMessage.warning('请填写公司名称')
+    return
+  }
+  assigning.value = true
+  try {
+    const team = await api.assignTeamCompany(props.cid, target.id, { industryKey, companyName })
+    ElMessage.success(`公司已分配：${team.companyName || companyName}；队长已获得权限`)
+    showAssign.value = false
+    await load()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '分配失败'))
+  } finally {
+    assigning.value = false
+  }
+}
+
+// 资源变更广播（400ms 去抖合并）：队伍/公司/用户写操作后自动刷新当前列表
+useResourceRefresh(['teams', 'companies', 'users'], load)
+
 onMounted(() => void load())
 </script>
 
@@ -191,90 +288,190 @@ onMounted(() => void load())
       </div>
     </div>
 
-    <!-- 队伍表格 -->
-    <el-card shadow="never">
-      <el-table v-loading="loading" :data="teams" border empty-text="暂无队伍">
-        <el-table-column label="队伍名称" min-width="130">
-          <template #default="{ row }">
-            <span class="team-name">{{ row.name }}</span>
-            <el-tag v-if="isCaptain(row)" size="small" type="warning" class="mini-tag">我是队长</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="captainName" label="队长" width="110" />
-        <el-table-column label="成员" min-width="150">
-          <template #default="{ row }">
-            <template v-if="row.members?.length">
-              <el-tag
-                v-for="m in row.members"
-                :key="m.userId"
-                size="small"
-                class="mini-tag"
-                :type="m.userId === row.captainId ? 'warning' : 'info'"
-              >
-                {{ m.displayName || m.username }}
-              </el-tag>
-            </template>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="产业志愿" min-width="130">
-          <template #default="{ row }">
-            <template v-if="row.industryChoice?.length">
-              <el-tag v-for="c in row.industryChoice" :key="c" size="small" class="mini-tag">
-                {{ c }}
-              </el-tag>
-            </template>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="接受调剂" min-width="130">
-          <template #default="{ row }">
-            <template v-if="row.industryAdjustAccepted?.length">
-              <el-tag
-                v-for="c in row.industryAdjustAccepted"
-                :key="c"
-                size="small"
-                type="info"
-                class="mini-tag"
-              >
-                {{ c }}
-              </el-tag>
-            </template>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="最终产业" width="110">
-          <template #default="{ row }">
-            <el-tag v-if="row.industryFinal" size="small" type="success">
-              {{ row.industryFinal }}
-            </el-tag>
-            <span v-else class="muted">未定</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="公司" width="90">
-          <template #default="{ row }">{{ row.companyId ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="170">
-          <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              v-if="isCaptain(row)"
-              size="small"
-              link
-              type="primary"
-              @click="genJoinCode(row)"
-            >
-              生成组队码
-            </el-button>
-            <el-button v-if="canAdjust" size="small" link type="warning" @click="openAdjust(row)">
-              调整产业
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+    <!-- 首屏骨架 -->
+    <div v-if="initialLoading" class="team-grid" aria-busy="true">
+      <div v-for="n in 3" :key="n" class="skeleton team-skeleton" />
+    </div>
+
+    <template v-else>
+      <!-- 错误就地提示（原有 ElMessage 保留，失败信息不再只弹一下） -->
+      <div v-if="loadError" class="notice notice--danger teams-error">
+        <span>{{ loadError }}</span>
+        <el-button link type="primary" @click="load">重试</el-button>
+      </div>
+
+      <!-- 概览指标：队伍 → 公司 → 成员的数量关系 -->
+      <div v-if="teams.length" class="metric-grid anim-fade-in-up">
+        <div class="metric-card">
+          <div class="metric-label">队伍总数</div>
+          <div class="metric-value" :class="{ 'flash-updated': summaryFlashing }">
+            {{ shownTeamCount }}<span class="metric-unit">支</span>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">已分配公司</div>
+          <div class="metric-value value-num">
+            {{ summary.assigned }}<span class="metric-unit">支</span>
+          </div>
+        </div>
+        <div class="metric-card" :class="{ 'metric-card--attention': summary.unassigned > 0 }">
+          <div class="metric-label">待分配公司</div>
+          <div class="metric-value value-num">
+            {{ summary.unassigned }}<span class="metric-unit">支</span>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">队员总数</div>
+          <div class="metric-value value-num">
+            {{ summary.members }}<span class="metric-unit">人</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 队伍卡片：一眼看清 队伍 → 队长 → 公司 → 产业 → 成员 -->
+      <div v-if="teams.length" v-loading="loading" class="team-list">
+        <div class="team-grid anim-stagger">
+          <article v-for="team in teams" :key="team.id" class="team-card hover-lift">
+            <header class="team-card__head">
+              <div class="team-card__title">
+                <h3 class="team-name">{{ team.name }}</h3>
+                <el-tag v-if="isCaptain(team)" size="small" type="warning" class="mini-tag">
+                  我是队长
+                </el-tag>
+              </div>
+              <span class="assign-badge" :class="team.companyName ? 'is-assigned' : 'is-pending'">
+                {{ team.companyName ? '已分配公司' : '待分配公司' }}
+              </span>
+            </header>
+
+            <div class="relation">
+              <div class="relation-node">
+                <span class="relation-label">队长</span>
+                <span class="relation-value" :title="team.captainName">
+                  {{ team.captainName || '—' }}
+                </span>
+              </div>
+              <span class="relation-arrow" aria-hidden="true">→</span>
+              <div class="relation-node">
+                <span class="relation-label">公司</span>
+                <span
+                  class="relation-value"
+                  :class="{ 'is-pending': !team.companyName }"
+                  :title="team.companyName || '未分配公司'"
+                >
+                  {{ team.companyName || '未分配' }}
+                </span>
+              </div>
+              <span class="relation-arrow" aria-hidden="true">→</span>
+              <div class="relation-node">
+                <span class="relation-label">最终产业</span>
+                <span
+                  class="relation-value"
+                  :class="{ 'is-pending': !team.industryFinal }"
+                  :title="team.industryFinal || '产业未定'"
+                >
+                  {{ team.industryFinal || '未定' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="members">
+              <span class="members-label">
+                成员 {{ team.members?.length ?? 0 }} 人
+              </span>
+              <div class="member-list">
+                <span
+                  v-for="m in team.members ?? []"
+                  :key="m.userId"
+                  class="member-chip"
+                  :class="{ 'is-captain': m.userId === team.captainId }"
+                  :title="
+                    m.userId === team.captainId
+                      ? `${m.displayName || m.username}（队长）`
+                      : m.displayName || m.username
+                  "
+                >
+                  <el-avatar :size="20" class="member-avatar">
+                    {{ initial(m.displayName || m.username) }}
+                  </el-avatar>
+                  <span class="member-name">{{ m.displayName || m.username }}</span>
+                </span>
+                <span v-if="!team.members?.length" class="muted">—</span>
+              </div>
+            </div>
+
+            <div class="industry-row">
+              <span class="industry-label">产业志愿</span>
+              <div class="tag-list">
+                <el-tag
+                  v-for="c in team.industryChoice ?? []"
+                  :key="c"
+                  size="small"
+                  class="mini-tag"
+                >
+                  {{ c }}
+                </el-tag>
+                <span v-if="!team.industryChoice?.length" class="muted">—</span>
+              </div>
+            </div>
+
+            <div class="industry-row">
+              <span class="industry-label">接受调剂</span>
+              <div class="tag-list">
+                <el-tag
+                  v-for="c in team.industryAdjustAccepted ?? []"
+                  :key="c"
+                  size="small"
+                  type="info"
+                  class="mini-tag"
+                >
+                  {{ c }}
+                </el-tag>
+                <span v-if="!team.industryAdjustAccepted?.length" class="muted">—</span>
+              </div>
+            </div>
+
+            <footer class="team-card__foot">
+              <span class="created-at">创建于 {{ formatDateTime(team.createdAt) }}</span>
+              <div class="team-card__actions">
+                <el-button
+                  v-if="isCaptain(team)"
+                  size="small"
+                  link
+                  type="primary"
+                  @click="genJoinCode(team)"
+                >
+                  生成组队码
+                </el-button>
+                <el-button
+                  v-if="canAdjust"
+                  size="small"
+                  link
+                  type="warning"
+                  @click="openAdjust(team)"
+                >
+                  调整产业
+                </el-button>
+                <el-button
+                  v-if="canAdjust"
+                  size="small"
+                  link
+                  type="success"
+                  @click="openAssign(team)"
+                >
+                  {{ team.companyName ? '修改公司' : '分配公司' }}
+                </el-button>
+              </div>
+            </footer>
+          </article>
+        </div>
+      </div>
+
+      <!-- 空态 -->
+      <div v-else-if="!loadError" class="panel empty-panel">
+        <el-empty description="暂无队伍" />
+      </div>
+    </template>
 
     <!-- 创建队伍弹窗 -->
     <el-dialog v-model="showCreate" title="创建队伍" width="520px" destroy-on-close>
@@ -395,31 +592,91 @@ onMounted(() => void load())
         <el-button type="primary" :loading="adjusting" @click="submitAdjust">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 分配公司弹窗（管理员） -->
+    <el-dialog
+      v-model="showAssign"
+      :title="assignTarget?.companyName ? '修改公司' : '分配公司'"
+      width="520px"
+      destroy-on-close
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="分配后队长可操作本公司股票与合同，其他队员只读。"
+        class="dialog-tip"
+      />
+      <el-form :model="assignForm" label-width="110px" @submit.prevent>
+        <el-form-item label="产业" required>
+          <el-select
+            v-model="assignForm.industryKey"
+            filterable
+            :loading="industriesLoading"
+            placeholder="请选择本比赛已导入的产业"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="opt in industries"
+              :key="opt.key"
+              :label="opt.name ? `${opt.name}（${opt.key}）` : opt.key"
+              :value="opt.key"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="公司名称" required>
+          <el-input
+            v-model="assignForm.companyName"
+            placeholder="例如：星辰科技"
+            maxlength="120"
+            show-word-limit
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAssign = false">取消</el-button>
+        <el-button type="primary" :loading="assigning" @click="submitAssign">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped lang="scss">
+.teams-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .page-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.page-toolbar .page-title {
+  margin-bottom: 0;
 }
 
 .page-actions {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .team-name {
-  font-weight: 600;
+  font-weight: 700;
   color: var(--color-text-primary);
+  font-size: var(--font-lg);
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .mini-tag {
-  margin: 2px 4px 2px 0;
+  margin: 0;
 }
 
 .muted {
@@ -429,5 +686,271 @@ onMounted(() => void load())
 
 .dialog-tip {
   margin-bottom: 16px;
+}
+
+.teams-error {
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ---------- 队伍卡片网格 ---------- */
+.team-list {
+  min-height: 120px;
+}
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.team-skeleton {
+  height: 208px;
+}
+
+.team-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  /* 入场动画结束后交还 transform，悬停轻抬才生效 */
+  animation-fill-mode: backwards;
+}
+
+.team-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.team-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 公司分配状态：已分配=成功语义，待分配=醒目但不告警 */
+.assign-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  color: var(--color-text-primary);
+
+  &::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-text-tertiary);
+  }
+
+  &.is-assigned {
+    background: var(--color-success-soft);
+
+    &::before {
+      background: var(--color-success);
+    }
+  }
+
+  &.is-pending {
+    background: var(--color-warning-soft);
+    border-color: rgba(var(--color-warning-soft-rgb), 0.6);
+    border-style: dashed;
+
+    &::before {
+      background: var(--color-warning);
+    }
+  }
+}
+
+/* 队伍 → 队长 → 公司 → 产业 → 成员数 的关系链 */
+.relation {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  flex-wrap: wrap;
+}
+
+.relation-node {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.relation-label {
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary);
+}
+
+.relation-value {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.is-pending {
+    color: var(--color-warning);
+  }
+}
+
+.relation-arrow {
+  align-self: center;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-sm);
+  line-height: 1;
+}
+
+/* 成员：紧凑头像 + 名称标签 */
+.members {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.members-label {
+  flex-shrink: 0;
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary);
+}
+
+.member-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px 2px 2px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  color: var(--color-text-secondary);
+
+  &.is-captain {
+    background: var(--color-warning-soft);
+    border-color: rgba(var(--color-warning-soft-rgb), 0.55);
+    color: var(--color-text-primary);
+  }
+}
+
+.member-avatar {
+  flex-shrink: 0;
+  background: rgba(var(--color-primary-rgb), 0.12);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 600;
+
+  .member-chip.is-captain & {
+    background: rgba(var(--color-warning-soft-rgb), 0.35);
+    color: var(--color-text-primary);
+  }
+}
+
+.member-name {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 产业志愿 / 接受调剂 */
+.industry-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--font-sm);
+}
+
+.industry-label {
+  flex: 0 0 64px;
+  font-size: var(--font-xs);
+  line-height: 24px;
+  color: var(--color-text-tertiary);
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 卡片底部：创建时间 + 操作 */
+.team-card__foot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.created-at {
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.team-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.team-card__actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+/* 概览指标里的待分配：用琥珀描边与顶线提示，不改数字颜色（保证可读性） */
+.metric-card--attention {
+  border-color: rgba(var(--color-warning-soft-rgb), 0.55);
+
+  &::before {
+    background: var(--color-warning);
+  }
+}
+
+.empty-panel {
+  padding: 24px;
+}
+
+/* 手机：概览指标两列，避免 4 张大卡把队伍列表挤到首屏之外 */
+@media (max-width: 640px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
 }
 </style>

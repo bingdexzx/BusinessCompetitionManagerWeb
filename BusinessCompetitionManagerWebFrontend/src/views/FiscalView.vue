@@ -8,6 +8,8 @@ import {
   openFiscalYear,
 } from '@/api'
 import type { FiscalYear, FiscalYearBackup } from '@/api/types'
+import { useCountUp } from '@/composables/useMotion'
+import { useResourceRefresh } from '@/composables/useNotifications'
 import { formatDateTime, toDisplay } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
@@ -50,6 +52,19 @@ async function loadYears(): Promise<void> {
     loading.value = false
   }
 }
+
+// ---------- 关键数字（顶部指标卡，数值变化时滚动落位） ----------
+const yearTotal = computed(() => years.value.length)
+const openTotal = computed(() => years.value.filter((y) => y.status === 'OPEN').length)
+const closedTotal = computed(() => years.value.filter((y) => y.status === 'CLOSED').length)
+const backupTotal = computed(() =>
+  years.value.reduce((sum, y) => sum + (y.backupCount ?? 0), 0),
+)
+
+const yearTotalShown = useCountUp(yearTotal)
+const openTotalShown = useCountUp(openTotal)
+const closedTotalShown = useCountUp(closedTotal)
+const backupTotalShown = useCountUp(backupTotal)
 
 // ---------- 开启 / 结束财年 ----------
 async function handleOpen(): Promise<void> {
@@ -112,6 +127,15 @@ function snapshotEntries(row: FiscalYearBackup): Array<[string, string]> {
   return Object.entries(row.snapshot ?? {}).map(([k, v]) => [k, toDisplay(v)])
 }
 
+/** 年份切换：点「财年一览」的行即选中该财年，下方备份查看随之切换 */
+function selectYear(row: FiscalYear): void {
+  selectedFiscalYearId.value = row.id
+  void loadBackups()
+}
+
+// 资源变更广播（400ms 去抖合并）：财年/合同/公司写操作后自动刷新财年列表
+useResourceRefresh(['fiscal-years', 'contracts', 'companies'], loadYears)
+
 // ---------- 初始化 ----------
 onMounted(loadYears)
 watch(() => props.cid, loadYears)
@@ -128,16 +152,49 @@ watch(() => props.cid, loadYears)
     </div>
 
     <!-- 补录说明 -->
+    <!-- 关键数字：财年 / 状态 / 备份总量 -->
+    <div class="metric-grid anim-fade-in-up">
+      <div class="metric-card">
+        <div class="metric-label">财年总数</div>
+        <div class="metric-value">{{ yearTotalShown }}<span class="metric-unit">个</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">开启中</div>
+        <div class="metric-value">{{ openTotalShown }}<span class="metric-unit">个</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">已结束</div>
+        <div class="metric-value">{{ closedTotalShown }}<span class="metric-unit">个</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">备份快照累计</div>
+        <div class="metric-value">{{ backupTotalShown }}<span class="metric-unit">份</span></div>
+      </div>
+    </div>
+
     <!-- 财年列表 -->
     <section class="panel">
-      <h2 class="section-title">财年一览</h2>
-      <el-table v-loading="loading" :data="years" border stripe style="width: 100%">
+      <h2 class="section-title">
+        财年一览
+        <span class="section-hint">点击任一年度行，切换下方备份快照</span>
+      </h2>
+      <el-table
+        v-loading="loading"
+        :data="years"
+        row-key="id"
+        highlight-current-row
+        border
+        stripe
+        class="year-table"
+        style="width: 100%"
+        @row-click="selectYear"
+      >
         <template #empty>
           <el-empty description="暂无财年" />
         </template>
         <el-table-column label="财年" width="120" align="center">
           <template #default="{ row }">
-            <b class="fy-year">{{ row.year }}</b>
+            <b class="fy-year value-num">{{ row.year }}</b>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="120" align="center">
@@ -148,13 +205,19 @@ watch(() => props.cid, loadYears)
           </template>
         </el-table-column>
         <el-table-column label="开启时间" min-width="170">
-          <template #default="{ row }">{{ formatDateTime(row.openedAt) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ formatDateTime(row.openedAt) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="结束时间" min-width="170">
-          <template #default="{ row }">{{ formatDateTime(row.closedAt) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ formatDateTime(row.closedAt) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="备份数" width="100" align="center">
-          <template #default="{ row }">{{ row.backupCount }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ row.backupCount }}</span>
+          </template>
         </el-table-column>
       </el-table>
     </section>
@@ -207,10 +270,14 @@ watch(() => props.cid, loadYears)
         </el-table-column>
         <el-table-column prop="companyName" label="公司" min-width="180" />
         <el-table-column label="备份时间" min-width="170">
-          <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ formatDateTime(row.createdAt) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="快照字段数" width="120" align="center">
-          <template #default="{ row }">{{ Object.keys(row.snapshot ?? {}).length }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ Object.keys(row.snapshot ?? {}).length }}</span>
+          </template>
         </el-table-column>
       </el-table>
     </section>
@@ -251,8 +318,21 @@ watch(() => props.cid, loadYears)
   margin-bottom: 14px;
 }
 
+/* 标题旁的操作提示（告诉用户行可点击切换年份） */
+.section-hint {
+  margin-left: 0;
+  font-size: var(--font-xs);
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+}
+
 .panel {
   padding: 20px 22px;
+}
+
+/* 财年行可点击：整行都是年份切换的命中区 */
+.year-table :deep(.el-table__row) {
+  cursor: pointer;
 }
 
 .fy-year {

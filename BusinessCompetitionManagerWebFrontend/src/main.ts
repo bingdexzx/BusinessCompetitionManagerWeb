@@ -33,8 +33,8 @@ setUnauthorizedHandler(() => {
   }
 })
 
-// 有 token 时恢复当前用户信息
-void useAuthStore(pinia).init()
+// 有 token 时恢复当前用户信息（并发去重：路由守卫也会 await 同一次会话补齐）
+void useAuthStore(pinia).ensureSession()
 
 // ---------- 全局异常兜底（中文提示 + 防刷屏） ----------
 // 渲染/生命周期/侦听器未被捕获的异常、未处理的 Promise 拒绝：统一中文提示，

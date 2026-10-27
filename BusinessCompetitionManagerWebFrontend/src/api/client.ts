@@ -79,8 +79,14 @@ export interface RequestOptions {
   headers?: Record<string, string>
   /** 覆盖 X-Competition-Id（不传则使用全局选中的比赛） */
   competitionId?: number | string | null
-  /** 跳过鉴权头（登录/注册/学校搜索等公开接口） */
+  /** 跳过鉴权头（登录/注册等公开接口） */
   skipAuth?: boolean
+  /**
+   * 公开接口但**有 token 就带上**：让已登录用户的调用计入本人额度，而不是与
+   * 同机所有标签页共享的「匿名（按 IP）」额度；token 失效时自动降级为匿名重试，
+   * 既不报错也不登出（注册页/个人档案的学校搜索用）。
+   */
+  optionalAuth?: boolean
   /** 禁止 401 自动刷新重放（refresh 接口自身使用） */
   skipRefresh?: boolean
 }
@@ -181,6 +187,45 @@ async function refreshAccessToken(): Promise<boolean> {
   return refreshPromise
 }
 
+/** 解出 access token 的 exp（Unix 秒）；解析不出来返回 0（视为未知）。 */
+function accessTokenExp(token: string): number {
+  if (!token) return 0
+  try {
+    const part = token.split('.')[1]
+    if (!part) return 0
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+    const json = JSON.parse(atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, '='))) as {
+      exp?: number
+    }
+    return typeof json.exp === 'number' ? json.exp : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 取一个「可立即使用」的 access token：已过期/即将过期时先用 refresh 换新。
+ *
+ * 为什么需要：HTTP 请求在 401 时会自动刷新并重放，但 WebSocket 握手只带 URL 里的
+ * token——若用过期 token 去连，服务端会在 accept 之前拒绝握手，浏览器只能拿到
+ * 1006（且 Vite 代理会刷 `write ECONNABORTED`），于是推送一直连不上。
+ *
+ * @returns 可用的 access token；会话确实失效时返回 ''（调用方应停止重连）
+ */
+export async function ensureFreshAccessToken(
+  opts: { force?: boolean; skewSeconds?: number } = {},
+): Promise<string> {
+  const token = getAccessToken()
+  const exp = accessTokenExp(token)
+  const now = Date.now() / 1000
+  const skew = opts.skewSeconds ?? 30
+  const unexpired = Boolean(token) && (!exp || exp > now)
+  if (unexpired && !opts.force) return token
+  if (!getRefreshToken()) return unexpired ? token : ''
+  if (await refreshAccessToken()) return getAccessToken()
+  return unexpired ? token : '' // 刷新失败：未过期就照用，过期则视为会话失效
+}
+
 async function requestOnce<T>(path: string, options: RequestOptions, retried: boolean): Promise<T> {
   const method = options.method ?? 'GET'
   const headers: Record<string, string> = {
@@ -215,6 +260,11 @@ async function requestOnce<T>(path: string, options: RequestOptions, retried: bo
     headers,
     body: payload,
   })
+
+  // 公开接口带了失效 token：降级为匿名重试（不刷新、不登出），保证注册页/档案页仍可用
+  if (res.status === 401 && options.optionalAuth && !options.skipAuth && !retried) {
+    return requestOnce<T>(path, { ...options, skipAuth: true }, true)
+  }
 
   // 401：尝试刷新 token 后重放一次
   if (res.status === 401 && !options.skipRefresh && !retried && !options.skipAuth) {

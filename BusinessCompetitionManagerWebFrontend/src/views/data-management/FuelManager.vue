@@ -8,20 +8,39 @@
       </div>
     </div>
 
-    <div v-if="!cid" class="no-comp-warning">
+    <div v-if="!cid" class="notice notice--warning">
       请先在「比赛管理」中选择一个比赛
     </div>
 
-    <el-table v-if="!isPhone" v-loading="loading" :data="filteredData" border stripe style="width: 100%">
-      <el-table-column prop="name" label="名称" min-width="200" />
-      <el-table-column prop="pricePerLiter" label="每升价格" min-width="120" />
+    <el-table
+      v-if="!isPhone"
+      v-loading="loading"
+      :data="filteredData"
+      border
+      stripe
+      class="anim-fade-in-up"
+      style="width: 100%"
+    >
+      <el-table-column prop="name" label="名称" min-width="160" />
+      <el-table-column prop="pricePerLiter" label="每升价格" min-width="120" align="right">
+        <template #default="{ row }">
+          <span class="value-num">{{ row.pricePerLiter }}</span>
+        </template>
+      </el-table-column>
       <el-table-column v-if="canManage" label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="showDetail(row)">详情</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button size="small" type="danger" plain @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty
+          v-if="!loading"
+          :image-size="72"
+          :description="searchText ? '没有匹配的记录' : '暂无燃料数据'"
+        />
+      </template>
     </el-table>
 
     <MobileCards
@@ -30,18 +49,24 @@
       :columns="fuelColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
+      :empty-text="searchText ? '没有匹配的记录' : '暂无燃料数据'"
+      class="anim-fade-in-up"
     >
       <template #actions="{ row }">
         <el-button size="small" @click="showDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+          >删除</el-button
+        >
       </template>
     </MobileCards>
 
     <el-dialog append-to-body v-model="detailVisible" title="燃料详情" width="480px">
       <el-descriptions v-if="detailData" :column="1" border>
         <el-descriptions-item label="名称">{{ detailData.name }}</el-descriptions-item>
-        <el-descriptions-item label="每升价格">{{ detailData.pricePerLiter }}</el-descriptions-item>
+        <el-descriptions-item label="每升价格">
+          <span class="value-num">{{ detailData.pricePerLiter }}</span>
+        </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDateTime(detailData.createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime(detailData.updatedAt) }}</el-descriptions-item>
       </el-descriptions>
@@ -84,6 +109,7 @@ import MobileCards from "@/components/common/MobileCards.vue";
 import SearchToggle from "@/components/common/SearchToggle.vue";
 import BigNumberInput from "@/components/common/BigNumberInput.vue";
 import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useResourceRefresh } from "@/composables/useNotifications";
 
 interface FuelItem {
   id: number;
@@ -143,6 +169,9 @@ const filteredData = computed(() => {
 });
 
 onMounted(loadData);
+
+// 资源变更实时刷新：basedata 变更时自动重拉当前列表（保留搜索/选中状态）
+useResourceRefresh(["basedata"], loadData);
 
 async function loadData() {
   loading.value = true;
@@ -244,14 +273,21 @@ function resetForm() {
 </script>
 
 <style scoped>
+/* ------------------------------------------------------------------
+   数据管理统一骨架（9 个管理器共用同一约定）：
+   工具条（标题 + 搜索 + 新建）→ 提示 / 表格（或移动端卡片）；间距统一 16px
+   ------------------------------------------------------------------ */
 .fuel-manager {
-  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .pm-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin: 0;
 }
 .pm-title {
   font-size: 20px;
@@ -262,15 +298,5 @@ function resetForm() {
 .pm-actions {
   display: flex;
   gap: 8px;
-}
-.no-comp-warning {
-  text-align: center;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--color-warning-soft);
-  border: 1px solid rgba(var(--color-warning-soft-rgb), 0.3);
-  border-radius: 6px;
-  color: #b45309;
-  font-size: 13px;
 }
 </style>

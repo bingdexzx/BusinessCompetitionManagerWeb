@@ -106,6 +106,18 @@ const router = createRouter({
       meta: { manager: true },
     },
     {
+      path: '/competitions/:cid/region-overview',
+      name: 'competition-region-overview',
+      component: () => import('../views/RegionOverviewView.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/dashboard',
+      name: 'competition-dashboard',
+      component: () => import('../views/DashboardView.vue'),
+      props: true,
+    },
+    {
       path: '/messages',
       name: 'messages',
       component: () => import('../views/MessagesView.vue'),
@@ -127,12 +139,30 @@ const router = createRouter({
       component: () => import('../views/PluginsView.vue'),
       meta: { superuser: true },
     },
+    {
+      path: '/users',
+      name: 'users',
+      component: () => import('../views/UserManagementView.vue'),
+      meta: { superuser: true },
+    },
+    {
+      path: '/schools',
+      name: 'schools',
+      component: () => import('../views/SchoolManageView.vue'),
+      meta: { superuser: true },
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('../views/SettingsView.vue'),
+      meta: { superuser: true },
+    },
     { path: '/:pathMatch(.*)*', redirect: '/competitions' },
   ],
 })
 
 // 路由守卫：未登录跳 /login；系统页仅系统超管；已登录不进登录/注册页
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
   if (to.meta.public) {
@@ -140,6 +170,13 @@ router.beforeEach((to) => {
     return true
   }
 
+  if (!auth.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+
+  // 刷新/深链进来时用户资料可能还没加载：isSuperuser / memberships 都依赖它，
+  // 先补齐会话再判权限，否则系统超管会被误判成无权限、被重定向回比赛列表。
+  await auth.ensureSession()
   if (!auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }

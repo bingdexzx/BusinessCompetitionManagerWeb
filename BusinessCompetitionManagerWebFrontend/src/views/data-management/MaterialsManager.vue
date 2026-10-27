@@ -8,23 +8,52 @@
       </div>
     </div>
 
-    <div v-if="!cid" class="no-comp-warning">
+    <div v-if="!cid" class="notice notice--warning">
       请先在「比赛管理」中选择一个比赛
     </div>
 
-    <el-table v-if="!isPhone" v-loading="loading" :data="filteredMaterials" border stripe style="width: 100%">
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="origin" label="产地" :formatter="originFmt" />
+    <el-table
+      v-if="!isPhone"
+      v-loading="loading"
+      :data="filteredMaterials"
+      border
+      stripe
+      class="anim-fade-in-up"
+      style="width: 100%"
+    >
+      <el-table-column prop="name" label="名称" min-width="160" />
+      <el-table-column label="产地" min-width="160">
+        <template #default="{ row }">
+          <span v-if="!parseOriginToArray(row.origin).length" class="cell-empty">—</span>
+          <el-tag
+            v-for="origin in parseOriginToArray(row.origin)"
+            :key="origin"
+            size="small"
+            style="margin: 2px"
+          >
+            {{ origin }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="价格（按地点）" min-width="220">
         <template #default="{ row }">
           <div v-if="!getRowNodePrices(row).length" class="np-none">—</div>
           <div v-for="p in getRowNodePrices(row)" :key="p.nodeId" class="np-line">
             <span class="np-name">{{ p.nodeName }}</span>
-            <span class="np-val">{{ formatMoney(p.price) }}</span>
+            <span class="np-val value-num">{{ formatMoney(p.price) }}</span>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="carbonEmissionCoefficient" label="碳排放系数" />
+      <el-table-column
+        prop="carbonEmissionCoefficient"
+        label="碳排放系数"
+        align="right"
+        min-width="130"
+      >
+        <template #default="{ row }">
+          <span class="value-num">{{ row.carbonEmissionCoefficient }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="类型">
         <template #default="{ row }">
           <el-tag :type="row.type === 'SPECIAL' ? 'danger' : ''">{{
@@ -36,9 +65,18 @@
         <template #default="{ row }">
           <el-button size="small" @click="openDetail(row)">详情</el-button>
           <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+            >删除</el-button
+          >
         </template>
       </el-table-column>
+      <template #empty>
+        <el-empty
+          v-if="!loading"
+          :image-size="72"
+          :description="searchText ? '没有匹配的记录' : '暂无原料数据'"
+        />
+      </template>
     </el-table>
 
     <MobileCards
@@ -47,12 +85,25 @@
       :columns="materialColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
+      :empty-text="searchText ? '没有匹配的记录' : '暂无原料数据'"
+      class="anim-fade-in-up"
     >
+      <template #origin="{ row }">
+        <span v-if="!parseOriginToArray(row.origin).length" class="cell-empty">—</span>
+        <el-tag
+          v-for="origin in parseOriginToArray(row.origin)"
+          :key="origin"
+          size="small"
+          style="margin: 2px"
+        >
+          {{ origin }}
+        </el-tag>
+      </template>
       <template #nodePrices="{ row }">
         <div v-if="!getRowNodePrices(row).length" class="np-none">—</div>
         <div v-for="p in getRowNodePrices(row)" :key="p.nodeId" class="np-line">
           <span class="np-name">{{ p.nodeName }}</span>
-          <span class="np-val">{{ formatMoney(p.price) }}</span>
+          <span class="np-val value-num">{{ formatMoney(p.price) }}</span>
         </div>
       </template>
       <template #type="{ row }">
@@ -63,14 +114,26 @@
       <template #actions="{ row }">
         <el-button size="small" @click="openDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
+          >删除</el-button
+        >
       </template>
     </MobileCards>
 
     <el-dialog append-to-body v-model="showDetail" title="原料详情" width="480px">
       <el-descriptions :column="1" border>
         <el-descriptions-item label="名称">{{ detailRow?.name }}</el-descriptions-item>
-        <el-descriptions-item label="产地">{{ formatOrigin(detailRow?.origin) }}</el-descriptions-item>
+        <el-descriptions-item label="产地">
+          <span v-if="!parseOriginToArray(detailRow?.origin).length" class="cell-empty">—</span>
+          <el-tag
+            v-for="origin in parseOriginToArray(detailRow?.origin)"
+            :key="origin"
+            size="small"
+            style="margin: 2px"
+          >
+            {{ origin }}
+          </el-tag>
+        </el-descriptions-item>
         <el-descriptions-item label="碳排放系数">{{ detailRow?.carbonEmissionCoefficient }}</el-descriptions-item>
         <el-descriptions-item label="类型">{{
           detailRow?.type === "SPECIAL" ? "特殊原料" : "普通原料"
@@ -79,7 +142,7 @@
           <span v-if="!getRowNodePrices(detailRow).length">（无按地点价格）</span>
           <ul v-else class="np-detail">
             <li v-for="p in getRowNodePrices(detailRow)" :key="p.nodeId">
-              {{ p.nodeName }}：{{ formatMoney(p.price) }}
+              {{ p.nodeName }}：<span class="value-num">{{ formatMoney(p.price) }}</span>
             </li>
           </ul>
         </el-descriptions-item>
@@ -164,6 +227,7 @@ import MobileCards from "@/components/common/MobileCards.vue";
 import SearchToggle from "@/components/common/SearchToggle.vue";
 import BigNumberInput from "@/components/common/BigNumberInput.vue";
 import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useResourceRefresh } from "@/composables/useNotifications";
 
 interface MapNodeItem {
   id: number;
@@ -190,7 +254,7 @@ const canManage = computed(
 
 const materialColumns = [
   { prop: "name", label: "名称" },
-  { prop: "origin", label: "产地", formatter: (r: any) => formatOrigin(r.origin) },
+  { label: "产地", slot: "origin" },
   { label: "价格（按地点）", slot: "nodePrices" },
   { prop: "carbonEmissionCoefficient", label: "碳排放系数" },
   { label: "类型", slot: "type" },
@@ -299,10 +363,7 @@ function formatOrigin(origin: any): string {
   return String(origin);
 }
 
-function originFmt(_row: any, _col: any, val: any): string {
-  return formatOrigin(val);
-}
-
+// 产地列统一用标签展示（关系列视觉约定）：把存储形态解析为节点名数组。
 function parseOriginToArray(origin: any): string[] {
   if (!origin) return [];
   if (Array.isArray(origin)) return origin.map(String);
@@ -355,6 +416,9 @@ async function reloadAll() {
 }
 
 onMounted(reloadAll);
+
+// 资源变更实时刷新：basedata 变更时自动重拉原料列表与地图节点选项
+useResourceRefresh(["basedata"], reloadAll);
 
 function openDetail(row: any) {
   detailRow.value = row;
@@ -507,11 +571,21 @@ function formatMoney(n: number | string | null | undefined): string {
 </script>
 
 <style scoped>
+/* ------------------------------------------------------------------
+   数据管理统一骨架（9 个管理器共用同一约定）：
+   工具条（标题 + 搜索 + 新建）→ 提示 / 表格（或移动端卡片）；间距统一 16px
+   ------------------------------------------------------------------ */
+.materials-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 .mm-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin: 0;
 }
 .mm-title {
   font-size: 20px;
@@ -523,15 +597,9 @@ function formatMoney(n: number | string | null | undefined): string {
   display: flex;
   gap: 8px;
 }
-.no-comp-warning {
-  text-align: center;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--color-warning-soft);
-  border: 1px solid rgba(var(--color-warning-soft-rgb), 0.3);
-  border-radius: 6px;
-  color: #b45309;
-  font-size: 13px;
+/* 关系列为空时的占位「—」：统一弱化色 */
+.cell-empty {
+  color: var(--color-text-tertiary);
 }
 .np-editor {
   width: 100%;
@@ -593,7 +661,7 @@ function formatMoney(n: number | string | null | undefined): string {
 }
 /* 列表「价格（按地点）」列：左节点名、右价格，逐地点平铺展示 */
 .np-none {
-  color: #c0c4cc;
+  color: var(--color-text-tertiary);
 }
 .np-line {
   display: flex;

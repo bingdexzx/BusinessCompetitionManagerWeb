@@ -44,6 +44,11 @@ function awardTagType(level: string): TagType {
   return 'primary'
 }
 
+/** 奖项类型标签配色：个人奖 = primary，集体奖 = success（与结算页口径一致） */
+function awardKindTagType(kind: string): TagType {
+  return kind === 'COLLECTIVE' ? 'success' : 'primary'
+}
+
 // ---------- 基本信息（编辑弹窗） ----------
 const editVisible = ref(false)
 const saving = ref(false)
@@ -160,14 +165,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="profile-view">
+  <div class="profile-view anim-stagger">
     <h1 class="page-title">个人档案</h1>
 
     <!-- 基本信息 -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">基本信息</span>
+          <h2 class="section-title">基本信息</h2>
           <el-button type="primary" :icon="Edit" @click="openEdit">编辑资料</el-button>
         </div>
       </template>
@@ -177,7 +182,7 @@ onMounted(() => {
         <el-descriptions-item label="邮箱">{{ user?.email || '—' }}</el-descriptions-item>
         <el-descriptions-item label="学校">{{ user?.schoolName || '—' }}</el-descriptions-item>
         <el-descriptions-item label="注册时间">
-          {{ formatDateTime(user?.dateJoined) }}
+          <span class="value-num">{{ formatDateTime(user?.dateJoined) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="账号角色">
           <el-tag size="small" :type="user?.isSuperuser ? 'danger' : 'info'">
@@ -191,7 +196,10 @@ onMounted(() => {
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">我的比赛身份</span>
+          <h2 class="section-title">
+            我的比赛身份
+            <span class="count-tip value-num">共 {{ auth.memberships.length }} 项</span>
+          </h2>
           <el-button :icon="Refresh" @click="auth.fetchMe()">刷新</el-button>
         </div>
       </template>
@@ -229,29 +237,38 @@ onMounted(() => {
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">参赛记录与获奖</span>
+          <h2 class="section-title">
+            参赛记录与获奖
+            <span class="count-tip value-num">共 {{ awards.length }} 项</span>
+          </h2>
           <el-button :icon="Refresh" @click="loadAwards">刷新</el-button>
         </div>
       </template>
-      <el-table :data="awards" v-loading="awardsLoading" stripe size="default">
-        <el-table-column prop="competitionName" label="比赛" min-width="170" show-overflow-tooltip />
-        <el-table-column prop="teamName" label="队伍" min-width="130" show-overflow-tooltip />
-        <el-table-column label="名次" width="80">
-          <template #default="{ row }">{{ row.rank ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="得分" width="90">
-          <template #default="{ row }">{{ row.score ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="获奖等级" width="120">
-          <template #default="{ row }">
-            <el-tag size="small" :type="awardTagType(row.awardLevel)">{{ row.awardLevel || '—' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="奖牌" min-width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.medalName || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="130" fixed="right">
-          <template #default="{ row }">
+      <!-- 奖项做成徽章卡片：一眼看到「什么奖 · 哪场比赛 · 有无电子奖牌」 -->
+      <div v-if="awardsLoading && !awards.length" class="award-grid">
+        <div v-for="i in 3" :key="i" class="skeleton award-skeleton" />
+      </div>
+      <el-empty v-else-if="!awards.length" description="暂无参赛与获奖记录" :image-size="72" />
+      <div v-else class="award-grid anim-stagger">
+        <article v-for="row in awards" :key="row.id" class="award-card">
+          <div class="award-emblem">
+            <el-icon><Medal /></el-icon>
+          </div>
+          <div class="award-body">
+            <div class="award-head">
+              <span class="award-name" :title="row.awardName">{{ row.awardName || '—' }}</span>
+              <el-tag size="small" :type="awardKindTagType(row.awardKind)" effect="plain">
+                {{ row.awardKindLabel || '—' }}
+              </el-tag>
+            </div>
+            <div class="award-competition">{{ row.competitionName }}</div>
+            <div class="award-meta">
+              <span class="award-meta-item">公司：{{ row.teamName || '—' }}</span>
+              <span class="award-meta-item">奖牌：{{ row.medalName || '—' }}</span>
+              <span class="award-meta-item value-num">
+                获得时间：{{ formatDateTime(row.createdAt) }}
+              </span>
+            </div>
             <el-button
               link
               type="primary"
@@ -262,19 +279,19 @@ onMounted(() => {
             >
               查看电子奖牌
             </el-button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无参赛与获奖记录" :image-size="72" />
-        </template>
-      </el-table>
+          </div>
+        </article>
+      </div>
     </el-card>
 
     <!-- 登录设备 -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">登录设备</span>
+          <h2 class="section-title">
+            登录设备
+            <span class="count-tip value-num">共 {{ devices.length }} 台</span>
+          </h2>
           <el-button :icon="Refresh" @click="loadDevices">刷新</el-button>
         </div>
       </template>
@@ -283,13 +300,19 @@ onMounted(() => {
         <el-table-column prop="browser" label="浏览器" min-width="120" show-overflow-tooltip />
         <el-table-column prop="screen" label="屏幕" width="110" />
         <el-table-column label="IP" min-width="130">
-          <template #default="{ row }">{{ row.ip || '—' }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ row.ip || '—' }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="首次登录" min-width="160">
-          <template #default="{ row }">{{ formatDateTime(row.firstLoginAt) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ formatDateTime(row.firstLoginAt) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="最近登录" min-width="160">
-          <template #default="{ row }">{{ formatDateTime(row.lastLoginAt) }}</template>
+          <template #default="{ row }">
+            <span class="value-num">{{ formatDateTime(row.lastLoginAt) }}</span>
+          </template>
         </el-table-column>
         <template #empty>
           <el-empty description="暂无设备记录" :image-size="72" />
@@ -333,8 +356,8 @@ onMounted(() => {
         <div class="medal-asset" v-html="medal?.displayAsset ?? ''"></div>
         <div class="medal-name">{{ medal?.displayName || medalRecord?.medalName || '电子奖牌' }}</div>
         <div class="medal-meta">
-          <el-tag size="small" :type="awardTagType(medal?.awardLevel ?? medalRecord?.awardLevel ?? '')">
-            {{ medal?.awardLevel ?? medalRecord?.awardLevel ?? '—' }}
+          <el-tag size="small" :type="awardTagType(medal?.awardLevel ?? medalRecord?.awardName ?? '')">
+            {{ medal?.awardLevel ?? medalRecord?.awardName ?? '—' }}
           </el-tag>
           <span class="muted">{{ medalRecord?.competitionName }}</span>
         </div>
@@ -350,6 +373,11 @@ onMounted(() => {
   flex-direction: column;
 }
 
+/* 弹窗自带进出场动画，不参与分区入场错峰（否则打开时会多等一个错峰延迟） */
+.profile-view > :deep(.el-overlay) {
+  animation: none !important;
+}
+
 .section-card {
   margin-bottom: 16px;
 }
@@ -361,9 +389,96 @@ onMounted(() => {
   gap: 12px;
 }
 
-.card-title {
-  font-weight: 600;
+/* 卡片标题统一用 section-title（无下边距，配合卡片头部） */
+.card-head .section-title {
+  margin-bottom: 0;
+}
+
+.count-tip {
+  font-size: var(--font-xs);
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 奖项徽章卡片 ===== */
+.award-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.award-skeleton {
+  height: 116px;
+}
+
+.award-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow var(--dur-base) var(--ease-out-expo),
+    border-color var(--dur-base) var(--ease-standard);
+}
+
+.award-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-border-strong);
+}
+
+.award-emblem {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--gradient-brand-soft);
+  color: var(--color-primary);
+  font-size: 20px;
+}
+
+.award-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.award-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.award-name {
+  font-size: var(--font-md);
+  font-weight: 700;
   color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.award-competition {
+  font-size: var(--font-xs);
+  color: var(--color-text-secondary);
+}
+
+.award-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: var(--font-xs);
+  color: var(--color-text-tertiary);
 }
 
 .company-tag {

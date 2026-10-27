@@ -58,7 +58,10 @@ function shortSha(sha: string | null | undefined): string {
       <span class="muted">
         建库：{{ report.createdDatabase || '未创建数据库' }}
       </span>
-      <span class="muted">合同实例：{{ report.contractsCreated ?? 0 }}</span>
+      <span class="muted">
+        合同实例：{{ report.contractsCreated ?? 0 }}
+        <template v-if="report.contractsSkipped">（跳过重复 {{ report.contractsSkipped }}）</template>
+      </span>
     </div>
 
     <!-- 顶层 errors / warnings -->

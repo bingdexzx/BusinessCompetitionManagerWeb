@@ -1,22 +1,35 @@
 <script setup lang="ts">
-// 结算管理：评分准则 / 获奖规则配置 + 结算执行与结果展示
+// 结算管理：评分准则 / 奖项设置（人工定义奖项）+ 结算执行与结果 + 奖项人工发放（可撤销）
+// 2026-10 需求变更：结算只计算得分与名次，不再按名次自动评奖；奖项由超管定义后人工发放。
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import {
-  createScoringItem,
+  createAwardGrant,
+  createSettlementConfigItem,
+  deleteAwardGrant,
   deleteScoringItem,
-  getScoringConfig,
+  getAwardCandidates,
+  getAwardGrants,
+  getCompanies,
+  getSettlementConfig,
   getSettlementResult,
   runSettlement,
 } from '@/api'
 import type {
-  AwardRule,
+  AwardCandidate,
+  AwardDefinition,
+  AwardGrant,
+  AwardKind,
+  Company,
   ScoringConfig,
   ScoringCriterion,
+  SettlementConfigPayload,
   SettlementEntry,
   SettlementResult,
 } from '@/api/types'
+import { useResourceRefresh } from '@/composables/useNotifications'
+import { useCountUp } from '@/composables/useMotion'
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
@@ -24,7 +37,7 @@ import { errorMessage } from '@/utils/errors'
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
 
-/** 系统超管 / 本比赛超管：结算与获奖仅超管可见（可维护配置与执行结算） */
+/** 系统超管 / 本比赛超管：结算与获奖仅超管可见（可维护配置、执行结算与发放奖项） */
 const canManage = computed(() => {
   if (auth.isSuperuser) return true
   return auth.memberships.some((m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN')
@@ -32,7 +45,7 @@ const canManage = computed(() => {
 /** 页面可见性与可管理性一致（仅超管可见） */
 const canView = canManage
 
-// ---------- 评分配置 ----------
+// ---------- 结算配置（评分准则 + 奖项定义） ----------
 const config = ref<ScoringConfig | null>(null)
 const configLoading = ref(false)
 
@@ -49,7 +62,7 @@ const DIRECTION_LABELS: Record<string, string> = {
 async function loadConfig(): Promise<void> {
   configLoading.value = true
   try {
-    config.value = await getScoringConfig(props.cid)
+    config.value = await getSettlementConfig(props.cid)
   } catch (err) {
     ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
@@ -57,7 +70,7 @@ async function loadConfig(): Promise<void> {
   }
 }
 
-// ---------- 新增对话框（准则 / 获奖规则共用） ----------
+// ---------- 新增对话框（准则 / 奖项共用） ----------
 const dialogVisible = ref(false)
 const dialogKind = ref<'criterion' | 'award'>('criterion')
 const submitting = ref(false)
@@ -65,13 +78,12 @@ const submitting = ref(false)
 const emptyForm = () => ({
   name: '',
   fieldKey: '',
-  aggregation: 'SUM' as 'SUM' | 'LATEST' | 'AVERAGE',
-  direction: 'HIGHER_BETTER' as 'HIGHER_BETTER' | 'LOWER_BETTER',
+  aggregation: 'SUM' as ScoringCriterion['aggregation'],
+  direction: 'HIGHER_BETTER' as ScoringCriterion['direction'],
   weight: 1,
-  awardLevel: '',
-  rankFrom: 1,
-  rankTo: 1,
+  awardKind: 'INDIVIDUAL' as AwardKind,
   medalLevel: '',
+  description: '',
 })
 const form = reactive(emptyForm())
 
@@ -82,44 +94,42 @@ function openAdd(kind: 'criterion' | 'award'): void {
 }
 
 async function submitAdd(): Promise<void> {
-  // 简单必填校验
-  if (dialogKind.value === 'criterion') {
-    if (!form.name.trim() || !form.fieldKey.trim()) {
-      ElMessage.warning('请填写准则名称与字段键')
-      return
-    }
-  } else {
-    if (!form.awardLevel.trim() || !form.medalLevel.trim()) {
-      ElMessage.warning('请填写奖项等级与奖牌等级')
-      return
-    }
-    if (form.rankFrom < 1 || form.rankTo < form.rankFrom) {
-      ElMessage.warning('名次区间不合法（起始名次 ≥ 1，结束 ≥ 起始）')
-      return
-    }
+  const name = form.name.trim()
+  if (!name) {
+    ElMessage.warning(dialogKind.value === 'criterion' ? '请填写准则名称' : '请填写奖项名称')
+    return
   }
+  if (name.length > 100) {
+    ElMessage.warning('名称长度不能超过 100 个字符')
+    return
+  }
+  if (dialogKind.value === 'criterion' && !form.fieldKey.trim()) {
+    ElMessage.warning('请填写字段键')
+    return
+  }
+
+  const payload: SettlementConfigPayload =
+    dialogKind.value === 'criterion'
+      ? {
+          kind: 'criterion',
+          name,
+          fieldKey: form.fieldKey.trim(),
+          aggregation: form.aggregation,
+          direction: form.direction,
+          weight: form.weight,
+        }
+      : {
+          kind: 'award',
+          name,
+          awardKind: form.awardKind,
+          description: form.description.trim() || undefined,
+          medalLevel: form.medalLevel.trim() || undefined,
+        }
 
   submitting.value = true
   try {
-    const payload =
-      dialogKind.value === 'criterion'
-        ? {
-            kind: 'criterion' as const,
-            name: form.name.trim(),
-            fieldKey: form.fieldKey.trim(),
-            aggregation: form.aggregation,
-            direction: form.direction,
-            weight: form.weight,
-          }
-        : {
-            kind: 'award' as const,
-            awardLevel: form.awardLevel.trim(),
-            rankFrom: form.rankFrom,
-            rankTo: form.rankTo,
-            medalLevel: form.medalLevel.trim(),
-          }
-    await createScoringItem(props.cid, payload)
-    ElMessage.success('已添加')
+    await createSettlementConfigItem(props.cid, payload)
+    ElMessage.success(dialogKind.value === 'criterion' ? '已添加评分准则' : '已添加奖项')
     dialogVisible.value = false
     await loadConfig()
   } catch (err) {
@@ -144,21 +154,29 @@ async function removeCriterion(row: ScoringCriterion): Promise<void> {
   }
 }
 
-async function removeAwardRule(row: AwardRule): Promise<void> {
+async function removeAward(row: AwardDefinition): Promise<void> {
   try {
-    await ElMessageBox.confirm(`确认删除获奖规则「${row.awardLevel}」？`, '删除确认', {
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      `确认删除奖项「${row.name}」？该奖项已发放的记录将一并撤销（个人档案中的获奖记录会被回收）。`,
+      '删除确认',
+      { type: 'warning' },
+    )
   } catch {
     return
   }
   try {
     await deleteScoringItem(props.cid, 'award', row.id)
     ElMessage.success('已删除')
-    await loadConfig()
+    // 删除奖项定义会连带撤销发放记录：配置与发放记录都要重拉
+    await Promise.all([loadConfig(), loadGrants()])
   } catch (err) {
     ElMessage.error(errorMessage(err, '操作失败'))
   }
+}
+
+/** 奖项类型标签配色：个人奖 = primary，集体奖 = success */
+function kindTagType(kind: AwardKind): 'primary' | 'success' {
+  return kind === 'COLLECTIVE' ? 'success' : 'primary'
 }
 
 // ---------- 结算执行 ----------
@@ -167,7 +185,7 @@ const running = ref(false)
 async function startSettlement(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '确认开始结算？将按当前评分准则计算各公司得分、名次与获奖。',
+      '确认开始结算？将按当前评分准则计算各公司得分与名次；奖项需在下方「奖项发放」中人工发放。',
       '开始结算',
       { type: 'warning' },
     )
@@ -201,14 +219,6 @@ async function loadResult(): Promise<void> {
   }
 }
 
-/** 获奖等级标签配色 */
-function awardTagType(level: string): 'danger' | 'warning' | 'success' | 'info' {
-  if (level.includes('一') || level.toUpperCase().includes('GOLD')) return 'danger'
-  if (level.includes('二') || level.toUpperCase().includes('SILVER')) return 'warning'
-  if (level.includes('三') || level.toUpperCase().includes('BRONZE')) return 'success'
-  return 'info'
-}
-
 /** 展开行：逐准则得分明细 */
 function detailRows(row: SettlementEntry): Array<{
   key: string
@@ -220,9 +230,214 @@ function detailRows(row: SettlementEntry): Array<{
   return Object.entries(row.detail ?? {}).map(([key, d]) => ({ key, ...d }))
 }
 
-async function reloadAll(): Promise<void> {
-  await Promise.all([loadConfig(), loadResult()])
+/** 得分/归一化/权重：统一 2 位小数展示（只影响显示，不参与计算与提交） */
+function fmtScore(value: number | null | undefined): string {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
 }
+
+/** 名次顺序视觉：前 3 名给更强的标识 */
+function isTopRank(rank: number): boolean {
+  return Number.isFinite(rank) && rank >= 1 && rank <= 3
+}
+
+// ---------- 结算结果汇总（展示聚合：不参与结算计算与提交） ----------
+const resultEntries = computed(() => result.value?.entries ?? [])
+const topScore = computed(() =>
+  resultEntries.value.reduce((max, e) => Math.max(max, Number(e.score) || 0), 0),
+)
+const avgScore = computed(() => {
+  const list = resultEntries.value
+  if (!list.length) return 0
+  return list.reduce((sum, e) => sum + (Number(e.score) || 0), 0) / list.length
+})
+const topScoreShown = useCountUp(topScore, { precision: 2 })
+const avgScoreShown = useCountUp(avgScore, { precision: 2 })
+const entryCountShown = useCountUp(computed(() => resultEntries.value.length), { precision: 0 })
+
+// ---------- 奖项发放 ----------
+const awardOptions = computed<AwardDefinition[]>(() => config.value?.awards ?? [])
+
+const grantForm = reactive({
+  awardId: null as number | null,
+  userId: null as number | null,
+  companyId: null as number | null,
+  note: '',
+})
+const granting = ref(false)
+
+const selectedAward = computed<AwardDefinition | null>(
+  () => awardOptions.value.find((a) => a.id === grantForm.awardId) ?? null,
+)
+const isIndividual = computed(() => selectedAward.value?.kind === 'INDIVIDUAL')
+const isCollective = computed(() => selectedAward.value?.kind === 'COLLECTIVE')
+
+// 个人奖候选人（远程搜索：本比赛全部成员）
+const candidates = ref<AwardCandidate[]>([])
+const candidatesLoading = ref(false)
+
+async function searchCandidates(q: string): Promise<void> {
+  candidatesLoading.value = true
+  try {
+    const picked = candidates.value.find((c) => c.userId === grantForm.userId)
+    const list = await getAwardCandidates(props.cid, q.trim() || undefined)
+    // 保留已选人员：远端结果里没有他时补回，避免下拉框回退显示成用户 ID
+    if (picked && !list.some((c) => c.userId === picked.userId)) list.unshift(picked)
+    candidates.value = list
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '候选人加载失败'))
+  } finally {
+    candidatesLoading.value = false
+  }
+}
+
+// 集体奖：公司列表
+const companies = ref<Company[]>([])
+const companiesLoading = ref(false)
+
+async function loadCompanies(): Promise<void> {
+  companiesLoading.value = true
+  try {
+    companies.value = await getCompanies(props.cid)
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '公司列表加载失败'))
+  } finally {
+    companiesLoading.value = false
+  }
+}
+
+/** 切换奖项：清空已选发放对象，个人奖预拉候选人 */
+function onAwardChange(): void {
+  grantForm.userId = null
+  grantForm.companyId = null
+  if (isIndividual.value) {
+    void searchCandidates('')
+  }
+}
+
+function resetGrantForm(): void {
+  grantForm.awardId = null
+  grantForm.userId = null
+  grantForm.companyId = null
+  grantForm.note = ''
+}
+
+async function submitGrant(): Promise<void> {
+  const award = selectedAward.value
+  if (!award) {
+    ElMessage.warning('请先选择奖项')
+    return
+  }
+  const note = grantForm.note.trim()
+
+  if (award.kind === 'INDIVIDUAL') {
+    const userId = grantForm.userId
+    if (!userId) {
+      ElMessage.warning('请选择获奖人')
+      return
+    }
+    const person = candidates.value.find((c) => c.userId === userId)
+    const who = person ? person.displayName || person.username : `用户 #${userId}`
+    try {
+      await ElMessageBox.confirm(`确认为「${who}」发放奖项「${award.name}」？`, '发放确认', {
+        type: 'warning',
+      })
+    } catch {
+      return
+    }
+    granting.value = true
+    try {
+      const res = await createAwardGrant(props.cid, { awardId: award.id, userId })
+      ElMessage.success(`已发放，共写入 ${res.recipientCount} 人的档案记录`)
+      resetGrantForm()
+      await loadGrants()
+    } catch (err) {
+      ElMessage.error(errorMessage(err, '发放失败'))
+    } finally {
+      granting.value = false
+    }
+    return
+  }
+
+  const companyId = grantForm.companyId
+  if (!companyId) {
+    ElMessage.warning('请选择获奖公司')
+    return
+  }
+  const companyName = companies.value.find((c) => c.id === companyId)?.name ?? `公司 #${companyId}`
+  try {
+    await ElMessageBox.confirm(
+      `确认向公司「${companyName}」发放奖项「${award.name}」？该奖项将记录到该公司队伍全部成员的个人档案（受益人数以发放结果为准）。`,
+      '发放确认',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  granting.value = true
+  try {
+    const res = await createAwardGrant(props.cid, {
+      awardId: award.id,
+      companyId,
+      note: note || undefined,
+    })
+    ElMessage.success(`已发放，共写入 ${res.recipientCount} 人的档案记录`)
+    resetGrantForm()
+    await loadGrants()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '发放失败'))
+  } finally {
+    granting.value = false
+  }
+}
+
+// 已发放记录
+const grants = ref<AwardGrant[]>([])
+const grantsLoading = ref(false)
+
+async function loadGrants(): Promise<void> {
+  grantsLoading.value = true
+  try {
+    grants.value = await getAwardGrants(props.cid)
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '发放记录加载失败'))
+  } finally {
+    grantsLoading.value = false
+  }
+}
+
+function grantTargetLabel(row: AwardGrant): string {
+  if (row.kind === 'INDIVIDUAL') return row.userName || '—'
+  return `${row.companyName || '—'}（${row.recipientCount} 人）`
+}
+
+async function revokeGrant(row: AwardGrant): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认撤销奖项「${row.awardName}」对 ${grantTargetLabel(row)} 的发放？对应的个人档案获奖记录会一并删除。`,
+      '撤销确认',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await deleteAwardGrant(props.cid, row.id)
+    ElMessage.success(`已撤销，回收 ${res.removed} 条档案记录`)
+    await loadGrants()
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '撤销失败'))
+  }
+}
+
+async function reloadAll(): Promise<void> {
+  await Promise.all([loadConfig(), loadResult(), loadGrants(), loadCompanies()])
+}
+
+// 资源变更广播（400ms 去抖合并）：结算/奖项/公司写操作后自动刷新（沿用仅超管加载的口径）
+useResourceRefresh(['settlement', 'awards', 'companies'], () => {
+  if (canView.value) void reloadAll()
+})
 
 onMounted(() => {
   if (canView.value) void reloadAll()
@@ -230,7 +445,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="settlement-page">
+  <div class="settlement-page anim-stagger">
     <h1 class="page-title">结算管理</h1>
 
     <!-- 权限口径：结算结果仅超级管理员（系统超管/比赛超管）可见 -->
@@ -241,7 +456,7 @@ onMounted(() => {
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">评分准则</span>
+          <span class="section-title">评分准则</span>
           <div class="card-actions">
             <el-button :icon="Refresh" @click="loadConfig">刷新</el-button>
             <el-button v-if="canManage" type="primary" :icon="Plus" @click="openAdd('criterion')">
@@ -264,7 +479,11 @@ onMounted(() => {
             {{ DIRECTION_LABELS[row.direction] ?? row.direction }}
           </template>
         </el-table-column>
-        <el-table-column prop="weight" label="权重" width="90" />
+        <el-table-column label="权重" width="90" align="right">
+          <template #default="{ row }">
+            <span class="value-num">{{ row.weight }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
@@ -274,38 +493,63 @@ onMounted(() => {
         </el-table-column>
         <el-table-column v-if="canManage" label="操作" width="90" fixed="right">
           <template #default="{ row }">
-            <el-button type="danger" text size="small" @click="removeCriterion(row)">删除</el-button>
+            <el-button
+              type="danger"
+              text
+              size="small"
+              class="danger-op"
+              @click="removeCriterion(row)"
+            >
+              删除
+            </el-button>
           </template>
         </el-table-column>
         <template #empty>暂无评分准则</template>
       </el-table>
     </el-card>
 
-    <!-- ===== 获奖规则 ===== -->
+    <!-- ===== 奖项设置（人工定义，供下方人工发放） ===== -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">获奖规则</span>
+          <span class="section-title">奖项设置</span>
           <div class="card-actions">
             <el-button v-if="canManage" type="primary" :icon="Plus" @click="openAdd('award')">
-              新增规则
+              新增奖项
             </el-button>
           </div>
         </div>
       </template>
 
-      <el-table :data="config?.awardRules ?? []" v-loading="configLoading" stripe>
-        <el-table-column prop="awardLevel" label="奖项等级" min-width="140" />
-        <el-table-column label="名次区间" width="130">
-          <template #default="{ row }"> 第 {{ row.rankFrom }} - {{ row.rankTo }} 名 </template>
-        </el-table-column>
-        <el-table-column prop="medalLevel" label="奖牌等级" min-width="120" />
-        <el-table-column v-if="canManage" label="操作" width="90" fixed="right">
+      <el-table :data="config?.awards ?? []" v-loading="configLoading" stripe>
+        <el-table-column prop="name" label="奖项名称" min-width="150" show-overflow-tooltip />
+        <el-table-column label="类型" width="110">
           <template #default="{ row }">
-            <el-button type="danger" text size="small" @click="removeAwardRule(row)">删除</el-button>
+            <el-tag size="small" :type="kindTagType(row.kind)">
+              {{ row.kindLabel || (row.kind === 'COLLECTIVE' ? '集体奖' : '个人奖') }}
+            </el-tag>
           </template>
         </el-table-column>
-        <template #empty>暂无获奖规则</template>
+        <el-table-column label="奖牌等级" min-width="120">
+          <template #default="{ row }">
+            <span v-if="row.medalLevel">{{ row.medalLevel }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.description">{{ row.description }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="canManage" label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button type="danger" text size="small" class="danger-op" @click="removeAward(row)">
+              删除
+            </el-button>
+          </template>
+        </el-table-column>
+        <template #empty>暂无奖项，请先「新增奖项」</template>
       </el-table>
     </el-card>
 
@@ -313,7 +557,7 @@ onMounted(() => {
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
-          <span class="card-title">结算结果</span>
+          <span class="section-title">结算结果</span>
           <div class="card-actions">
             <el-button :icon="Refresh" @click="loadResult">刷新</el-button>
             <el-button
@@ -330,7 +574,11 @@ onMounted(() => {
       </template>
 
       <div v-loading="resultLoading">
-        <template v-if="result?.run">
+        <!-- 加载：骨架占位，避免「尚未执行结算」在加载过程中误显示 -->
+        <div v-if="resultLoading && !result" class="result-skeleton">
+          <div v-for="i in 3" :key="i" class="skeleton skeleton-card" />
+        </div>
+        <template v-else-if="result?.run">
           <div class="run-summary">
             <el-tag type="success" effect="plain">最近结算</el-tag>
             <span class="run-meta">
@@ -339,16 +587,36 @@ onMounted(() => {
             </span>
           </div>
 
+          <!-- 分数与名次是核心信息：先给一排聚合指标，再进名次明细 -->
+          <div class="metric-grid result-metrics anim-stagger">
+            <div class="metric-card">
+              <span class="metric-label">参评公司</span>
+              <div class="metric-value">
+                {{ entryCountShown }}<span class="metric-unit">家</span>
+              </div>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">最高得分</span>
+              <div class="metric-value">{{ topScoreShown.toFixed(2) }}</div>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">平均得分</span>
+              <div class="metric-value">{{ avgScoreShown.toFixed(2) }}</div>
+            </div>
+          </div>
+
           <el-table :data="result.entries" stripe>
-            <el-table-column prop="rank" label="名次" width="80" />
-            <el-table-column prop="companyName" label="公司" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="score" label="得分" width="110" />
-            <el-table-column label="获奖等级" width="130">
+            <el-table-column label="名次" width="90" align="center">
               <template #default="{ row }">
-                <el-tag v-if="row.awardLevel" :type="awardTagType(row.awardLevel)" size="small">
-                  {{ row.awardLevel }}
-                </el-tag>
-                <span v-else>—</span>
+                <span class="rank-badge value-num" :class="{ 'is-top': isTopRank(row.rank) }">
+                  {{ row.rank }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="companyName" label="公司" min-width="160" show-overflow-tooltip />
+            <el-table-column label="得分" width="120" align="right">
+              <template #default="{ row }">
+                <span class="score-cell value-num">{{ fmtScore(row.score) }}</span>
               </template>
             </el-table-column>
             <el-table-column type="expand">
@@ -356,10 +624,26 @@ onMounted(() => {
                 <div class="detail-wrap">
                   <el-table :data="detailRows(row)" size="small" border>
                     <el-table-column prop="key" label="指标" min-width="150" show-overflow-tooltip />
-                    <el-table-column prop="value" label="原始值" width="120" />
-                    <el-table-column prop="normalized" label="归一化" width="120" />
-                    <el-table-column prop="weight" label="权重" width="100" />
-                    <el-table-column prop="score" label="得分" width="120" />
+                    <el-table-column label="原始值" width="120" align="right">
+                      <template #default="{ row: d }">
+                        <span class="value-num">{{ fmtScore(d.value) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="归一化" width="120" align="right">
+                      <template #default="{ row: d }">
+                        <span class="value-num">{{ fmtScore(d.normalized) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="权重" width="100" align="right">
+                      <template #default="{ row: d }">
+                        <span class="value-num">{{ d.weight }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="得分" width="120" align="right">
+                      <template #default="{ row: d }">
+                        <span class="value-num">{{ fmtScore(d.score) }}</span>
+                      </template>
+                    </el-table-column>
                     <template #empty>暂无逐准则明细</template>
                   </el-table>
                 </div>
@@ -372,10 +656,149 @@ onMounted(() => {
       </div>
     </el-card>
 
-    <!-- ===== 新增对话框 ===== -->
+    <!-- ===== 奖项发放（人工发放 / 撤销） ===== -->
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-head">
+          <span class="section-title">奖项发放</span>
+          <div class="card-actions">
+            <el-button :icon="Refresh" @click="loadGrants">刷新</el-button>
+          </div>
+        </div>
+      </template>
+
+      <template v-if="canManage">
+        <el-alert
+          v-if="awardOptions.length === 0"
+          type="info"
+          :closable="false"
+          show-icon
+          title="请先在上方「奖项设置」中新增奖项，再进行发放。"
+          class="hint-alert"
+        />
+        <div v-else class="grant-form">
+          <div class="grant-field">
+            <span class="grant-label">选择奖项</span>
+            <el-select
+              v-model="grantForm.awardId"
+              placeholder="请选择奖项"
+              clearable
+              style="width: 220px"
+              @change="onAwardChange"
+            >
+              <el-option
+                v-for="a in awardOptions"
+                :key="a.id"
+                :label="`${a.name}（${a.kindLabel || (a.kind === 'COLLECTIVE' ? '集体奖' : '个人奖')}）`"
+                :value="a.id"
+              />
+            </el-select>
+          </div>
+
+          <div v-if="isIndividual" class="grant-field">
+            <span class="grant-label">获奖人</span>
+            <el-select
+              v-model="grantForm.userId"
+              filterable
+              remote
+              clearable
+              reserve-keyword
+              :remote-method="searchCandidates"
+              :loading="candidatesLoading"
+              no-data-text="输入姓名或用户名搜索本比赛成员"
+              placeholder="搜索本比赛成员"
+              style="width: 260px"
+            >
+              <el-option
+                v-for="c in candidates"
+                :key="c.userId"
+                :label="c.displayName || c.username"
+                :value="c.userId"
+              >
+                <span>{{ c.displayName || c.username }}</span>
+                <span v-if="c.companyName" class="option-sub">{{ c.companyName }}</span>
+              </el-option>
+            </el-select>
+          </div>
+
+          <div v-else-if="isCollective" class="grant-field">
+            <span class="grant-label">获奖公司</span>
+            <el-select
+              v-model="grantForm.companyId"
+              filterable
+              clearable
+              :loading="companiesLoading"
+              placeholder="请选择公司（发放给其队伍全员）"
+              style="width: 260px"
+            >
+              <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
+            </el-select>
+          </div>
+
+          <div class="grant-field">
+            <span class="grant-label">可选备注</span>
+            <el-input
+              v-model="grantForm.note"
+              maxlength="200"
+              placeholder="备注（可选）"
+              style="width: 220px"
+            />
+          </div>
+
+          <el-button type="primary" :loading="granting" :disabled="granting" @click="submitGrant">
+            发放
+          </el-button>
+        </div>
+      </template>
+
+      <el-table :data="grants" v-loading="grantsLoading" stripe class="grant-table">
+        <el-table-column prop="awardName" label="奖项" min-width="140" show-overflow-tooltip />
+        <el-table-column label="类型" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="kindTagType(row.kind)">
+              {{ row.kindLabel || (row.kind === 'COLLECTIVE' ? '集体奖' : '个人奖') }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="发放对象" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.kind === 'INDIVIDUAL'">{{ row.userName || '—' }}</span>
+            <span v-else>{{ row.companyName || '—' }}（{{ row.recipientCount }} 人）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="奖牌等级" width="110">
+          <template #default="{ row }">
+            <span v-if="row.medalLevel">{{ row.medalLevel }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="备注" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.note">{{ row.note }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="发放人" width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.grantedByUsername || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="发放时间" width="170">
+          <template #default="{ row }">{{ formatDateTime(row.grantedAt) }}</template>
+        </el-table-column>
+        <el-table-column v-if="canManage" label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button type="danger" text size="small" class="danger-op" @click="revokeGrant(row)">
+              撤销
+            </el-button>
+          </template>
+        </el-table-column>
+        <template #empty>暂无发放记录</template>
+      </el-table>
+    </el-card>
+
+    <!-- ===== 新增对话框（评分准则 / 奖项定义） ===== -->
     <el-dialog
       v-model="dialogVisible"
-      :title="dialogKind === 'criterion' ? '新增评分准则' : '新增获奖规则'"
+      :title="dialogKind === 'criterion' ? '新增评分准则' : '新增奖项'"
       width="min(520px, 92vw)"
     >
       <el-form label-width="96px">
@@ -404,18 +827,27 @@ onMounted(() => {
           </el-form-item>
         </template>
         <template v-else>
-          <el-form-item label="奖项等级" required>
-            <el-input v-model="form.awardLevel" placeholder="如：一等奖" maxlength="32" />
+          <el-form-item label="名称" required>
+            <el-input v-model="form.name" placeholder="如：最佳 CEO" maxlength="100" />
           </el-form-item>
-          <el-form-item label="名次区间">
-            <div class="rank-range">
-              <el-input-number v-model="form.rankFrom" :min="1" :step="1" />
-              <span class="rank-sep">至</span>
-              <el-input-number v-model="form.rankTo" :min="1" :step="1" />
-            </div>
+          <el-form-item label="类型" required>
+            <el-select v-model="form.awardKind" style="width: 100%">
+              <el-option label="个人奖（发放给 1 人）" value="INDIVIDUAL" />
+              <el-option label="集体奖（发放给公司队伍全员）" value="COLLECTIVE" />
+            </el-select>
           </el-form-item>
-          <el-form-item label="奖牌等级" required>
-            <el-input v-model="form.medalLevel" placeholder="如：GOLD" maxlength="32" />
+          <el-form-item label="奖牌等级">
+            <el-input v-model="form.medalLevel" placeholder="可选，如：一等奖 / GOLD" maxlength="32" />
+          </el-form-item>
+          <el-form-item label="说明">
+            <el-input
+              v-model="form.description"
+              type="textarea"
+              :rows="3"
+              maxlength="200"
+              show-word-limit
+              placeholder="可选，如评选标准"
+            />
           </el-form-item>
         </template>
       </el-form>
@@ -447,13 +879,50 @@ onMounted(() => {
   gap: 12px;
   flex-wrap: wrap;
 }
-.card-title {
-  font-weight: 600;
+/* 区块标题在卡片头部里不需要额外下间距 */
+.card-head .section-title {
+  margin-bottom: 0;
 }
 .card-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* ===== 结算结果：聚合指标 + 名次顺序视觉 ===== */
+.result-metrics {
+  margin-bottom: 16px;
+}
+.result-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--surface-sunken);
+}
+.rank-badge.is-top {
+  color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb), 0.12);
+}
+.score-cell {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+/* 危险操作视觉降级：默认次要文字色，悬停才显红，不与主操作抢注意力 */
+.section-card :deep(.danger-op) {
+  color: var(--color-text-tertiary);
+}
+.section-card :deep(.danger-op:hover) {
+  color: var(--color-danger);
 }
 .run-summary {
   display: flex;
@@ -469,13 +938,34 @@ onMounted(() => {
 .detail-wrap {
   padding: 8px 16px 12px;
 }
-.rank-range {
+.muted {
+  color: var(--color-text-tertiary);
+}
+/* 奖项发放：奖项 / 发放对象 / 备注 / 发放按钮 一行排布 */
+.grant-form {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.grant-field {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
 }
-.rank-sep {
+.grant-label {
   color: var(--color-text-secondary);
+  font-size: var(--font-sm);
+  white-space: nowrap;
+}
+.option-sub {
+  float: right;
+  margin-left: 12px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-xs);
+}
+.grant-table {
+  margin-top: 4px;
 }
 </style>

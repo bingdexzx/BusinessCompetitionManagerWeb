@@ -55,12 +55,17 @@
             <el-dropdown-item command="profile">
               <el-icon><UserFilled /></el-icon>个人档案
             </el-dropdown-item>
+            <el-dropdown-item command="password">
+              <el-icon><Lock /></el-icon>修改密码
+            </el-dropdown-item>
             <el-dropdown-item command="logout" divided>
               <el-icon><SwitchButton /></el-icon>退出登录
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+
+      <ChangePasswordDialog v-model="passwordDialogVisible" />
     </div>
   </div>
 </template>
@@ -73,6 +78,7 @@ import * as api from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications } from '@/composables/useNotifications'
 import { errorMessage } from '@/utils/errors'
+import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 
 const { unreadCount, resetUnread } = useNotifications()
 
@@ -151,9 +157,15 @@ const roleLabel = computed(() => {
 })
 const roleTagType = computed(() => (auth.isSuperuser ? 'danger' : 'primary'))
 
+const passwordDialogVisible = ref(false)
+
 function onUserCommand(command: string | number | object): void {
   if (command === 'profile') {
     void router.push('/profile')
+    return
+  }
+  if (command === 'password') {
+    passwordDialogVisible.value = true
     return
   }
   if (command === 'logout') {

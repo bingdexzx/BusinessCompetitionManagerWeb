@@ -30,20 +30,32 @@
       </div>
     </div>
 
-    <!-- 背景图 URL 弹窗：新后端无背景上传接口，改为粘贴图片 URL（布局与画布能力保持不变） -->
-    <el-dialog append-to-body v-model="bgUrlDialogVisible" title="导入背景" width="480px">
+    <!-- 导入背景弹窗：本地图片上传 或 粘贴图片 URL（统一走服务端地图背景接口） -->
+    <el-dialog append-to-body v-model="bgUrlDialogVisible" title="导入背景" width="480px" @closed="resetBgDialog">
       <el-form label-width="80px">
+        <el-form-item label="本地图片">
+          <el-button :loading="uploadingBg" @click="pickBgFile">选择图片文件</el-button>
+          <span v-if="bgFileName" class="bg-file-name">{{ bgFileName }}</span>
+          <input
+            ref="bgFileInput"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            style="display: none"
+            @change="onBgFileSelected"
+          />
+        </el-form-item>
         <el-form-item label="图片地址">
           <el-input
             v-model="bgUrlInput"
-            placeholder="粘贴图片 URL（http(s):// 或 data:image/...）"
+            placeholder="粘贴图片 URL（http(s):// 或 data:image/...）；与本地图片二选一"
             clearable
+            :disabled="!!bgFile"
           />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="bgUrlDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="uploadingBg" @click="confirmBackgroundUrl">确定</el-button>
+        <el-button type="primary" :loading="uploadingBg" @click="confirmBackground">确定</el-button>
       </template>
     </el-dialog>
 
@@ -54,7 +66,7 @@
     <!-- 主体三栏布局 -->
     <div class="mm-body">
       <!-- 左侧节点列表 -->
-      <div v-if="canEdit" :class="['mm-left-panel', { 'is-open': leftOpen }]">
+      <div v-if="canEdit" :class="['mm-left-panel', 'anim-fade-in-up', { 'is-open': leftOpen }]">
         <div class="panel-header">
           <span class="panel-title">节点列表</span>
           <el-button
@@ -209,7 +221,7 @@
       </div>
 
       <!-- 右侧属性面板 -->
-      <div v-if="canEdit" :class="['mm-right-panel', { 'is-open': rightOpen }]">
+      <div v-if="canEdit" :class="['mm-right-panel', 'anim-fade-in-up', { 'is-open': rightOpen }]">
         <!-- 节点属性-->
         <template v-if="selectedNode">
           <div class="panel-header">
@@ -335,7 +347,7 @@
     </div>
 
     <!-- 底部 Tab 管理 -->
-    <div v-if="canEdit" class="mm-bottom">
+    <div v-if="canEdit" class="mm-bottom anim-fade-in-up">
       <el-tabs v-model="bottomTab" type="border-card">
         <!-- 节点类型管理 -->
         <el-tab-pane label="节点类型管理" name="nodeTypes">
@@ -463,6 +475,44 @@
                 size="small"
                 type="danger"
                 @click="deletePathType(row)"
+                >删除</el-button
+              >
+            </template>
+          </MobileCards>
+        </el-tab-pane>
+
+        <!-- 区域管理（区域在地图管理里维护；区域总览页只做展示与配置） -->
+        <el-tab-pane label="区域管理" name="regions">
+          <div class="tab-toolbar">
+            <el-button v-if="canEdit" type="primary" size="small" @click="openRegionCreate"
+              >+ 新建区域</el-button
+            >
+          </div>
+          <el-table
+            v-if="!isPhone"
+            :data="regionsList"
+            border
+            stripe
+            size="small"
+            style="width: 100%"
+          >
+            <el-table-column prop="name" label="名称" />
+            <el-table-column label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canEdit" size="small" type="danger" @click="removeRegion(row.name)"
+                  >删除</el-button
+                >
+              </template>
+            </el-table-column>
+          </el-table>
+          <MobileCards
+            v-else
+            :data="regionsList"
+            :columns="mapRegionColumns"
+            :row-key="(row: any) => row.name"
+          >
+            <template #actions="{ row }">
+              <el-button v-if="canEdit" size="small" type="danger" @click="removeRegion(row.name)"
                 >删除</el-button
               >
             </template>
@@ -651,6 +701,30 @@
       </el-descriptions>
     </el-dialog>
 
+    <!-- 区域新建对话框 -->
+    <el-dialog
+      append-to-body
+      v-model="regionDialogVisible"
+      title="新建区域"
+      width="400px"
+      @closed="newRegionName = ''"
+    >
+      <el-form
+        ref="regionFormRef"
+        :model="{ name: newRegionName }"
+        :rules="regionRules"
+        label-width="80px"
+      >
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="newRegionName" placeholder="输入区域名称" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="regionDialogVisible = false">取消</el-button>
+        <el-button v-if="canEdit" type="primary" @click="addRegion">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 连线创建对话框 -->
     <el-dialog append-to-body v-model="edgeCreateDialogVisible" title="创建路径" width="400px">
       <el-form
@@ -690,7 +764,15 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { createRegion, deleteRegion, getRegionMapOverview } from "@/api";
 import { mapEdgeApi, mapNodeApi, mapNodeTypeApi, pathTypeApi } from "@/api/mapApi";
+import {
+  deleteMapBackground,
+  getMapBackground,
+  saveMapBackground,
+  updateMapBackgroundTransform,
+} from "@/api/filesApi";
+import type { MapBackground as BackgroundMeta } from "@/api/filesApi";
 import type {
   MapEdgeRow as MapEdge,
   MapImpact,
@@ -703,6 +785,7 @@ import { useAuthStore } from "@/stores/auth";
 import MobileCards from "@/components/common/MobileCards.vue";
 import { errorMessage } from "@/utils/errors";
 import { formatDateTime } from "@/utils/format";
+import { useResourceRefresh } from "@/composables/useNotifications";
 import {
   Circle as VCircle,
   Group as VGroup,
@@ -739,14 +822,11 @@ const nodes = ref<MapNode[]>([]);
 const edges = ref<MapEdge[]>([]);
 const nodeTypes = ref<NodeType[]>([]);
 const pathTypes = ref<PathType[]>([]);
-// 区域候选：由节点 region 字段去重得到（区域实体/「区域总览」应用已裁剪，region 为节点上的自由字段）
-const regions = computed<string[]>(() => {
-  const set = new Set<string>();
-  for (const n of nodes.value) {
-    if (n.region) set.add(n.region);
-  }
-  return [...set];
-});
+// 区域候选（节点「区域」下拉用）：地图节点所属区域去重 ∪ 区域实体中还没有节点的区域
+// （与旧系统一致：区域在地图管理里新建，节点上填区域名，两边合并成候选列表）
+const regions = ref<string[]>([]);
+// 区域名 -> Region 实体 id（由地图节点定义、尚未建实体的区域为 null）
+const regionIdMap = ref<Map<string, number | null>>(new Map());
 const loading = ref(false);
 
 const mapNodeTypeColumns = [
@@ -759,6 +839,95 @@ const mapPathTypeColumns = [
   { prop: "name", label: "名称" },
   { prop: "description", label: "描述" },
 ];
+const mapRegionColumns = [{ prop: "name", label: "名称" }];
+
+// ===================== 区域管理 =====================
+// 区域在地图管理里维护（旧系统口径）：区域总览页不再提供新建/重命名/删除。
+const regionDialogVisible = ref(false);
+const newRegionName = ref("");
+const regionFormRef = ref();
+const regionRules = { name: [{ required: true, message: "请输入区域名称", trigger: "blur" }] };
+const regionsList = computed(() =>
+  regions.value.map((r) => ({ name: r, id: regionIdMap.value.get(r) ?? null })),
+);
+
+/** 从后端加载区域列表（地图节点所属区域 ∪ 区域实体无节点区域），并维护 regionIdMap。 */
+async function loadRegionsFromServer() {
+  if (!props.cid) {
+    regions.value = [];
+    regionIdMap.value = new Map();
+    return;
+  }
+  try {
+    const list = (await getRegionMapOverview(props.cid)) || [];
+    const map = new Map<string, number | null>();
+    const names: string[] = [];
+    for (const r of list) {
+      if (!r.region) continue;
+      if (!map.has(r.region)) {
+        map.set(r.region, r.id ?? null);
+        names.push(r.region);
+      }
+    }
+    regions.value = names;
+    regionIdMap.value = map;
+  } catch (err) {
+    ElMessage.error(errorMessage(err, "区域列表加载失败"));
+  }
+}
+
+function openRegionCreate() {
+  if (!props.cid) {
+    ElMessage.warning("请先在「比赛管理」中选择一个比赛");
+    return;
+  }
+  newRegionName.value = "";
+  regionDialogVisible.value = true;
+}
+
+async function addRegion() {
+  if (!regionFormRef.value) return;
+  const valid = await regionFormRef.value.validate().catch(() => false);
+  if (!valid) return;
+  const name = newRegionName.value.trim();
+  if (regions.value.includes(name)) {
+    ElMessage.warning("区域名称已存在");
+    return;
+  }
+  try {
+    await createRegion(props.cid, { name, description: "" });
+    await loadRegionsFromServer();
+    ElMessage.success("已新建区域");
+    newRegionName.value = "";
+    regionDialogVisible.value = false;
+  } catch (err) {
+    ElMessage.error(errorMessage(err, "新建区域失败"));
+  }
+}
+
+async function removeRegion(name: string) {
+  const id = regionIdMap.value.get(name);
+  if (!id) {
+    ElMessage.warning("该区域由地图节点定义，请在地图节点上移除其所属区域");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(`删除区域「${name}」？该操作不可恢复。`, {
+      type: "warning",
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+    });
+  } catch {
+    return;
+  }
+  try {
+    await deleteRegion(props.cid, id);
+    await loadRegionsFromServer();
+    ElMessage.success("已删除区域");
+  } catch (err) {
+    ElMessage.error(errorMessage(err, "删除区域失败"));
+  }
+}
 
 // ===================== 画布 =====================
 const canvasWrapper = ref<HTMLElement>();
@@ -1120,6 +1289,8 @@ async function loadData() {
       edges.value = [];
       nodeTypes.value = [];
       pathTypes.value = [];
+      regions.value = [];
+      regionIdMap.value = new Map();
       return;
     }
     // 四张地图表一次性拉取（地图数据量小，取全量渲染画布）
@@ -1133,6 +1304,8 @@ async function loadData() {
     pathTypes.value = pathRes.items || [];
     nodes.value = nodeRes.items || [];
     edges.value = edgeRes.items || [];
+    // 区域候选 = 节点所属区域 ∪ 区域实体（新建立的、还没归入节点的区域也要能选到）
+    await loadRegionsFromServer();
     // 节点已确定：auto 模式立即锚定背景覆盖框（与背景图加载时机解耦，避免重新进入界面时背景错位）
     recomputeBBoxIfAuto();
   } catch (err) {
@@ -1673,44 +1846,19 @@ function closeContextMenu() {
 }
 
 // ===================== 地图背景 =====================
-// 新后端无背景图上传接口：改为「粘贴图片 URL」，URL 与变换（位置/缩放）持久化在本地
-// localStorage（按比赛隔离）；画布上的背景显示/拖拽/缩放/背景编辑能力与旧页面一致。
-interface BackgroundMeta {
-  url: string;
-  transform: { x: number; y: number; scale: number } | null;
-}
-const BG_STORAGE_PREFIX = "bcm.mapBackground.";
-function bgStorageKey(): string {
-  return BG_STORAGE_PREFIX + String(props.cid);
-}
-/** 读取本地保存的背景元信息（无则 null）。 */
-function loadLocalBackground(): BackgroundMeta | null {
-  try {
-    const raw = localStorage.getItem(bgStorageKey());
-    if (!raw) return null;
-    const meta = JSON.parse(raw) as BackgroundMeta;
-    return meta && typeof meta.url === "string" && meta.url ? meta : null;
-  } catch {
-    return null;
-  }
-}
-/** 保存/清除本地背景元信息（本地存储不可用时静默降级，仅影响刷新后恢复）。 */
-function saveLocalBackground(meta: BackgroundMeta | null) {
-  try {
-    if (meta) localStorage.setItem(bgStorageKey(), JSON.stringify(meta));
-    else localStorage.removeItem(bgStorageKey());
-  } catch {
-    // ignore
-  }
-}
+// 背景图（URL + 变换）持久化在服务端（/api/competitions/{cid}/files/map-background，按 cid 隔离）；
+// 画布上的背景显示/拖拽/缩放/背景编辑能力与旧页面一致。
 const backgroundMeta = ref<BackgroundMeta | null>(null);
 const backgroundImage = ref<HTMLImageElement | null>(null);
 // 背景覆盖框（节点包围盒 + 留白），在加载时冻结，避免节点拖拽时背景抖动。
 const bgBBox = ref<{ x: number; y: number; w: number; h: number } | null>(null);
-// 「导入背景」URL 弹窗与应用中状态（替代旧的文件上传）
+// 「导入背景」弹窗状态：本地图片文件 或 粘贴图片 URL（保存走服务端接口）
 const bgUrlDialogVisible = ref(false);
 const bgUrlInput = ref("");
 const uploadingBg = ref(false);
+const bgFile = ref<File | null>(null);
+const bgFileName = ref("");
+const bgFileInput = ref<HTMLInputElement | null>(null);
 // 背景编辑模式：开启后可拖拽背景图移动位置、用滑块调整缩放；关闭则背景不可交互。
 const bgEditMode = ref(false);
 // 背景变换（世界坐标）：由服务端持久化；null 表示按节点包围盒自动适配。
@@ -1815,20 +1963,26 @@ function applyBackgroundMeta(meta: BackgroundMeta | null) {
     bgBBox.value = null;
     ElMessage.error("背景图加载失败");
   };
-  // 直接使用粘贴的图片 URL（无后端上传接口，不做 baseUrl 前缀拼接）
+  // 服务端文件为 /api/files/view/...（相对路径同源加载）；外链 / data:image/... 原样使用
   img.src = meta.url;
 }
 
-/** 拉取当前比赛的地图背景（本地保存的 URL + 变换）。 */
-function loadBackground() {
+/** 拉取当前比赛的地图背景（服务端持久化的 URL + 变换，按 cid 请求）。 */
+async function loadBackground() {
   if (!props.cid) {
     applyBackgroundMeta(null);
     return;
   }
-  applyBackgroundMeta(loadLocalBackground());
+  try {
+    const meta = await getMapBackground(props.cid);
+    applyBackgroundMeta(meta && meta.url ? meta : null);
+  } catch (err) {
+    applyBackgroundMeta(null);
+    ElMessage.error(errorMessage(err, "背景图加载失败"));
+  }
 }
 
-/** 「导入背景」按钮：打开粘贴图片 URL 弹窗（替代旧的文件上传）。 */
+/** 「导入背景」按钮：打开导入弹窗（本地图片上传 / 粘贴图片 URL）。 */
 function openBgUrlDialog() {
   if (!props.cid) {
     ElMessage.warning("请先在「比赛管理」中选择一个比赛");
@@ -1838,26 +1992,52 @@ function openBgUrlDialog() {
     ElMessage.warning("无权限操作地图背景");
     return;
   }
+  bgFile.value = null;
+  bgFileName.value = "";
   bgUrlInput.value = backgroundMeta.value?.url ?? "";
   bgUrlDialogVisible.value = true;
 }
 
-/** 确认粘贴的背景图 URL：保存并应用（位置/缩放回到自动适配，可在「背景编辑」中再调整）。 */
-function confirmBackgroundUrl() {
+/** 弹窗关闭时清空待选文件。 */
+function resetBgDialog() {
+  bgFile.value = null;
+  bgFileName.value = "";
+  if (bgFileInput.value) bgFileInput.value.value = "";
+}
+
+/** 选择本地背景图片（仅暂存，点「确定」才上传保存）。 */
+function pickBgFile() {
+  bgFileInput.value?.click();
+}
+
+function onBgFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0] ?? null;
+  bgFile.value = file;
+  bgFileName.value = file ? file.name : "";
+  if (file) bgUrlInput.value = "";
+}
+
+/**
+ * 确认导入背景（本地图片或图片 URL 二选一）：走服务端保存并应用。
+ * 位置/缩放回到自动适配，可在「背景编辑」中再调整。
+ */
+async function confirmBackground() {
+  if (!props.cid) return;
+  const file = bgFile.value;
   const url = bgUrlInput.value.trim();
-  if (!url) {
-    ElMessage.warning("请粘贴图片 URL");
+  if (!file && !url) {
+    ElMessage.warning("请选择图片文件或粘贴图片 URL");
     return;
   }
-  if (!/^https?:\/\//i.test(url) && !url.startsWith("data:image/")) {
+  if (!file && !/^https?:\/\//i.test(url) && !url.startsWith("data:image/")) {
     ElMessage.warning("图片 URL 需以 http(s):// 或 data:image/ 开头");
     return;
   }
   uploadingBg.value = true;
   try {
-    const meta: BackgroundMeta = { url, transform: null };
-    saveLocalBackground(meta);
-    applyBackgroundMeta(meta);
+    const meta = await saveMapBackground(props.cid, file ? { file } : { url, transform: null });
+    applyBackgroundMeta(meta && meta.url ? meta : null);
     ElMessage.success("地图背景已更新");
     bgUrlDialogVisible.value = false;
   } catch (err) {
@@ -1867,7 +2047,7 @@ function confirmBackgroundUrl() {
   }
 }
 
-/** 清除地图背景图（二次确认）。 */
+/** 清除地图背景图（二次确认，服务端删除记录与文件）。 */
 async function clearBackground() {
   if (!props.cid) return;
   try {
@@ -1877,9 +2057,13 @@ async function clearBackground() {
   } catch {
     return;
   }
-  saveLocalBackground(null);
-  applyBackgroundMeta(null);
-  ElMessage.success("已清除地图背景");
+  try {
+    await deleteMapBackground(props.cid);
+    applyBackgroundMeta(null);
+    ElMessage.success("已清除地图背景");
+  } catch (err) {
+    ElMessage.error(errorMessage(err, "操作失败"));
+  }
 }
 
 /** 背景图 Konva 配置：置于节点包围盒下方、可随画布平移缩放。
@@ -1979,13 +2163,18 @@ function resetBgTransform() {
   persistTransform();
 }
 
-/** 持久化当前背景变换（本地保存；新后端无背景接口，实时回调已裁剪，操作后本地刷新即可）。 */
-function persistTransform() {
+/** 持久化当前背景变换（服务端 PATCH transform；失败提示并保持本地显示）。 */
+async function persistTransform() {
   const t = bgTransform.value;
   const meta = backgroundMeta.value;
   if (!t || !meta || !props.cid) return;
   if (!canEdit.value) return;
-  saveLocalBackground({ url: meta.url, transform: t });
+  try {
+    const saved = await updateMapBackgroundTransform(props.cid, t);
+    backgroundMeta.value = saved && saved.url ? saved : meta;
+  } catch (err) {
+    ElMessage.error(errorMessage(err, "背景变换保存失败"));
+  }
 }
 
 // ===================== 初始化 =====================
@@ -2001,9 +2190,15 @@ function updateStageSize() {
   }
 }
 
+// 资源变更实时刷新：basedata / files 变更时同步重拉地图数据与背景（保留选中/视图状态）
+useResourceRefresh(["basedata", "files"], () => {
+  void loadData();
+  void loadBackground();
+});
+
 onMounted(async () => {
   await loadData();
-  loadBackground();
+  await loadBackground();
 
   updateStageSize();
   // 手机模式默认折叠图例浮窗，避免遮挡只读视图下的地图区域
@@ -2042,7 +2237,7 @@ watch(
     bgTransform.value = null;
     bgEditMode.value = false;
     await loadData();
-    loadBackground();
+    await loadBackground();
   },
 );
 
@@ -2149,16 +2344,27 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 8px 16px;
   cursor: pointer;
-  transition: background 0.15s;
+  /* 悬停/选中过渡统一走全局动效刻度（背景 + 颜色），不做位移以免长列表抖动 */
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
   font-size: 13px;
   color: #c8cdd5;
+  /* 选中项左侧品牌色竖条：有选中态时一眼可辨 */
+  box-shadow: inset 2px 0 0 transparent;
 }
 .node-item:hover {
   background: rgba(255, 255, 255, 0.06);
 }
+.node-item:focus-visible {
+  outline: 2px solid rgba(64, 158, 255, 0.75);
+  outline-offset: -2px;
+}
 .node-item.active {
   background: rgba(64, 158, 255, 0.15);
   color: #fff;
+  box-shadow: inset 2px 0 0 #409eff;
 }
 .node-color-dot {
   width: 10px;
@@ -2234,6 +2440,17 @@ onBeforeUnmount(() => {
 .bg-edit-hint {
   font-size: 12px;
   color: #909399;
+}
+
+/* 导入背景弹窗：已选文件名 */
+.bg-file-name {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #606266;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
 }
 
 /* 图例浮窗（无地图管理权限时显示，悬浮在画布右上角） */

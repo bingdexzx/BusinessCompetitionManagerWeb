@@ -1,9 +1,13 @@
 // 后端接口调用（全部走相对路径 /api/...，开发期由 vite proxy 转发；契约见 docs/API契约.md）
-import { http } from './client'
+import { http, request } from './client'
 import type {
   AdminDevice,
   AssignMemberPayload,
   AuditLogItem,
+  AwardCandidate,
+  AwardGrant,
+  AwardGrantPayload,
+  AwardGrantResult,
   AwardInfo,
   AwardRecord,
   BasedataPage,
@@ -36,6 +40,7 @@ import type {
   AddressBook,
   InmailMessage,
   InmailPage,
+  IndustryOption,
   SendInmailPayload,
   MyDevice,
   NetworkLogPage,
@@ -48,6 +53,7 @@ import type {
   RegisterPayload,
   School,
   ScoringConfig,
+  SettlementConfigPayload,
   SettlementResult,
   Stock,
   StockAccount,
@@ -102,6 +108,22 @@ export function updateMe(payload: UpdateMePayload): Promise<User> {
 
 export function getMyDevices(): Promise<MyDevice[]> {
   return http.get<MyDevice[]>('/me/devices')
+}
+
+/** 修改密码（旧密码校验；成功后后端顶号，需重新登录） */
+export function changePassword(
+  oldPassword: string,
+  newPassword: string,
+): Promise<{ ok: boolean; message: string }> {
+  return http.post<{ ok: boolean; message: string }>('/auth/change-password', {
+    oldPassword,
+    newPassword,
+  })
+}
+
+/** 服务端版本（版本硬封锁比对用） */
+export function fetchVersion(): Promise<{ version: string }> {
+  return http.get<{ version: string }>('/version', { skipAuth: true, skipRefresh: true })
 }
 
 export function getMyAwards(): Promise<AwardRecord[]> {
@@ -163,11 +185,24 @@ export function getAddressBook(): Promise<AddressBook> {
 // ---------- 学校 ----------
 
 export function getSchools(q?: string): Promise<School[]> {
-  return http.get<School[]>('/schools', { query: { q }, skipAuth: true })
+  // 公开接口：注册页无 token 也能搜；已登录则带上 token，计入本人额度。
+  // 若仍走匿名（skipAuth），所有标签页会共用「匿名按 IP」额度，几处学校搜索就会 429。
+  return http.get<School[]>('/schools', { query: { q }, optionalAuth: true })
 }
 
 export function createSchool(payload: CreateSchoolPayload): Promise<School> {
   return http.post<School>('/schools', payload)
+}
+
+export function updateSchool(
+  id: number,
+  payload: Partial<CreateSchoolPayload>,
+): Promise<School> {
+  return http.patch<School>(`/schools/${id}`, payload)
+}
+
+export function deleteSchool(id: number): Promise<{ ok: boolean }> {
+  return http.delete<{ ok: boolean }>(`/schools/${id}`)
 }
 
 // ---------- 比赛 ----------
@@ -249,6 +284,20 @@ export function adjustTeamIndustry(
   payload: { industryFinal: string; industryChoice?: string[]; industryAdjustAccepted?: string[] },
 ): Promise<Team> {
   return http.patch<Team>(`/competitions/${cid}/teams/${tid}/industry`, payload)
+}
+
+/** 本比赛已导入的产业插件（分配公司时下拉用；非本比赛成员 403） */
+export function getIndustries(cid: number | string): Promise<IndustryOption[]> {
+  return http.get<IndustryOption[]>(`/competitions/${cid}/industries`)
+}
+
+/** 为队伍分配公司（选产业 + 填公司名称；后端创建/更新公司并绑定，队长据此获得操作权） */
+export function assignTeamCompany(
+  cid: number | string,
+  tid: number,
+  payload: { industryKey: string; companyName: string },
+): Promise<Team> {
+  return http.post<Team>(`/competitions/${cid}/teams/${tid}/company`, payload)
 }
 
 export function getInviteCodes(cid: number | string): Promise<InviteCode[]> {
@@ -470,20 +519,26 @@ export function getFiscalYearBackups(
   return http.get<FiscalYearBackup[]>(`/competitions/${cid}/fiscal-years/${fiscalYearId}/backups`)
 }
 
-// ---------- 结算 / 获奖（M5） ----------
+// ---------- 结算 / 获奖（M5；2026-10 需求变更：结算只算分，奖项人工定义与发放） ----------
 
-export function getScoringConfig(cid: number | string): Promise<ScoringConfig> {
+export function getSettlementConfig(cid: number | string): Promise<ScoringConfig> {
   return http.get<ScoringConfig>(`/competitions/${cid}/settlement/config`)
 }
 
-export function createScoringItem(
+/**
+ * 新增结算配置项：
+ * - 评分准则 `{ kind:'criterion', name, fieldKey, aggregation, direction, weight }`
+ * - 奖项定义 `{ kind:'award', name, awardKind:'INDIVIDUAL'|'COLLECTIVE', description?, medalLevel? }`
+ */
+export function createSettlementConfigItem(
   cid: number | string,
-  payload: Record<string, unknown> & { kind: 'criterion' | 'award' },
+  payload: SettlementConfigPayload,
 ): Promise<{ id: number }> {
   return http.post<{ id: number }>(`/competitions/${cid}/settlement/config`, payload)
 }
 
-export function deleteScoringItem(
+/** 删除评分准则 / 奖项定义（删除奖项定义会一并撤销其已有发放） */
+export function deleteSettlementConfigItem(
   cid: number | string,
   kind: 'criterion' | 'award',
   id: number,
@@ -491,12 +546,49 @@ export function deleteScoringItem(
   return http.delete<{ ok: boolean }>(`/competitions/${cid}/settlement/config/${kind}/${id}`)
 }
 
+// 兼容旧命名（同名同签名，行为完全一致）
+export const getScoringConfig = getSettlementConfig
+export const createScoringItem = createSettlementConfigItem
+export const deleteScoringItem = deleteSettlementConfigItem
+
 export function runSettlement(cid: number | string): Promise<{ runId: number; status: string }> {
   return http.post(`/competitions/${cid}/settlement/run`, {})
 }
 
 export function getSettlementResult(cid: number | string): Promise<SettlementResult> {
   return http.get<SettlementResult>(`/competitions/${cid}/settlement/result`)
+}
+
+// ---------- 奖项人工发放 ----------
+
+/** 个人奖候选人：本比赛全部成员，可按用户名/显示名搜索 */
+export function getAwardCandidates(
+  cid: number | string,
+  q?: string,
+): Promise<AwardCandidate[]> {
+  return http.get<AwardCandidate[]>(`/competitions/${cid}/settlement/candidates`, {
+    query: { q },
+  })
+}
+
+export function getAwardGrants(cid: number | string): Promise<AwardGrant[]> {
+  return http.get<AwardGrant[]>(`/competitions/${cid}/awards/grants`)
+}
+
+/** 发放奖项：个人奖给 `{ awardId, userId }`；集体奖给 `{ awardId, companyId, note? }` */
+export function createAwardGrant(
+  cid: number | string,
+  payload: AwardGrantPayload,
+): Promise<AwardGrantResult> {
+  return http.post<AwardGrantResult>(`/competitions/${cid}/awards/grants`, payload)
+}
+
+/** 撤销发放：removed = 回收的个人档案获奖记录条数 */
+export function deleteAwardGrant(
+  cid: number | string,
+  id: number,
+): Promise<{ ok: boolean; removed: number }> {
+  return http.delete<{ ok: boolean; removed: number }>(`/competitions/${cid}/awards/grants/${id}`)
 }
 
 export function getAwards(cid: number | string): Promise<AwardInfo[]> {
@@ -710,4 +802,195 @@ export function updateStockAccount(
 /** 删除资金账户（存在委托/持仓时后端拒绝，直接展示 message） */
 export function deleteStockAccount(cid: number | string, id: number): Promise<{ ok: boolean }> {
   return http.delete<{ ok: boolean }>(`/competitions/${cid}/stock/accounts/${id}`)
+}
+
+// ---------- 区域总览 / 消费者需求（区域由地图节点维护，按区域名关联） ----------
+
+/** 总览卡片（值由服务端按公司产业字段算好；valid=false 表示公司/字段已失效） */
+export interface RegionOverviewCard {
+  id: string
+  displayName: string
+  companyId: number
+  industryFieldId: number | null
+  /** 所属分区：top = 上半段「消费者需求」区，bottom = 下半段「区域数据」区 */
+  zone?: 'top' | 'bottom'
+  /** 服务端算好的展示值（数字/字符串/布尔） */
+  value?: unknown
+  valid?: boolean
+  /** 产业字段类型：NUMBER | TEXT | BOOL | REF | DATE（兼容旧值 BOOLEAN/STRING/DICTIONARY/LIST） */
+  fieldType?: string
+}
+
+/** 地图区域总览（GET /competitions/{cid}/regions/map-overview） */
+export interface RegionMapOverview {
+  /** Region 实体 id；地图上已有区域名但还没保存过卡片时为 null */
+  id: number | null
+  /** 区域名（来自地图节点 region 字段 ∪ 已有 Region） */
+  region: string
+  /** 该区域内的公司（按 location 字段匹配地图节点名） */
+  companies: Array<{ id: number; name: string; industryKey: string }>
+  cards: RegionOverviewCard[]
+}
+
+/** 公司产业字段（GET /competitions/{cid}/companies/{pk}/industry-fields，「产业字段」下拉） */
+export interface CompanyIndustryField {
+  id: number
+  key: string
+  name: string
+  fieldType: string
+  /** 隐藏字段标注（旧接口带该字段；新接口可不返回） */
+  visible?: boolean
+}
+
+export function getRegionMapOverview(cid: number | string): Promise<RegionMapOverview[]> {
+  return http.get<RegionMapOverview[]>(`/competitions/${cid}/regions/map-overview`)
+}
+
+/** 按区域名整表替换总览卡片（body { cards }；zone ∈ 'top' | 'bottom'） */
+export function saveRegionCardsByName(
+  cid: number | string,
+  regionName: string,
+  cards: RegionOverviewCard[],
+): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>(
+    `/competitions/${cid}/regions/by-name/${encodeURIComponent(regionName)}/overview-cards`,
+    { method: 'PUT', body: { cards } },
+  )
+}
+
+export function getCompanyIndustryFields(
+  cid: number | string,
+  companyId: number,
+): Promise<CompanyIndustryField[]> {
+  return http.get<CompanyIndustryField[]>(
+    `/competitions/${cid}/companies/${companyId}/industry-fields`,
+  )
+}
+
+/** Region 实体上的总览卡片配置（区域 CRUD 遗留接口用；字段键 industryFieldKey） */
+export interface RegionCardConfig {
+  id?: number
+  displayName: string
+  companyId: number
+  industryFieldKey: string
+  zone?: string
+}
+
+/** Region 实体（区域已改由地图节点 region 字段维护；保留接口以兼容旧调用方） */
+export interface RegionItem {
+  id: number
+  name: string
+  description: string
+  overviewCards: RegionCardConfig[]
+  demandCount: number | null
+  updatedAt: string
+}
+
+export interface ConsumerDemandItem {
+  id: number
+  /** Region 实体 id（区域仅存在于地图节点上时可为 null） */
+  regionId: number | null
+  /** 区域名（与地图区域总览的 region 对应；前端按它归入区域带） */
+  regionName: string
+  productId: number | null
+  productName: string
+  quantity: number
+  note: string
+  updatedAt: string
+}
+
+export function getRegions(cid: number | string): Promise<RegionItem[]> {
+  return http.get<RegionItem[]>(`/competitions/${cid}/regions`)
+}
+
+export function createRegion(
+  cid: number | string,
+  payload: { name: string; description?: string },
+): Promise<RegionItem> {
+  return http.post<RegionItem>(`/competitions/${cid}/regions`, payload)
+}
+
+export function updateRegion(
+  cid: number | string,
+  id: number,
+  payload: { name?: string; description?: string },
+): Promise<RegionItem> {
+  return http.patch<RegionItem>(`/competitions/${cid}/regions/${id}`, payload)
+}
+
+export function deleteRegion(cid: number | string, id: number): Promise<{ ok: boolean }> {
+  return http.delete<{ ok: boolean }>(`/competitions/${cid}/regions/${id}`)
+}
+
+export function getOverviewCards(
+  cid: number | string,
+  regionId: number,
+): Promise<RegionCardConfig[]> {
+  return http.get<RegionCardConfig[]>(`/competitions/${cid}/regions/${regionId}/overview-cards`)
+}
+
+export function saveOverviewCards(
+  cid: number | string,
+  regionId: number,
+  cards: RegionCardConfig[],
+): Promise<RegionCardConfig[]> {
+  return http.patch<RegionCardConfig[]>(
+    `/competitions/${cid}/regions/${regionId}/overview-cards`,
+    cards,
+  )
+}
+
+export function getConsumerDemands(
+  cid: number | string,
+  regionId?: number,
+): Promise<ConsumerDemandItem[]> {
+  const query = regionId ? `?regionId=${regionId}` : ''
+  return http.get<ConsumerDemandItem[]>(`/competitions/${cid}/consumer-demands${query}`)
+}
+
+export function createConsumerDemand(
+  cid: number | string,
+  payload: {
+    /** 区域名（新版按区域名关联；区域只存在于地图节点上时用这个） */
+    region?: string
+    /** Region 实体 id（旧调用方兼容） */
+    regionId?: number
+    productId?: number
+    productName?: string
+    /** 大数安全：允许数字字符串（BigNumberInput 直传，避免 > 2^53 丢精度） */
+    quantity: number | string
+    note?: string
+  },
+): Promise<ConsumerDemandItem> {
+  return http.post<ConsumerDemandItem>(`/competitions/${cid}/consumer-demands`, payload)
+}
+
+export function updateConsumerDemand(
+  cid: number | string,
+  id: number,
+  payload: Partial<{
+    region: string
+    regionId: number
+    productName: string
+    productId: number
+    quantity: number | string
+    note: string
+  }>,
+): Promise<ConsumerDemandItem> {
+  return http.patch<ConsumerDemandItem>(`/competitions/${cid}/consumer-demands/${id}`, payload)
+}
+
+export function deleteConsumerDemand(cid: number | string, id: number): Promise<{ ok: boolean }> {
+  return http.delete<{ ok: boolean }>(`/competitions/${cid}/consumer-demands/${id}`)
+}
+
+/** 删除合同：rollback=true「删除（回滚）」（回滚落账再删）；false「不回滚删除」（仅限无落账效果） */
+export function deleteContract(
+  cid: number | string,
+  id: number,
+  rollback = true,
+): Promise<{ ok: boolean; rolledBackRounds: number[] }> {
+  return http.delete<{ ok: boolean; rolledBackRounds: number[] }>(
+    `/competitions/${cid}/contracts/${id}?rollback=${rollback ? 1 : 0}`,
+  )
 }
