@@ -97,6 +97,8 @@ const router = createRouter({
       name: 'competition-logs',
       component: () => import('../views/FieldLogsView.vue'),
       props: true,
+      // 字段日志只给超管看：会暴露各公司成本/利润等敏感数据，参赛代表与主席团不可见
+      meta: { manager: true },
     },
     {
       path: '/competitions/:cid/audit',

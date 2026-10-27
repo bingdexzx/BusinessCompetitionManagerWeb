@@ -178,8 +178,8 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 | GET | `/logs/network` | 网络日志（仅系统超管；`?userId&competitionId&deviceId&traceId&status&method&path&from&to&limit&offset`） |
 | POST | `/logs/network/export` | 导出网络日志（仅系统超管） |
 | GET | `/logs/devices` | 设备管理（仅系统超管） |
-| GET | `/competitions/{cid}/logs/fields` | 字段日志（按可见公司过滤；`?companyId&fieldKey&contractId&operatorId&source&event&traceId&from&to`） |
-| POST | `.../logs/fields/export` | 导出字段日志 |
+| GET | `/competitions/{cid}/logs/fields` | 字段日志（**仅系统超管 / 比赛超管**；`?companyId&fieldKey&contractId&operatorId&source&event&traceId&from&to`） |
+| POST | `.../logs/fields/export` | 导出字段日志（同上，仅超管） |
 | GET | `/competitions/{cid}/audit-logs` | 比赛内审计（超管） |
 
 ## 10. 权限矩阵（§15.2 摘要）
@@ -193,7 +193,7 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 | 审核修改申请 / 审核补录 | ✅ | ✅ | ❌ | ❌ |
 | 结算配置/运行/结果/获奖 | ✅ | ✅ | ❌ | ❌ |
 | 个人档案获奖/电子奖牌 | ✅ | ✅ | ✅ | ✅（本人） |
-| 查看字段日志 | ✅ | ✅（本比赛） | ✅（所辖公司） | ✅（本队公司） |
+| 查看字段日志 | ✅ | ✅（本比赛） | ❌ | ❌ |
 | 审计日志 | ✅ | ✅（本比赛） | ❌ | ❌ |
 | 查看网络日志/设备/导出 | ✅ | ❌ | ❌ | ❌ |
 

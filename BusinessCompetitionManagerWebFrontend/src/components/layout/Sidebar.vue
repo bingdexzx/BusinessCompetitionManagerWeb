@@ -71,7 +71,7 @@
           <el-icon><TrophyBase /></el-icon>
           <span>结算与获奖</span>
         </el-menu-item>
-        <el-menu-item :index="`/competitions/${activeCid}/logs`">
+        <el-menu-item v-if="canViewFieldLogs" :index="`/competitions/${activeCid}/logs`">
           <el-icon><DataLine /></el-icon>
           <span>字段日志</span>
         </el-menu-item>
@@ -148,6 +148,8 @@ const canManageComp = computed(() => {
 /** 审计日志可见性：系统超管 / 比赛超管（主席团与参赛代表不可见） */
 const canViewAudit = canManageComp
 const canViewSettlement = canManageComp
+/** 字段日志同理：字段级流水含各公司成本/利润，参赛代表一律不可见 */
+const canViewFieldLogs = canManageComp
 
 // 当前比赛名（侧栏品牌区）：成员身份自带名称，系统超管按需查询
 const competitionName = ref('')

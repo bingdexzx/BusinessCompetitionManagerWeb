@@ -1,14 +1,14 @@
 """字段日志 API（§12：GET .../logs/fields，按用户/设备/公司/字段/时间段/来源检索）。
 
-权限（§15.2）：比赛超管可见本比赛全部；管理员见所辖公司；参赛代表见本队公司。
-只增不删（决策 D20）：无修改/删除接口。
+权限（2026-10）：**仅系统超管 / 比赛超管**可见——字段级流水会暴露其他公司的成本、
+利润等敏感数据，参赛代表（含队长）与主席团一律不可见。只增不删（决策 D20）。
 """
 
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authority import user_company_ids
+from apps.common.authority import can_manage_competition
 from apps.competition.fieldlogs.models import FieldLog
 
 
@@ -16,10 +16,10 @@ class FieldLogListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid):
-        ids = user_company_ids(request.user)
+        if not can_manage_competition(request.user, cid):
+            return Response({'code': 403, 'message': '需要比赛超级管理员权限', 'details': ''},
+                            status=403)
         qs = FieldLog.objects.select_related('company', 'contract').all()
-        if '*' not in ids:
-            qs = qs.filter(company_id__in=ids or [-1])
 
         params = request.query_params
         if params.get('companyId'):
@@ -74,15 +74,15 @@ class FieldLogListView(APIView):
 
 
 class FieldLogExportView(APIView):
-    """导出字段日志（比赛超管；导出动作本身入网络日志，§14.3）。"""
+    """导出字段日志（仅比赛超管；导出动作本身入网络日志，§14.3）。"""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request, cid):
-        ids = user_company_ids(request.user)
+        if not can_manage_competition(request.user, cid):
+            return Response({'code': 403, 'message': '需要比赛超级管理员权限', 'details': ''},
+                            status=403)
         qs = FieldLog.objects.select_related('company').all()
-        if '*' not in ids:
-            qs = qs.filter(company_id__in=ids or [-1])
         log_ids = request.data.get('ids') or []
         if log_ids:
             qs = qs.filter(pk__in=log_ids[:1000])

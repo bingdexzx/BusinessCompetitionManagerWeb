@@ -588,10 +588,11 @@ onMounted(() => {
       <el-button @click="quickLink('/fiscal')">
         <el-icon><Calendar /></el-icon><span>财年</span>
       </el-button>
-      <el-button @click="quickLink('/settlement')">
+      <el-button v-if="canManage" @click="quickLink('/settlement')">
         <el-icon><DataAnalysis /></el-icon><span>结算</span>
       </el-button>
-      <el-button @click="quickLink('/logs')">
+      <!-- 字段日志含各公司成本/利润流水，只给超管看（与侧栏、路由守卫口径一致） -->
+      <el-button v-if="canManage" @click="quickLink('/logs')">
         <el-icon><Document /></el-icon><span>字段日志</span>
       </el-button>
     </div>
