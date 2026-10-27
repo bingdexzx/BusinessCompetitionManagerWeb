@@ -2,6 +2,8 @@
 
 import re
 
+from django.conf import settings
+
 UA_RULES = [
     # (正则, 系统, 浏览器) —— 顺序敏感，先特异后一般
     (r'Windows NT 10', 'Windows 10/11', None),
@@ -41,9 +43,22 @@ def parse_user_agent(ua: str) -> dict:
 
 
 def client_ip(request) -> str:
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
+    """返回客户端 IP。
+
+    ``X-Forwarded-For`` 头可被客户端任意伪造，直接信任会让登录限流、审计日志按
+    伪造 IP 计数。因此**仅当** ``settings.TRUST_X_FORWARDED_FOR`` 为 True（即部署在
+    受信任的反向代理之后）时才使用它，否则一律回退 ``REMOTE_ADDR``。
+
+    信任时取**最后一个**条目：XFF 的每一跳代理都会把自己看到的上游地址追加到
+    末尾，因此最后一个条目是「离本应用最近」的一跳，最接近真实客户端，且不受
+    客户端控制的中间地址污染。
+    """
+    if getattr(settings, 'TRUST_X_FORWARDED_FOR', False):
+        forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+        if forwarded:
+            parts = [p.strip() for p in forwarded.split(',') if p.strip()]
+            if parts:
+                return parts[-1]
     return request.META.get('REMOTE_ADDR') or ''
 
 

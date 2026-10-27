@@ -182,7 +182,8 @@ def main():
 
     # ---------------------------------------------------------- 7. 权限：普通用户不可上传
     resp = client.post('/api/auth/register', data=json.dumps(
-        {'username': 'm1_player', 'password': 'Player12345!', 'email': 'm1_player@example.com'}),
+        {'username': 'm1_player', 'password': 'Player12345!', 'email': 'm1_player@example.com',
+         'displayName': 'M1选手'}),  # 真实姓名必填
         content_type='application/json')
     resp = client.post('/api/auth/login', data=json.dumps(
         {'username': 'm1_player', 'password': 'Player12345!'}), content_type='application/json')

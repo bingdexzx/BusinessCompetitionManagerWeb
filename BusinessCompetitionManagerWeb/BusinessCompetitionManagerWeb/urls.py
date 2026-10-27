@@ -14,6 +14,7 @@ urlpatterns = [
     path('api/health', health),
     # 全局域
     path('api/', include('apps.global_.accounts.urls')),
+    path('api/', include('apps.global_.useradmin.urls')),  # 用户管理（仅系统超管）
     path('api/', include('apps.global_.schools.urls')),
     path('api/', include('apps.global_.competitions.urls')),
     path('api/', include('apps.global_.memberships.urls')),
@@ -24,6 +25,10 @@ urlpatterns = [
     path('api/', include('apps.global_.profiles.urls')),
     # 系统级站内信（独立于比赛）
     path('api/', include('apps.global_.messages.urls')),
+    # 系统设置（流量限制配置）
+    path('api/', include('apps.global_.sysconfig.urls')),
+    # 文件上传服务（通用上传 / 地图背景 / 消息图片）
+    path('api/', include('apps.global_.files.urls')),
     # 比赛域（/api/competitions/{cid}/... 由多库路由解析到对应比赛库）
     path('api/', include('apps.competition.companies.urls')),
     path('api/', include('apps.competition.contracts.urls')),
@@ -35,4 +40,6 @@ urlpatterns = [
     path('api/', include('apps.competition.basedata.urls')),
     # 股票模块（契约：股票模块与同步优化.md §4 /api/competitions/{cid}/stock/...）
     path('api/', include('apps.competition.stock.urls')),
+    # 区域与消费者需求（2026-10 决策补齐；区域总览卡片）
+    path('api/', include('apps.competition.regions.urls')),
 ]

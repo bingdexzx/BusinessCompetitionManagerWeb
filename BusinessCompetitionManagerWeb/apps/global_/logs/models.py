@@ -82,5 +82,28 @@ class NetworkLog(models.Model):
             }
         return super().save(*args, **kwargs)
 
+
+class BroadcastEvent(models.Model):
+    """资源变更广播流水（2026-10 决策：实时广播 resource:changed + 断线 seq 重放）。
+
+    seq=主键（单调递增）：客户端断线后带 lastSeq 请求重放，服务端按 seq 补发遗漏事件；
+    payload 只存轻量元数据（id/action 等），**推送当信号**，页面收到后自行增量重拉。
+    """
+
+    seq = models.BigAutoField('序列', primary_key=True)
+    competition_id = models.BigIntegerField('比赛 ID（全局库整数）', null=True, blank=True)
+    resource = models.CharField('资源', max_length=64)   # contracts / basedata / regions / ...
+    action = models.CharField('动作', max_length=16)      # created / updated / deleted
+    payload = models.JSONField('事件负载', default=dict, blank=True)
+    created_at = models.DateTimeField('时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '广播事件'
+        verbose_name_plural = '广播事件'
+        ordering = ['-seq']
+        indexes = [
+            models.Index(fields=['competition_id', 'seq']),
+        ]
+
     def delete(self, *args, **kwargs):
         raise ValueError('网络日志只增不删（禁止删除）')

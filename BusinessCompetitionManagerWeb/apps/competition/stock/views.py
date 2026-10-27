@@ -15,9 +15,9 @@
 | GET | /stock/market | 市场概览（轻量心跳） |
 | GET | /stock/sync | 快照+增量同步（§4.2） |
 
-权限（契约 §4 / 任务口径）：
-- 查看行情（含 sync/book/orders 读）= 任何比赛成员；
-- 下单/撤单 = 可操作本队/所辖公司的用户（COMPANY 账户 can_act_for_company；
+权限（契约 §4 / 任务口径；2026-10 决策：队员只读、操作仅队长）：
+- 查看行情（含 sync/book/orders/holdings 读）= 任何比赛成员；本公司数据队长与队员都能看；
+- 下单/撤单 = **可操作**本公司者（COMPANY 账户 can_act_for_company —— 分配公司后仅队长；
   USER 账户=本人）；
 - advance = 超管（apps.common.authority.can_manage_competition）。
 
@@ -36,6 +36,7 @@ from apps.common.authority import (
     can_manage_competition,
     user_company_ids,
     user_membership,
+    user_operable_company_ids,
 )
 from apps.competition.audit import services as audit_services
 
@@ -310,7 +311,8 @@ def _resolve_order_account(user, cid, stock, explicit_id):
     """解析下单资金账户（契约 §4.1 下单体只有 {code, side, price, quantity}）。
 
     1. 显式 fundsAccountId → 直接用（仍校验归属）；
-    2. 否则优先股票所属公司的 COMPANY 账户（can_act_for_company 可操作时）；
+    2. 否则优先股票所属公司的 COMPANY 账户（can_act_for_company「可操作」时 ——
+       分配公司后仅队长可操作，队员下单会落到自己的 USER 账户）；
     3. 否则本人 USER 账户。
     """
     if explicit_id is not None:
@@ -318,7 +320,6 @@ def _resolve_order_account(user, cid, stock, explicit_id):
         if account is None:
             raise StockError('资金账户不存在', code=404, status_code=404)
         return account
-    company_ids = user_company_ids(user, cid)
     if stock.company_id and can_act_for_company(user, stock.company_id, cid):
         account = (
             StockFundsAccount.objects
@@ -384,7 +385,10 @@ class OrderListCreateView(APIView):
         except (TypeError, ValueError):
             return _error('fundsAccountId 不是合法整数')
 
-        if not account_owned_by_user(account, request.user, user_company_ids(request.user, cid)):
+        # 下单 = 操作：COMPANY 账户要求「可操作」本公司（分配公司后仅队长；队员只读）
+        if not account_owned_by_user(
+            account, request.user, user_operable_company_ids(request.user, cid),
+        ):
             return _error('无权操作该资金账户', 403)
 
         try:
@@ -482,8 +486,9 @@ class OrderItemView(APIView):
             account = StockFundsAccount.objects.filter(pk=order.funds_account_id).first()
             if account is None:
                 return _error('资金账户不存在', 404)
+            # 撤单 = 操作：同上，COMPANY 账户要求「可操作」本公司
             if not account_owned_by_user(
-                account, request.user, user_company_ids(request.user, cid),
+                account, request.user, user_operable_company_ids(request.user, cid),
             ):
                 return _error('无权操作该资金账户', 403)
             if order.status != 'PENDING':

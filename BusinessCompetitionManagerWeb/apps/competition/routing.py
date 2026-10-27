@@ -16,7 +16,7 @@ GLOBAL_APPS = {
 COMPETITION_APPS = {
     'companies', 'industries', 'contracts', 'fiscal', 'ledger',
     'fieldlogs', 'basedata', 'comp_messages', 'comp_audit', 'settlement',
-    'stock',
+    'stock', 'regions',
 }
 
 

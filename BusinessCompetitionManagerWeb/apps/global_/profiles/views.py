@@ -9,12 +9,19 @@ from apps.common.permissions import IsSystemSuperAdmin
 from apps.global_.profiles.models import AwardRecord, MedalAsset
 
 
+_AWARD_KIND_LABELS = {'INDIVIDUAL': '个人奖', 'COLLECTIVE': '集体奖'}
+
+
 def _award_data(a: AwardRecord) -> dict:
     return {
         'id': a.id,
         'competitionId': a.competition_id,
         'competitionName': a.competition_name,
         'teamName': a.team_name,
+        # 人工发放的奖项（2026-10 需求变更）
+        'awardName': a.award_name,
+        'awardKind': a.award_kind,
+        'awardKindLabel': _AWARD_KIND_LABELS.get(a.award_kind, ''),
         'rank': a.rank,
         'awardLevel': a.award_level,
         'score': a.score,

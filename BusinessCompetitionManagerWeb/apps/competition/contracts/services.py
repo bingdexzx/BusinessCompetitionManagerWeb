@@ -1,9 +1,18 @@
-"""合同类型暴露与合同实例导入（§9.2：合同信息自动导入并暴露为接口）。"""
+"""合同类型暴露与合同实例导入（§9.2：合同信息自动导入并暴露为接口）。
+
+**重导入幂等（2026-10 决策）**：合同实例导入按「类型 + 名称 + 参与方 + 输入」指纹去重，
+同一份比赛包重复导入不会产生重复合同（已存在的跳过并记入导入报告）。
+"""
+
+import json
 
 from apps.competition.companies.models import Company
+from apps.competition.contracts.fingerprint import contract_fingerprint
 from apps.competition.contracts.models import Contract
 from apps.global_.packages.models import PackagePlugin
 from plugins_runtime import loader
+
+__all__ = ['contract_fingerprint', 'import_contract_instances']
 
 
 def _plugin_abs_path(file_path: str) -> str:
@@ -95,9 +104,13 @@ def import_contract_instances(rows, contract_modules, *, user=None):
     """导入合同实例（草稿态）。rows 为 contracts.xlsx 解析行。
 
     contract_modules: {contractTypeKey: {'module': ..., 'version': ...}}
-    返回 (created_count, errors)
+    返回 ``{'created', 'skipped', 'errors', 'skipNotes'}``。
+
+    幂等：按合同指纹（类型+名称+参与方+输入）跳过**已存在**的合同——包括同一份包内
+    重复的行，以及此前导入过（哪怕后来被软删除）的同一条合同，避免重导入产生重复合同。
     """
-    errors, created = [], 0
+    errors, created, skipped, skip_notes = [], 0, 0, []
+    seen_in_run: set[str] = set()
     for i, row in enumerate(rows, start=2):
         type_key = str(row.get('contractTypeKey') or row.get('contracttypekey') or '').strip()
         entry = contract_modules.get(type_key)
@@ -106,7 +119,6 @@ def import_contract_instances(rows, contract_modules, *, user=None):
             continue
         module = entry['module']
 
-        import json
         parties_raw = row.get('partiesJSON') or row.get('partiesjson') or '[]'
         inputs_raw = row.get('inputsJSON') or row.get('inputsjson') or '{}'
         try:
@@ -137,6 +149,16 @@ def import_contract_instances(rows, contract_modules, *, user=None):
             errors.append(f'第 {i} 行：' + '；'.join(row_errors))
             continue
 
+        name = str(row.get('name') or '')[:200]
+        fingerprint = contract_fingerprint(type_key, name, party_entries, inputs or {})
+        if fingerprint in seen_in_run or Contract.objects.filter(
+                import_fingerprint=fingerprint).exists():
+            skipped += 1
+            skip_notes.append(
+                f'contracts：第 {i} 行「{name or type_key}」已存在（重导入去重），已跳过')
+            continue
+        seen_in_run.add(fingerprint)
+
         fiscal_year_no = row.get('fiscalYear') or row.get('fiscalyear')
         fiscal_year = None
         if fiscal_year_no not in (None, ''):
@@ -146,13 +168,15 @@ def import_contract_instances(rows, contract_modules, *, user=None):
         Contract.objects.create(
             contract_type_key=type_key,
             plugin_version=entry.get('version', ''),
-            name=str(row.get('name') or '')[:200],
+            name=name,
             status=Contract.Status.DRAFT,
             parties=party_entries,
             inputs=inputs or {},
             fiscal_year=fiscal_year,
             is_backfill=False,
+            import_fingerprint=fingerprint,
             created_by=getattr(user, 'id', 0) or 0,
         )
         created += 1
-    return created, errors
+    return {'created': created, 'skipped': skipped, 'errors': errors,
+            'skipNotes': skip_notes}

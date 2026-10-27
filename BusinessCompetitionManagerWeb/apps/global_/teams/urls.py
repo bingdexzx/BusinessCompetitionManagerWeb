@@ -8,4 +8,7 @@ urlpatterns = [
     path('competitions/<int:cid>/teams/<int:tid>', views.TeamDetailView.as_view()),
     path('competitions/<int:cid>/teams/<int:tid>/join-codes', views.TeamJoinCodeView.as_view()),
     path('competitions/<int:cid>/teams/<int:tid>/industry', views.TeamIndustryAdjustView.as_view()),
+    # 分配/修改队伍公司（选产业 + 填公司名称；系统超管 / 比赛超管）
+    path('competitions/<int:cid>/teams/<int:tid>/company',
+         views.TeamCompanyAssignView.as_view()),
 ]

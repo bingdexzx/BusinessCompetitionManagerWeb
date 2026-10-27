@@ -7,6 +7,8 @@ urlpatterns = [
     path('competitions/<int:cid>/contracts/<int:pk>', views.ContractDetailView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/submit', views.ContractSubmitView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/confirm', views.ContractConfirmView.as_view()),
+    path('competitions/<int:cid>/contracts/<int:pk>/retry-execute',
+         views.ContractRetryExecuteView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/effects', views.ContractEffectsView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/ledger', views.ContractLedgerView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/request-modify',

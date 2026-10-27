@@ -169,7 +169,7 @@ def _visible_contracts(request):
     from django.db.models import Q
 
     ids = user_company_ids(request.user)
-    qs = Contract.objects.all()
+    qs = Contract.objects.filter(deleted_at__isnull=True)
     if '*' in ids:
         return qs
     if not ids:
@@ -178,6 +178,20 @@ def _visible_contracts(request):
     for company_id in sorted(ids):
         q |= Q(parties__contains=[{'companyId': int(company_id)}])
     return qs.filter(q)
+
+
+def _visible_contract_or_none(request, pk):
+    """按可见性取单个合同（不可见或已删除 → None）。
+
+    详情/效果/账本这些**读**接口原先直接按 pk 取，任何登录用户都能读到别人的合同；
+    调用方拿到 None 一律按 404 返回（不泄露「存在但无权看」）。
+    """
+    return _visible_contracts(request).filter(pk=pk).first()
+
+
+def _is_party_actor(user, contract) -> bool:
+    """是否为该合同某参与方的**可操作**者（分配公司后即队长；超管/所辖管理员亦可）。"""
+    return any(can_act_for_company(user, p.get('companyId')) for p in contract.parties)
 
 
 # ---------------------------------------------------------------- 合同实例
@@ -268,9 +282,58 @@ class ContractDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):
-        contract = get_object_or_404(Contract, pk=pk)
+        contract = _visible_contract_or_none(request, pk)
+        if contract is None:
+            return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
+                            status=status.HTTP_404_NOT_FOUND)
         return Response(_contract_data(contract, with_timeline=True,
                                        company_map=_company_map_for([contract])))
+
+    def delete(self, request, cid, pk):
+        """软删除合同（决策：仅回滚当前生效轮次 + 置 deleted_at，保留效果/冻结/检查/确认）。
+
+        - 仅 DRAFT / EXEC_FAILED / EXECUTED / POSTED 可删；其余状态（含流程中态）拒绝；
+        - 回滚当前生效轮次（round_no == contract.round_no）恢复字段值后软删；
+        - 仅超级管理员；写审计。
+        """
+        if not can_manage_competition(request.user, cid):
+            return Response({'code': 403, 'message': '仅超级管理员可删除合同', 'details': ''},
+                            status=status.HTTP_403_FORBIDDEN)
+        contract = Contract.objects.filter(pk=pk, deleted_at__isnull=True).first()
+        if contract is None:
+            return Response({'code': 404, 'message': '合同不存在', 'details': ''},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        deletable = {
+            Contract.Status.DRAFT, Contract.Status.EXEC_FAILED,
+            Contract.Status.EXECUTED, Contract.Status.POSTED,
+        }
+        if contract.status not in deletable:
+            return Response(
+                {'code': 400,
+                 'message': f'当前状态 {contract.get_status_display()} 不允许删除',
+                 'details': ''},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            engine.rollback_round(contract, operator=request.user, round_no=contract.round_no)
+            if contract.effects.filter(round_no=contract.round_no).exists():
+                engine.unfreeze_contract(contract, reason='合同删除')
+        except ContractError as exc:
+            return Response({'code': 400, 'message': str(exc), 'details': ''},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        contract_id = contract.id
+        type_key = contract.contract_type_key
+        number = contract.unified_number
+        round_no = contract.round_no
+        contract.deleted_at = timezone.now()
+        contract.save(update_fields=['deleted_at', 'updated_at'])
+        audit_services.log_action(
+            'CONTRACT_DELETE', actor=request.user, target=str(contract_id),
+            payload={'contractTypeKey': type_key, 'unifiedNumber': number,
+                     'rolledBackRound': round_no})
+        return Response({'ok': True, 'id': contract_id, 'rolledBackRound': round_no})
 
 
 class ContractSubmitView(APIView):
@@ -280,6 +343,8 @@ class ContractSubmitView(APIView):
 
     def post(self, request, cid, pk):
         contract = get_object_or_404(Contract, pk=pk)
+        if not _is_party_actor(request.user, contract):
+            return _error('只有参与方（公司队长/所辖管理员）可以提交该合同', 403)
         try:
             engine.submit_contract(contract, user=request.user)
         except ContractError as exc:
@@ -311,6 +376,26 @@ class ContractConfirmView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
+class ContractRetryExecuteView(APIView):
+    """EXEC_FAILED → 重试执行（不重新生成统一编号，重跑 execute_and_post）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, cid, pk):
+        contract = get_object_or_404(Contract, pk=pk, deleted_at__isnull=True)
+        if not any(can_act_for_company(request.user, p.get('companyId'))
+                   for p in contract.parties):
+            return _error('只有参与方可以重试执行', 403)
+        try:
+            engine.retry_execute(contract, user=request.user)
+        except ContractError as exc:
+            return _error(str(exc))
+        audit_services.log_action('CONTRACT_RETRY_EXECUTE', actor=request.user,
+                                  target=str(contract.id))
+        return Response(_contract_data(contract, with_timeline=True,
+                                       company_map=_company_map_for([contract])))
+
+
 class ContractEffectsView(APIView):
     """效果审计（§7.2）：每行标注轮次状态 + **重演值**（replayBefore/replayAfter）——
     修改上游合同后，下游合同的重演值自动重算（当时值保留为不可变审计，查账链条自洽）。"""
@@ -320,7 +405,10 @@ class ContractEffectsView(APIView):
     def get(self, request, cid, pk):
         from apps.competition.contracts import ledger
 
-        contract = get_object_or_404(Contract, pk=pk)
+        contract = _visible_contract_or_none(request, pk)
+        if contract is None:
+            return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
+                            status=status.HTTP_404_NOT_FOUND)
         return Response(ledger.annotate_effects(contract))
 
 
@@ -333,7 +421,10 @@ class ContractLedgerView(APIView):
     def get(self, request, cid, pk):
         from apps.competition.contracts import ledger
 
-        contract = get_object_or_404(Contract, pk=pk)
+        contract = _visible_contract_or_none(request, pk)
+        if contract is None:
+            return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
+                            status=status.HTTP_404_NOT_FOUND)
         return Response(ledger.contract_ledger(contract))
 
 
@@ -392,6 +483,8 @@ class ContractModifyOtherPartyView(APIView):
         try:
             engine.other_party_review(contract, user=request.user, approve=approve,
                                       note=request.data.get('note') or '')
+        except engine.ContractPermissionError as exc:
+            return _error(str(exc), 403)
         except ContractError as exc:
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_OTHER_PARTY', actor=request.user,
@@ -407,6 +500,8 @@ class ContractModifySubmitView(APIView):
 
     def post(self, request, cid, pk):
         contract = get_object_or_404(Contract, pk=pk)
+        if not _is_party_actor(request.user, contract):
+            return _error('只有参与方（公司队长/所辖管理员）可以提交修改', 403)
         try:
             engine.submit_changes(contract, user=request.user,
                                   inputs=request.data.get('inputs'),

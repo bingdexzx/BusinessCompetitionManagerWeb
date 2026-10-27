@@ -36,6 +36,8 @@ class Competition(models.Model):
     )
     location = models.CharField('比赛地点', max_length=200, blank=True)
     staffing_info = models.TextField('人员安排信息', blank=True)
+    # 仪表盘布局（比赛包 dashboard.json，2026-10 决策：样式文件 + 绑定产业字段值）
+    dashboard_layout = models.JSONField('仪表盘布局', default=dict, blank=True)
     status = models.CharField('状态', max_length=32, choices=Status.choices, default=Status.CREATED)
     db_name = models.CharField('比赛库名', max_length=64, unique=True, blank=True)
     created_by = models.ForeignKey(

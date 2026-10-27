@@ -107,9 +107,10 @@ class StockFundsAccount(models.Model):
             models.UniqueConstraint(fields=['name'], name='uniq_stock_funds_account_name'),
         ]
         indexes = [
-            models.Index(fields=['updated_at'], name='idx_stock_funds_accounts_updated'),
+            # 索引名 ≤30 字符（models.E034 跨库兼容约束）
+            models.Index(fields=['updated_at'], name='idx_stock_funds_acc_updated'),
             # owner 可见性裁剪（§4.2：orders/holdings/accounts 只回本人的）
-            models.Index(fields=['owner_type', 'user_id'], name='idx_stock_funds_accounts_owner'),
+            models.Index(fields=['owner_type', 'user_id'], name='idx_stock_funds_acc_owner'),
         ]
 
     def __str__(self):

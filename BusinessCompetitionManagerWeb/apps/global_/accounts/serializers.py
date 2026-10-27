@@ -41,9 +41,19 @@ class UserSerializer(serializers.Serializer):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
+    """注册：真实姓名（``display_name``）**必填**——全站展示（顶栏/队伍成员/
+    站内信通讯录/结算候选人）用的就是这个字段，缺名会让通知与名单无法辨认。"""
+
     password = serializers.CharField(write_only=True, min_length=8, max_length=128)
     email = serializers.EmailField(required=True)
-    displayName = serializers.CharField(source='display_name', required=False, allow_blank=True, default='')
+    displayName = serializers.CharField(
+        source='display_name', required=True, allow_blank=False, max_length=100,
+        error_messages={
+            'required': '请输入真实姓名',
+            'blank': '请输入真实姓名',
+            'max_length': '真实姓名最长 100 个字符',
+        },
+    )
     schoolId = serializers.IntegerField(source='school_id', required=False, allow_null=True, default=None)
 
     class Meta:

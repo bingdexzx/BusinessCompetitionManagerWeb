@@ -9,7 +9,7 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/auth/register` | 注册 `{username, password, email, displayName?, schoolId?}` |
+| POST | `/auth/register` | 注册 `{username, password, email, displayName, schoolId?}`——`displayName` 为**真实姓名，必填**（≤100，全站展示用） |
 | POST | `/auth/login` | 登录 `{username, password}` → `{access, refresh, user}` |
 | POST | `/auth/refresh` | 刷新 `{refresh}` → `{access}` |
 | GET | `/me` | 个人信息（含 memberships：各比赛身份） |
@@ -32,19 +32,25 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/POST | `/competitions/{cid}/teams` | 队伍列表 / 队长建队 `{name, industryChoice[], industryAdjustAccepted[]}` |
+| GET/POST | `/competitions/{cid}/teams` | 队伍列表（含 `companyId`/`companyName`，未分配为空串）/ 队长建队 `{name, industryChoice[], industryAdjustAccepted[]}` |
 | GET | `/competitions/{cid}/teams/{tid}` | 队伍详情（成员、产业志愿） |
 | POST | `/competitions/{cid}/teams/{tid}/join-codes` | 生成组队码 `{maxUses?}`（队长） |
 | POST | `/competitions/{cid}/teams/join` | 凭组队码加入 `{code}` |
 | PATCH | `/competitions/{cid}/teams/{tid}/industry` | **管理员手动调整** `{industryFinal, industryChoice?, industryAdjustAccepted?}`；同步创建/更新公司并回填产业初始值 |
+| POST | `/competitions/{cid}/teams/{tid}/company` | **分配/修改队伍公司** `{industryKey, companyName}`（系统超管 / 比赛超管）→ 建/改公司（一队一公司）并按产业回填初始字段值；分配后**队长可操作**本公司、**队员只读** |
+| GET | `/competitions/{cid}/industries` | 本比赛**已导入**的产业插件 `[{key, name, version}]`（分配公司选产业用；比赛成员可见） |
 | GET/POST | `/competitions/{cid}/invites` | 激活码列表 / 生成 `{identity?, maxUses?, validDays?, note?}`（超管） |
 | POST | `/invites/redeem` | 凭激活码加入比赛 `{code}` → 获得比赛内身份 |
+
+> **公司权限口径（2026-10 决策）**：`user_company_ids`（可查看：队长 + 队员）与
+> `user_operable_company_ids`（可操作：**仅队长**，另含所辖管理员/超管）分离——
+> 队员可只读查看本公司合同/行情/公司表格，下单、建单、确认、申请修改等**操作仅队长**。
 
 ## 4. 比赛包 / 合同类型 / 插件（M1）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/competitions/{cid}/package` | 上传比赛包（multipart `file`）→ 导入报告 |
+| POST | `/competitions/{cid}/package` | 上传比赛包（multipart `file`）→ 导入报告。**无比赛状态限制**：报名中/进行中也可重导入；合同实例按指纹幂等去重（报告 `contractsSkipped`，见《比赛包格式规范》§7.1） |
 | GET | `/competitions/{cid}/packages` | 导入历史（含报告） |
 | GET | `/competitions/{cid}/contract-types` | 合同类型 schema（partyRoles / inputSchema / numberPrefix） |
 | GET | `/plugins` | 插件注册表（系统超管，`?kind=CONTRACT\|INDUSTRY`） |
@@ -121,19 +127,28 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 补录合同：创建时 `isBackfill: true, fiscalYearId` → `BACKFILL_REVIEW` → 超管审核 → 正常确认链 →
 以**所补录财年末快照**为执行基准落账，**非财年定时器字段自动同步**（字段日志 source=BACKFILL_SYNC）。
 
-## 8. 结算 / 获奖 / 奖牌（M5，§11）
+## 8. 结算 / 获奖 / 奖牌（M5，§11；2026-10 需求变更）
 
-> **权限口径（需求方确认）：结算与获奖（配置/结果/榜单）仅超管可见**（系统超管 / 比赛超管）。
+> **权限口径（需求方确认）：结算与获奖（配置/结果/榜单/发放）仅超管可见**（系统超管 / 比赛超管）。
 > 参赛代表与管理员的**获奖记录与电子奖牌在个人档案**（`/me/awards`、`/me/medals`）查看。
+>
+> **结算只算分**：产出各公司得分与名次，**不再按名次自动评奖**。
+> **奖项人工设定 + 人工发放**：超管先建「奖项定义」（个人奖 / 集体奖，奖牌等级可选），
+> 再对**具体人**（个人奖）或**具体公司**（集体奖 = 该公司对应队伍全员）发放；
+> 发放结果写入个人档案，可撤销。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/POST | `/competitions/{cid}/settlement/config` | 评分准则/获奖规则；POST `{kind: criterion\|award, ...}` |
-| DELETE | `.../settlement/config/{kind}/{id}` | 删除准则/规则 |
-| POST | `.../settlement/run` | 开始结算（超管）→ 评分、名次、获奖 |
-| GET | `.../settlement/result` | 最近结算结果（entries: companyId/rank/score/awardLevel/detail） |
-| GET | `.../awards` | 本比赛获奖信息 |
-| GET | `/me/awards` | 个人档案：历史参赛与获奖记录（含 medalId） |
+| GET/POST | `/competitions/{cid}/settlement/config` | 评分准则 + 奖项定义；GET 返回 `{criteria, awards}`；POST `{kind:'criterion', name, fieldKey, aggregation, direction, weight}` 或 `{kind:'award', name, awardKind:'INDIVIDUAL'\|'COLLECTIVE', description?, medalLevel?}` |
+| DELETE | `.../settlement/config/{criterion\|award}/{id}` | 删除准则 / 奖项定义（删奖项定义会**连带撤销**其已发放记录，返回 `revokedRecords`） |
+| POST | `.../settlement/run` | 开始结算（超管）→ 只算得分与名次 |
+| GET | `.../settlement/result` | 最近结算结果（`entries: companyId/companyName/rank/score/detail`） |
+| GET | `.../settlement/candidates?q=` | 个人奖候选人（本比赛全部成员，含所属公司） |
+| GET | `.../awards` | 本比赛结算名次（companyId/companyName/rank/score） |
+| GET | `.../awards/grants` | 已发放奖项记录（奖项/类型/发放对象/受益人数/备注/发放人/时间） |
+| POST | `.../awards/grants` | 发放：个人奖 `{awardId, userId, note?}`；集体奖 `{awardId, companyId, note?}` → `{id, recipientCount, recipients[]}` |
+| DELETE | `.../awards/grants/{id}` | 撤销发放（回收个人档案对应记录）→ `{ok, removed}` |
+| GET | `/me/awards` | 个人档案：获奖记录（`awardName/awardKind/awardKindLabel/competitionName/teamName/medalId/medalName/createdAt`） |
 | GET | `/me/medals`、`/me/medals/{id}` | 电子奖牌（**仅在线展示**，D12） |
 | POST | `/medals` | 奖牌资产管理（系统超管） |
 
@@ -173,3 +188,59 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 | 查看字段日志 | ✅ | ✅（本比赛） | ✅（所辖公司） | ✅（本队公司） |
 | 审计日志 | ✅ | ✅（本比赛） | ❌ | ❌ |
 | 查看网络日志/设备/导出 | ✅ | ❌ | ❌ | ❌ |
+
+## 11. 2026-10 缺口补齐新增接口（旧功能对齐）
+
+> 依据《缺口补齐任务计划》（决策：区域/需求补齐、账号安全补齐、合同删除保留、平台四件套）。
+
+**账号与安全**
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| POST | `/api/auth/change-password` | 改密（`{oldPassword,newPassword}`），成功后顶号（tokenVersion+1） | 登录用户 |
+| GET/POST | `/api/users` | 账号列表（?page&pageSize&q）/ 新建 | 系统超管 |
+| GET/PATCH/DELETE | `/api/users/{id}` | 详情 / 修改 / 删除（禁删自己与最后一个超管） | 系统超管 |
+| POST | `/api/users/{id}/password` | 重置密码（顶号） | 系统超管 |
+| GET | `/api/version` | 版本下发（前端轮询比对，不一致硬封锁） | 公开 |
+| — | 登录限流 | 同 用户名\|IP 5 分钟失败 10 次锁 15 分钟（可配），429 + Retry-After | — |
+
+**区域 / 消费者需求（比赛域，comp_<id> 库）**
+
+> **区域总览 = 旧系统口径（2026-10 需求：与旧版一致）**：区域**在地图管理里创建**
+> （地图节点的 `region` 字段），区域总览页**不提供**区域新建/重命名/删除。
+> - 区域列表 = `MapNode.region`（去重，按节点创建顺序）∪ 已有 Region 实体；
+> - 区域内公司 = 公司「**所在地**」（`field_key=location`）字段值 == 该区域下某个地图节点名；
+>   该字段由产业插件字段迁移时自动补建（照旧系统的 `_ensure_location_field`），值需人工填写；
+> - 区域名保存卡片时若无 Region 行会自动补建（以便挂卡片配置）。
+
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| **GET** | `/api/competitions/{cid}/regions/map-overview` | **区域总览数据源**：`[{id, region, companies:[{id,name,industryKey}], cards:[{id,displayName,companyId,industryFieldId,zone,value,valid,fieldType}]}]`（卡片由服务端算好当前值；`valid=false` 表示公司/字段已失效） | 读=成员 |
+| **PUT** | `/api/competitions/{cid}/regions/by-name/{区域名}/overview-cards` | **按区域名**保存卡片 `{cards:[{id,displayName,companyId,industryFieldId,zone}]}` → `{success:true}`（无 Region 行则补建；区域名需 URL 编码） | 写=比赛超管 |
+| GET | `/api/competitions/{cid}/companies/{pk}/industry-fields` | 该公司可选的产业字段 `[{id,key,name,fieldType}]`（数据框「产业字段」下拉） | 可查看该公司 |
+| GET/POST | `/api/competitions/{cid}/regions` | 区域列表（含 demandCount）/ 新建（名称唯一） | 读=成员；写=比赛超管 |
+| GET/PATCH/DELETE | `/api/competitions/{cid}/regions/{id}` | 区域详情 / 改名 / 删除 | 同上 |
+| GET/PUT/PATCH | `/api/competitions/{cid}/regions/{id}/overview-cards` | 按区域 id 整表替换卡片（与 by-name 等价，保留兼容） | 同上 |
+| GET/POST | `/api/competitions/{cid}/consumer-demands` | 需求列表（?regionId，含 `regionName`）/ 新建（**`region` 区域名** 或 `regionId`、productId、quantity、note） | 同上 |
+| GET/PATCH/DELETE | `/api/competitions/{cid}/consumer-demands/{id}` | 需求详情 / 修改 / 删除（变更触发所在区域公司字段重算，公式可用 `consumerDemand` 特殊键） | 同上 |
+
+**合同删除**
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| DELETE | `/api/competitions/{cid}/contracts/{id}?rollback=1\|0` | 删除（回滚）=按轮次回滚落账+解冻后删；不回滚删除=仅限无落账效果合同；写 CONTRACT_DELETE 审计 | 比赛超管/系统超管 |
+
+**系统管理**
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| GET/PUT | `/api/system/rate-limit` | 流量限制配置查询/保存（登录限流三参数 + API 每分钟五角色限额 + 开关；PUT 整体校验） | 系统超管 |
+| POST | `/api/system/rate-limit/reset` | 恢复默认配置 | 系统超管 |
+| DELETE | `/api/system/rate-limit/records` | 清空限流记录（RequestThrottle + LoginThrottle） | 系统超管 |
+| POST | `/api/files/upload` | 通用文件上传（≤100MB，扩展名白名单） | 登录用户 |
+| GET | `/api/files/view/<path>` | 读取已上传文件（拒绝路径穿越） | 登录用户 |
+| GET/POST/PATCH/DELETE | `/api/competitions/{cid}/files/map-background` | 地图背景服务端持久化（multipart 文件或 url + transform） | 读=成员；写=比赛超管 |
+| POST | `/api/messages/upload-image` | 消息图片（≤5MB，≤9 张） | 登录用户 |
+
+**仪表盘 / 实时广播**
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| GET | `/api/competitions/{cid}/dashboard` | 仪表盘布局（比赛包 `dashboard.json`，组件绑定产业字段值） | 本比赛成员 |
+| WS | `/ws/notifications`（新增帧） | `subscribe/unsubscribe/replay` 请求；`resource:changed/replay/subscribed/denied` 事件（写接口成功即广播，seq 单调可重放） | 登录用户（订阅须本比赛成员） |

@@ -7,4 +7,7 @@ urlpatterns = [
     path('competitions/<int:cid>/companies/<int:pk>/tables/<str:table>',
          views.CompanyTableView.as_view()),
     path('competitions/<int:cid>/companies/<int:pk>/fields', views.CompanyFieldUpdateView.as_view()),
+    path('competitions/<int:cid>/companies/<int:pk>/industry-fields',
+         views.CompanyIndustryFieldsView.as_view()),
+    path('competitions/<int:cid>/companies/<int:pk>/region', views.CompanyRegionView.as_view()),
 ]

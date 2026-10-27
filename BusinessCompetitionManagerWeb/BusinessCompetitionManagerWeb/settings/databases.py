@@ -7,6 +7,7 @@
 """
 
 import os
+import threading
 
 from pathlib import Path
 
@@ -65,12 +66,24 @@ def competition_db_config(db_name: str) -> dict:
     return cfg
 
 
+# 注册锁：多 worker × 多线程下并发注册同一 alias 需互斥（进程内互斥即可，
+# 每个 worker 进程各自注册自己那份配置，天然正确）。
+_REGISTRY_LOCK = threading.Lock()
+
+
 def register_competition_db(db_name: str) -> str:
-    """把比赛库注册进 settings.DATABASES（幂等），返回 alias（即库名）。"""
+    """把比赛库注册进 settings.DATABASES（幂等），返回 alias（即库名）。
+
+    多进程说明：``settings.DATABASES`` 是**进程内**状态，多核部署下每个 worker
+    进程都要各自注册（首次访问该比赛时惰性完成，成本为一次字典赋值）；
+    Django 的连接是「每线程一条」，与 worker/线程数成正比，连接预算见
+    docs/多核并发与吞吐优化.md。
+    """
     if not db_name.startswith(COMPETITION_DB_PREFIX):
         raise ValueError(f'非法比赛库名：{db_name!r}')
-    if db_name not in DATABASES:
-        DATABASES[db_name] = competition_db_config(db_name)
+    with _REGISTRY_LOCK:
+        if db_name not in DATABASES:
+            DATABASES[db_name] = competition_db_config(db_name)
     return db_name
 
 

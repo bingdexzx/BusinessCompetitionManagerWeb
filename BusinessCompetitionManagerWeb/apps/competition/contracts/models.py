@@ -41,6 +41,10 @@ class Contract(models.Model):
     posted_at = models.DateTimeField('落账时间', null=True, blank=True)
     round_no = models.PositiveIntegerField('落账轮次', default=0)  # 修改一次 +1（§7.2）
     is_backfill = models.BooleanField('补录合同', default=False)  # 决策 D14
+    # 比赛包重导入去重：同一条合同（类型+名称+参与方+输入）的指纹，已存在则跳过
+    import_fingerprint = models.CharField(
+        '导入指纹（重导入去重）', max_length=64, blank=True, db_index=True,
+    )
     fiscal_year = models.ForeignKey(
         'fiscal.FiscalYear', verbose_name='所属财年', null=True, blank=True,
         on_delete=models.PROTECT, related_name='contracts',
@@ -48,6 +52,7 @@ class Contract(models.Model):
     created_by = models.BigIntegerField('创建人（全局库用户 ID）')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
+    deleted_at = models.DateTimeField('删除时间', null=True, blank=True)
 
     class Meta:
         verbose_name = '合同'

@@ -40,6 +40,45 @@ def _field_defaults(spec: dict, plugin_key: str, plugin_version: str) -> dict:
     }
 
 
+# 「所在地」字段键：区域总览按「公司所在地 == 该区域下的地图节点名」把公司归入区域（旧系统口径）
+LOCATION_FIELD_KEY = 'location'
+
+
+def ensure_location_field(*, plugin_key='', plugin_version='', operator=None):
+    """确保存在「所在地」字段（``field_key=location``）。
+
+    旧系统在创建产业类型时自动补这个字段；新系统在产业插件字段迁移时补建，
+    否则区域总览的「区域内公司」永远匹配不到公司（数据框就选不了公司）。
+    产业插件自己定义了 ``location`` 时不覆盖。
+    """
+    if IndustryField.objects.filter(field_key=LOCATION_FIELD_KEY).exists():
+        return None
+    field = IndustryField.objects.create(
+        field_key=LOCATION_FIELD_KEY,
+        name='所在地',
+        field_type=IndustryField.FieldType.TEXT,
+        data_table=IndustryField.DataTable.ENTITY,
+        industry_key=plugin_key,
+        plugin_key=plugin_key,
+        plugin_version=plugin_version,
+        meta={'isLocation': True},
+    )
+    FieldLog.objects.create(
+        company=None,
+        field_key=LOCATION_FIELD_KEY,
+        data_table=IndustryField.DataTable.ENTITY,
+        event=FieldLog.Event.SCHEMA_CHANGE,
+        op='MIGRATE',
+        before_raw=None,
+        after_raw={'key': LOCATION_FIELD_KEY, 'name': '所在地',
+                   'type': IndustryField.FieldType.TEXT, 'isLocation': True},
+        source=FieldLog.Source.SCHEMA_MIGRATE,
+        operator_id=getattr(operator, 'id', None),
+        operator_username=getattr(operator, 'username', ''),
+    )
+    return field
+
+
 def apply_industry_fields(specs, *, plugin_key, plugin_version, operator=None):
     """把产业插件 FIELDS 同步到本比赛库（须在比赛上下文中）。返回迁移摘要。"""
     added = updated = 0
@@ -68,6 +107,9 @@ def apply_industry_fields(specs, *, plugin_key, plugin_version, operator=None):
             operator_id=getattr(operator, 'id', None),
             operator_username=getattr(operator, 'username', ''),
         )
+    # 旧系统口径：产业建好后必有「所在地」字段，区域总览据此把公司归入区域
+    ensure_location_field(
+        plugin_key=plugin_key, plugin_version=plugin_version, operator=operator)
     return {'industryKey': plugin_key, 'added': added, 'updated': updated, 'total': len(specs)}
 
 
@@ -102,7 +144,11 @@ def get_industry_module(competition, industry_key):
     if link is None:
         return None
     from django.core.files.storage import default_storage
-    module, problems = loader.load_plugin(default_storage.path(link.plugin.file_path))
+    try:
+        module, problems = loader.load_plugin(default_storage.path(link.plugin.file_path))
+    except Exception:  # noqa: BLE001 —— 插件文件缺失/不可读：按「取不到该产业」处理
+        # 不向上抛：分配公司 / 建公司时缺插件只应导致「没有初始字段值」，不应 500。
+        return None
     return None if problems else module
 
 
@@ -165,6 +211,25 @@ def evaluate_formula(formula: str, values: dict):
     return _eval(tree)
 
 
+def _consumer_demand_total(company) -> float:
+    """特殊键 consumerDemand 的取值：该区域消费者需求总量（缺省 0）。
+
+    懒导入 regions 模型避免应用间循环依赖；无区域归属直接返回 0。
+    """
+    region_id = getattr(company, 'region_id', None)
+    if not region_id:
+        return 0.0
+    try:
+        from django.db.models import Sum
+
+        from apps.competition.regions.models import ConsumerDemand
+        total = ConsumerDemand.objects.filter(region_id=region_id).aggregate(
+            t=Sum('quantity'))['t']
+        return float(total or 0)
+    except Exception:  # noqa: BLE001 —— 公式重算不因需求表异常而中断
+        return 0.0
+
+
 def recompute_company_fields(company, *, fiscal_year=None, only_keys=None):
     """公式级联重算（插件 recompute / 字段 formula）：多轮传播至稳定。"""
     defs = {
@@ -190,6 +255,9 @@ def recompute_company_fields(company, *, fiscal_year=None, only_keys=None):
     changed = 0
     for _pass in range(3):  # 公式级联最多传播 3 轮
         values = {f.field_key: _get(f.field_key) for f in IndustryField.objects.all()}
+        # 特殊键 consumerDemand：该区域消费者需求总量（旧 calcGraph 同名键语义，
+        # 公式可直接引用；无区域/无需求时为 0）
+        values['consumerDemand'] = _consumer_demand_total(company)
         pass_changed = 0
         for key, definition in defs.items():
             new_value = evaluate_formula(definition.formula, values)

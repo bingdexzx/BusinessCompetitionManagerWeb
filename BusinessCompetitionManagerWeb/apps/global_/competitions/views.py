@@ -115,3 +115,29 @@ class CompetitionTransitionView(APIView):
         except ValueError as exc:
             return Response({'code': 400, 'message': str(exc), 'details': ''}, status=400)
         return Response(_competition_data(competition))
+
+
+class DashboardLayoutView(APIView):
+    """仪表盘布局（比赛包 dashboard.json，2026-10 决策）。
+
+    组件只声明样式与**产业字段绑定**（bind.table/fieldKey/aggregate）：
+    - `components`：通用区（「全部」页签，聚合全部可操作公司）；
+    - `industries.<产业key>`：该产业专属分区（只聚合该产业公司，字段键即该产业插件字段）。
+    字段值由前端用 /companies + /companies/{id}/tables 聚合渲染（只看自己可操作的公司：
+    本队公司或被分配管理的公司）。可见性 = 本比赛成员。
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        competition = get_object_or_404(Competition, pk=cid)
+        if not (request.user.is_superuser or get_membership(request.user, cid)):
+            return Response({'code': 403, 'message': '你不是本比赛成员', 'details': ''}, status=403)
+        layout = competition.dashboard_layout or {}
+        return Response({
+            'title': layout.get('title') or '仪表盘',
+            'components': layout.get('components') or [],
+            # 按产业分屏：industries.<产业key> = {title?, components}
+            'industries': layout.get('industries') or {},
+            'updatedAt': competition.updated_at.isoformat(),
+        })

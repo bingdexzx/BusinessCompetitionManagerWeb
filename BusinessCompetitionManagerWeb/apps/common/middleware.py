@@ -21,19 +21,23 @@ class DatabaseBackpressureMiddleware(MiddlewareMixin):
 
     - 多库路由下每个请求最多同时占 **全局库 + 比赛库** 两条连接；
       60 并发账号 × 2 ≈ 120 连接 > PG 默认 max_connections=100 → `too many clients`；
-    - 信号量把「同时处理中的请求」封顶在 DB_MAX_CONCURRENT_REQUESTS（默认 32），
-      连接峰值 ≈ 64 + 后台任务，安全落在 100 以内；
+    - 信号量把「同时处理中的请求」封顶在 `DB_MAX_CONCURRENT_REQUESTS`（默认 32，
+      **全部 worker 合计**的全局预算）；进程级信号量无法跨进程共享，故按
+      `WEB_CONCURRENCY` 分摊成每 worker 额度（`DB_MAX_CONCURRENT_REQUESTS_PER_WORKER`），
+      加核扩容不会放大连接峰值；
     - 超出并发的请求最多排队 DB_BACKPRESSURE_TIMEOUT 秒，超时 503（快速失败 +
       Retry-After，前端有退避重试；总比整机假死好——这正是「后期卡死」的根源之一）。
     """
 
-    _semaphore = None  # 进程级共享
+    _semaphore = None  # 进程内共享
 
     @classmethod
     def _sem(cls):
         if cls._semaphore is None:
-            cls._semaphore = threading.BoundedSemaphore(
-                max(1, getattr(settings, 'DB_MAX_CONCURRENT_REQUESTS', 32)))
+            limit = getattr(
+                settings, 'DB_MAX_CONCURRENT_REQUESTS_PER_WORKER',
+                getattr(settings, 'DB_MAX_CONCURRENT_REQUESTS', 32))
+            cls._semaphore = threading.BoundedSemaphore(max(1, limit))
         return cls._semaphore
 
     def process_request(self, request):
@@ -142,7 +146,55 @@ class NetworkLogMiddleware(MiddlewareMixin):
             self._write_log(request, response, started)
         except Exception:  # noqa: BLE001 —— 日志绝不影响业务响应
             pass
+        try:
+            self._broadcast_change(request, response)
+        except Exception:  # noqa: BLE001 —— 广播绝不影响业务响应
+            pass
         return response
+
+    # ------------------------------------------------------------ 资源变更广播（2026-10）
+
+    # 不广播的路径前缀：认证/个人/消息读写/日志查询/文件（非业务资源变更）
+    _BROADCAST_SKIP = ('/api/auth', '/api/me', '/api/messages', '/api/logs',
+                       '/api/files', '/api/version')
+    _BROADCAST_ACTIONS = {'POST': 'created', 'PATCH': 'updated', 'PUT': 'updated',
+                          'DELETE': 'deleted'}
+    # 比赛子路径 → 广播资源名归一：meta/transition 改的是比赛本体（列表/详情都要响应）；
+    # package（导入）会改产业字段 + 合同类型 + 仪表盘布局，归一为 packages 便于页面统一监听。
+    _COMPETITION_RESOURCE_ALIAS = {
+        'meta': 'competitions',
+        'transition': 'competitions',
+        'package': 'packages',
+    }
+
+    def _broadcast_change(self, request, response):
+        """写接口成功后广播 `resource:changed`（推信号，页面自行增量重拉）。
+
+        资源名取自路径：`/api/<resource>/...` 或 `/api/competitions/<cid>/<resource>/...`。
+
+        **作用域按路径判定**（不看 `X-Competition-Id`）：全局库资源（users/schools/
+        plugins/competitions/settings…）即使带着比赛头，也必须进 `global` 流，否则
+        在别的比赛上下文里操作全局资源时，订阅 global 的页面收不到。
+        """
+        method = (request.method or '').upper()
+        action = self._BROADCAST_ACTIONS.get(method)
+        path = request.path
+        if not action or not path.startswith('/api/') or path.startswith(self._BROADCAST_SKIP):
+            return
+        if response.status_code >= 400:
+            return
+        parts = [p for p in path.split('/') if p][1:]  # 去掉 'api'
+        resource = parts[0] if parts else ''
+        competition_id = None
+        if resource == 'competitions' and len(parts) > 2 and parts[1].isdigit():
+            competition_id = int(parts[1])   # 比赛级：/api/competitions/<cid>/<resource>
+            resource = parts[2]
+            resource = self._COMPETITION_RESOURCE_ALIAS.get(resource, resource)
+        if not resource:
+            return
+        from apps.common.broadcast import emit_resource_changed
+
+        emit_resource_changed(competition_id, resource, action, {'path': path[:200]})
 
     # ------------------------------------------------------------ 内部
 

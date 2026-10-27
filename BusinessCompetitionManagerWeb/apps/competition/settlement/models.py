@@ -1,9 +1,11 @@
-"""结算、评分与获奖（§11、决策 D11）。
+"""结算、评分与获奖（§11、决策 D11；2026-10 需求变更）。
 
-- **输入**：各公司**每财年财务报表**（finance 表字段值 + 财年备份）；
-- **评分准则**：可配置评分引擎——指标（财务报表字段）、聚合方式、权重、归一方式、
-  并列规则（细则待需求方提供，框架先落地）；
-- **输出**：比赛名次与获奖信息 → 同步个人档案 + **电子奖牌（仅在线展示）**。
+- **结算只算分**：输入 = 各公司**每财年财务报表**（finance 表字段值），
+  按评分准则（指标/聚合/权重/方向）min-max 归一求总分 → 名次；
+  **不再按名次自动评奖**。
+- **奖项人工设定 + 人工发放**：超管维护「奖项定义」（个人奖 / 集体奖，可选奖牌等级），
+  再对**具体人**（个人奖）或**具体公司**（集体奖 = 该公司队伍全员）发放；
+  发放结果写入个人档案 AwardRecord（可撤销）。
 """
 
 from django.db import models
@@ -37,18 +39,67 @@ class ScoringCriterion(models.Model):
         ordering = ['id']
 
 
-class AwardRule(models.Model):
-    """获奖规则：名次区间 → 获奖等级（并列名次按分数并列后跳号）。"""
+class AwardDefinition(models.Model):
+    """奖项定义（每比赛，由超管维护）：个人奖 / 集体奖，人工发放。
 
-    award_level = models.CharField('获奖等级', max_length=32)  # 一等奖 / 二等奖 ...
-    rank_from = models.PositiveIntegerField('起始名次', default=1)
-    rank_to = models.PositiveIntegerField('结束名次', default=1)
-    medal_level = models.CharField('电子奖牌等级', max_length=32, blank=True)
+    ``medal_level`` 可选：填写时发放会给获奖人挂上对应「电子奖牌」样式
+    （apps.global_.profiles.MedalAsset.award_level）。
+    """
+
+    class Kind(models.TextChoices):
+        INDIVIDUAL = 'INDIVIDUAL', '个人奖'
+        COLLECTIVE = 'COLLECTIVE', '集体奖'
+
+    name = models.CharField('奖项名称', max_length=100)
+    kind = models.CharField('类型', max_length=16, choices=Kind.choices, default=Kind.INDIVIDUAL)
+    description = models.TextField('说明', blank=True, default='')
+    medal_level = models.CharField('奖牌等级（可选）', max_length=32, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
-        verbose_name = '获奖规则'
-        verbose_name_plural = '获奖规则'
-        ordering = ['rank_from']
+        verbose_name = '奖项定义'
+        verbose_name_plural = '奖项定义'
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(fields=['name', 'kind'], name='uniq_award_def_name_kind'),
+        ]
+
+    def __str__(self):
+        return f'{self.name}（{self.get_kind_display()}）'
+
+
+class AwardGrant(models.Model):
+    """一次发放记录：个人奖 = 1 人；集体奖 = 所选公司对应队伍的全员。"""
+
+    class Kind(models.TextChoices):
+        INDIVIDUAL = 'INDIVIDUAL', '个人奖'
+        COLLECTIVE = 'COLLECTIVE', '集体奖'
+
+    award = models.ForeignKey(
+        AwardDefinition, verbose_name='奖项', on_delete=models.CASCADE, related_name='grants')
+    kind = models.CharField('类型', max_length=16, choices=Kind.choices)
+    # 个人奖：获奖人（全局库用户 ID，跨库只存整数）
+    user_id = models.BigIntegerField('获奖人（全局库用户 ID）', null=True, blank=True)
+    user_name = models.CharField('获奖人用户名', max_length=150, blank=True, default='')
+    # 集体奖：获奖公司（比赛库内，可建外键）
+    company = models.ForeignKey(
+        'companies.Company', verbose_name='获奖公司', null=True, blank=True,
+        on_delete=models.CASCADE, related_name='award_grants')
+    recipient_count = models.PositiveIntegerField('受益人数', default=0)
+    note = models.TextField('备注', blank=True, default='')
+    granted_by = models.BigIntegerField('发放人（全局库用户 ID）', null=True, blank=True)
+    granted_by_username = models.CharField('发放人用户名', max_length=150, blank=True, default='')
+    created_at = models.DateTimeField('发放时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '奖项发放'
+        verbose_name_plural = '奖项发放'
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['award', 'created_at'])]
+
+    def __str__(self):
+        who = self.user_name or (self.company.name if self.company_id else '')
+        return f'{self.award.name} → {who}'
 
 
 class SettlementRun(models.Model):
@@ -72,13 +123,12 @@ class SettlementRun(models.Model):
 
 
 class AwardResult(models.Model):
-    """单个公司的名次与获奖（结算输出）。"""
+    """单个公司的结算名次与得分（结算输出；奖项改为人工发放，不再自动评级）。"""
 
     settlement_run = models.ForeignKey(SettlementRun, on_delete=models.CASCADE, related_name='awards')
     company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='awards')
     rank = models.PositiveIntegerField('名次')
     score = models.FloatField('得分')
-    award_level = models.CharField('获奖等级', max_length=32, blank=True)
     detail = models.JSONField('指标明细', default=dict, blank=True)
 
     class Meta:

@@ -294,8 +294,11 @@ def build_sync_envelope(
 
 def owner_account_q(user, competition_id=None):
     """owner 可见性（§4.2）：accounts/orders/holdings 只回**我的**——
-    USER 账户=本人，COMPANY 账户=can_act_for_company 的所辖/本队公司
-    （apps.common.authority.user_company_ids 判定）。返回 (Q, is_all)。
+    USER 账户=本人，COMPANY 账户=**可查看**的所辖/本队公司
+    （apps.common.authority.user_company_ids 判定：本公司队长与队员都能看）。
+
+    注意这是**读**口径；下单/撤单用 ``user_operable_company_ids``（仅队长）。
+    返回 (Q, is_all)。
     """
     from django.db.models import Q
 
@@ -314,7 +317,8 @@ def account_owned_by_user(account, user, company_ids) -> bool:
     """单账户归属判定（下单/撤单/读我的委托复用；纯函数，可单测）。
 
     - USER 账户：user_id == 本人（'*' 超管口径放行，同旧 _is_high_manager）；
-    - COMPANY 账户：company_id ∈ 可操作公司集合（'*' = 全部，can_act_for_company 语义）；
+    - COMPANY 账户：company_id ∈ 传入的公司集合（'*' = 全部）——读传「可查看」集合、
+      写（下单/撤单）传「可操作」集合（``user_operable_company_ids``，仅队长）；
     - 未知 owner_type 恒拒绝（防御性）。
     """
     if account.owner_type == 'USER':

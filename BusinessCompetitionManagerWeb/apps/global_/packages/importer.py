@@ -8,6 +8,7 @@
 并持久化一份 FAILED 的导入报告供排查。
 """
 
+import json
 import tempfile
 
 from datetime import datetime, timezone
@@ -101,6 +102,10 @@ def _validate_manifest(manifest: dict, root: Path, report: dict):
             if entry['sha256'] != sha:
                 errors.append(f'表格哈希不一致：{file_rel}')
 
+    # dashboard.json（或 manifest.dashboard 指定的文件名）是合法声明文件，
+    # 加入 declared 以免被下面的「未声明文件」误报
+    declared.add(str(manifest.get('dashboard') or 'dashboard.json'))
+
     for path in root.rglob('*'):
         if path.is_file():
             rel = str(path.relative_to(root)).replace('\\', '/')
@@ -126,12 +131,115 @@ def _extract_package(zip_path, dest: Path):
 # ---------------------------------------------------------------- 主流程
 
 
+_DASHBOARD_TYPES = {'number', 'gauge', 'table', 'text'}
+_DASHBOARD_AGGREGATES = {'sum', 'latest', 'average'}
+
+
+def _validate_dashboard_component(where: str, comp, problems: list):
+    """单个仪表盘组件校验（通用区与产业区共用一套规则）。"""
+    if not isinstance(comp, dict):
+        problems.append(f'{where} 必须是对象')
+        return
+    ctype = comp.get('type')
+    if ctype not in _DASHBOARD_TYPES:
+        problems.append(f'{where}.type 必须是 {"|".join(sorted(_DASHBOARD_TYPES))}')
+    if not comp.get('title'):
+        problems.append(f'{where}.title 不能为空')
+    if ctype == 'text':
+        return
+    bind = comp.get('bind')
+    if not isinstance(bind, dict):
+        problems.append(f'{where}.bind 必须是对象（绑定产业字段）')
+        return
+    if bind.get('table') not in ('entity', 'finance'):
+        problems.append(f'{where}.bind.table 必须是 entity|finance')
+    if not bind.get('fieldKey'):
+        problems.append(f'{where}.bind.fieldKey 不能为空')
+    if bind.get('aggregate', 'latest') not in _DASHBOARD_AGGREGATES:
+        problems.append(f'{where}.bind.aggregate 必须是 {"|".join(sorted(_DASHBOARD_AGGREGATES))}')
+
+
+def _validate_dashboard_components(where: str, components, problems: list) -> list:
+    if not isinstance(components, list):
+        problems.append(f'{where} 必须是数组')
+        return []
+    for i, comp in enumerate(components):
+        _validate_dashboard_component(f'{where}[{i}]', comp, problems)
+    return components
+
+
+def _load_dashboard(root: Path, manifest: dict, competition, report: dict):
+    """仪表盘样式文件（可选，包根 `dashboard.json`，manifest 可用 `dashboard:` 指定文件名）。
+
+    2026-10 决策：仪表盘**不再是自定义拖拽控件**，而是比赛包里的前端样式文件，
+    组件直接绑定产业字段值，用户有公司（本队/被分配管理）后即渲染。
+
+    布局结构（v2，按产业分屏）：
+    - `components`：通用区，「全部」页签渲染，聚合全部可操作公司；
+    - `industries.<产业key>`：该产业专属页签（`{title?, components}`），
+      **只聚合该产业的公司**，`bind.fieldKey` 即该产业插件 FIELDS 里的字段键。
+
+    格式非法进 errors（阻断导入）；缺失则跳过（report.dashboard.status=SKIPPED）。
+    """
+    rel = str(manifest.get('dashboard') or 'dashboard.json')
+    path = root / rel
+    report['dashboard'] = {'status': 'SKIPPED', 'file': rel, 'components': 0, 'industries': {}}
+    if not path.exists():
+        return
+    try:
+        doc = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:  # noqa: BLE001
+        report['dashboard'].update(status='INVALID')
+        report['errors'].append(f'{rel}：JSON 解析失败（{exc}），仪表盘未更新')
+        return
+
+    problems: list = []
+    components = _validate_dashboard_components(
+        f'{rel} components', doc.get('components') if isinstance(doc, dict) else None, problems)
+
+    industries_doc = doc.get('industries') if isinstance(doc, dict) else None
+    industries: dict = {}
+    if industries_doc is not None and not isinstance(industries_doc, dict):
+        problems.append(f'{rel} industries 必须是对象（产业key → 分区）')
+        industries_doc = {}
+    for key, section in (industries_doc or {}).items():
+        where = f'{rel} industries.{key}'
+        if not isinstance(section, dict):
+            problems.append(f'{where} 必须是对象')
+            continue
+        ind_components = _validate_dashboard_components(
+            f'{where}.components', section.get('components'), problems)
+        industries[str(key)] = {
+            'title': str(section.get('title') or ''),
+            'components': ind_components,
+        }
+
+    if problems:
+        report['dashboard'].update(status='INVALID')
+        report['errors'] += [f'{p}' for p in problems]
+        return
+
+    competition.dashboard_layout = {
+        'title': str(doc.get('title') or '仪表盘'),
+        'components': components,
+        'industries': industries,
+    }
+    competition.save(update_fields=['dashboard_layout', 'updated_at'])
+    report['dashboard'].update(
+        status='OK', components=len(components),
+        industries={k: len(v['components']) for k, v in industries.items()})
+
+
+# ---------------------------------------------------------------- 主流程
+
+
 def import_package(*, competition, zip_path, file_name, user):
     """执行完整导入；成功返回 Package，失败抛 ImportFailure（report 含问题清单）。"""
     report = {
         'status': 'FAILED', 'startedAt': _now(), 'finishedAt': None,
         'files': [], 'plugins': [], 'createdDatabase': None,
         'fieldMigrations': [], 'basedataRows': {}, 'contractsCreated': 0,
+        'contractsSkipped': 0,
         'errors': [], 'warnings': [],
     }
     db_created_this_run = False
@@ -150,6 +258,12 @@ def import_package(*, competition, zip_path, file_name, user):
             plugins = _load_plugins(root, manifest, report, user)
             db_created_this_run = _provision_database(competition, report)
             _import_data(competition, root, plugins, report, user)
+            _load_dashboard(root, manifest, competition, report)
+
+        if report['errors']:
+            # 后续阶段（dashboard 校验 / industries 字段对账等）追加了错误：
+            # 即使主体数据已导入，也必须按失败处理（回滚新建库 + 落 FAILED 报告）
+            raise ImportFailure(report)
 
         report['status'] = 'SUCCESS'
         report['finishedAt'] = _now()
@@ -159,6 +273,18 @@ def import_package(*, competition, zip_path, file_name, user):
 
     except ImportFailure as exc:
         report.update({k: v for k, v in exc.report.items() if k in ('errors', 'warnings')})
+        report['status'] = 'FAILED'
+        report['finishedAt'] = _now()
+        if competition is not None:
+            if db_created_this_run and competition.db_name:
+                _drop_database(competition.db_name)
+                report['createdDatabase'] = f'{competition.db_name}（已回滚删除）'
+            _persist_package(competition, zip_path, file_name, user, report,
+                             {}, status=Package.Status.FAILED)
+        raise
+
+    except Exception as exc:  # noqa: BLE001 —— 兜底：任何未预期异常也按失败持久化，不吞异常
+        report['errors'].append(f'未预期异常：{exc}')
         report['status'] = 'FAILED'
         report['finishedAt'] = _now()
         if competition is not None:
@@ -288,11 +414,14 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user):
             contracts_path = _find_sheet(root, 'contracts')
             if contracts_path and contract_modules:
                 headers, rows = parsers.read_table(contracts_path)
-                created, errors = contract_services.import_contract_instances(
+                stats = contract_services.import_contract_instances(
                     rows, contract_modules, user=user)
-                report['contractsCreated'] = created
-                report['errors'] += [f'contracts：{e}' for e in errors]
-                if errors:
+                report['contractsCreated'] = stats['created']
+                # 重导入去重：同一条合同已存在 → 跳过，不产生重复合同
+                report['contractsSkipped'] = stats['skipped']
+                report['errors'] += [f'contracts：{e}' for e in stats['errors']]
+                report['warnings'] += stats['skipNotes']
+                if stats['errors']:
                     raise ImportFailure(report)
     finally:
         ctx.clear_request_context()

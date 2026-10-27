@@ -120,10 +120,21 @@ class SendView(APIView):
         if not user_ids:
             return Response({'code': 400, 'message': '请选择接收人', 'details': ''}, status=400)
 
+        # 消息图片（2026-10 缺口补齐）：≤9 张，只接受本服务上传的图片 URL
+        images = [str(u) for u in (request.data.get('images') or []) if isinstance(u, str)]
+        if len(images) > 9:
+            return Response({'code': 400, 'message': '图片最多 9 张', 'details': ''}, status=400)
+        for url in images:
+            if not url.startswith('/api/files/view/messages/') or len(url) > 2048:
+                return Response(
+                    {'code': 400, 'message': '图片地址非法（请先用图片上传接口上传）', 'details': ''},
+                    status=400)
+
         kind = Message.Kind.ANNOUNCE if competition_ids else Message.Kind.PERSONAL
         message = send_inmail(
             sender=request.user, title=title, body=body,
             recipient_ids=user_ids, kind=kind,
+            payload={'images': images} if images else None,
             competition_id=sorted(competition_ids)[0] if competition_ids else None,
         )
         if message is None:

@@ -93,6 +93,43 @@ class ContractTypeListView(APIView):
         return Response(contract_types_for_competition(competition))
 
 
+class IndustryListView(APIView):
+    """本比赛**已导入**的产业插件（组队分配公司时「选择产业」的下拉数据）。
+
+    只列已导入的产业：只有它们才了解对应的产业插件，能给公司初始化字段值；
+    手工乱填产业标识会导致公司建出来却没有字段数据。
+
+    可见性与合同类型一致（系统超管或本比赛成员）。
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        competition = get_object_or_404(Competition, pk=cid)
+        if not (request.user.is_superuser or get_membership(request.user, cid)):
+            return Response({'code': 403, 'message': '无权查看该比赛', 'details': ''}, status=403)
+        from apps.global_.packages.models import PackagePlugin
+
+        seen, rows = set(), []
+        links = (
+            PackagePlugin.objects
+            .filter(package__competition=competition, kind='INDUSTRY')
+            .select_related('plugin')
+            .order_by('-id')
+        )
+        for link in links:
+            if link.key in seen:
+                continue
+            seen.add(link.key)
+            rows.append({
+                'key': link.key,
+                'name': link.plugin.name or link.key,
+                'version': link.version,
+            })
+        rows.sort(key=lambda r: r['name'])
+        return Response(rows)
+
+
 class PluginRegistryView(APIView):
     """插件管理：已注册的不可变插件版本（§13 系统/插件管理，仅系统超管）。"""
 

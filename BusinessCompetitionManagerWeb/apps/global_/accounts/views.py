@@ -3,6 +3,7 @@
 import hashlib
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -12,6 +13,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from apps.common import context as ctx
 from apps.common.devices import device_snapshot
+from apps.global_.accounts import throttle
 from apps.global_.accounts.serializers import RegisterSerializer, UserSerializer
 from apps.global_.logs.models import Device
 
@@ -55,19 +57,37 @@ class RegisterView(APIView):
 
 
 class LoginView(APIView):
-    """登录并登记设备；返回 JWT + 用户信息（含各比赛身份）。"""
+    """登录并登记设备；返回 JWT + 用户信息（含各比赛身份）。
+
+    带**登录失败限流**（旧系统等价能力）：同一 用户名|IP 5 分钟内失败 N 次 → 锁定，
+    锁定期间即使密码正确也拒绝（429），防止爆破。
+    """
 
     permission_classes = [AllowAny]
 
     def post(self, request):
         username = request.data.get('username', '')
         password = request.data.get('password', '')
+
+        key = throttle.throttle_key(username, request)
+        until = throttle.locked_until(key)
+        if until is not None:
+            minutes = max(1, int((until - timezone.now()).total_seconds() // 60) + 1)
+            return Response(
+                {'code': 429, 'message': f'登录失败次数过多，账号已锁定，请 {minutes} 分钟后重试',
+                 'details': ''},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+                headers={'Retry-After': str(int((until - timezone.now()).total_seconds()) + 1)},
+            )
+
         user = User.objects.filter(username=username).first()
         if user is None or not user.check_password(password) or not user.is_active:
+            throttle.record_failure(key)
             return Response(
                 {'code': 401, 'message': '用户名或密码错误', 'details': ''},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+        throttle.record_success(key)
         register_device(user, request)
         ctx.set_log_user(user)
         refresh = RefreshToken.for_user(user)
@@ -79,6 +99,47 @@ class LoginView(APIView):
             'refresh': str(refresh),
             'user': UserSerializer(user).data,
         })
+
+
+class ChangePasswordView(APIView):
+    """修改密码（旧密码校验）；改密后**顶号**——已发 JWT 全部失效，需重新登录。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        old_password = request.data.get('oldPassword', '')
+        new_password = request.data.get('newPassword', '')
+        user = request.user
+        if not user.check_password(old_password or ''):
+            return Response(
+                {'code': 400, 'message': '原密码错误', 'details': ''},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(new_password, str) or not (8 <= len(new_password) <= 128):
+            return Response(
+                {'code': 400, 'message': '新密码长度需为 8-128 位', 'details': ''},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if user.check_password(new_password):
+            return Response(
+                {'code': 400, 'message': '新密码不能与原密码相同', 'details': ''},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+        user.bump_token_version()  # 顶号：所有已发 JWT（含本会话）立即失效
+        ctx.set_log_user(user)
+        return Response({'ok': True, 'message': '密码已修改，请重新登录'})
+
+
+class VersionView(APIView):
+    """版本下发（旧系统 /api/version 等价）：前端轮询比对，不一致硬封锁。"""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from django.conf import settings as dj_settings
+        return Response({'version': getattr(dj_settings, 'APP_VERSION', '0.0.0')})
 
 
 class GipfelTokenRefreshView(TokenRefreshView):

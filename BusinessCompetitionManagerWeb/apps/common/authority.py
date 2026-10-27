@@ -1,7 +1,13 @@
-"""权限/主体解析（§15 权限与账号体系）：用户 ↔ 公司 的可操作关系。
+"""权限/主体解析（§15 权限与账号体系）：用户 ↔ 公司 的**可查看 / 可操作**关系。
 
-- 参赛代表：本队公司（队伍映射出的公司，teams.companyId）；
-- 管理员（主席团）：所辖公司（membership.managed_companies）；
+2026-10 决策（分配公司）：公司由管理员分配给队伍后——
+- **可查看**（``user_company_ids`` / ``can_view_company``）：**队长与队员**都能看本公司
+  （合同、行情、公司表格等只读）；
+- **可操作**（``user_operable_company_ids`` / ``can_act_for_company``）：**只有队长**能
+  操作本公司（股票下单/撤单、合同创建/确认/申请修改等）；队员只读。
+
+其余身份口径不变：
+- 管理员（主席团）：所辖公司（``membership.managed_companies``）可看可操作；
 - 比赛超管 / 系统超管：本比赛全部公司（§15.2 权限矩阵）。
 """
 
@@ -21,7 +27,11 @@ def user_membership(user, competition_id=None):
 
 
 def user_company_ids(user, competition_id=None) -> set:
-    """用户在当前比赛可操作（创建/确认/修改）的公司 ID 集合（'*' = 全部）。"""
+    """用户在当前比赛**可查看**的公司 ID 集合（'*' = 全部）。
+
+    参赛代表取「本队公司」——**队长与队员都在内**（队员只读）；
+    需要判断能不能「操作」时用 ``user_operable_company_ids`` / ``can_act_for_company``。
+    """
     competition_id = competition_id or get_competition_id()
     if not (user and user.is_authenticated and competition_id):
         return set()
@@ -34,7 +44,7 @@ def user_company_ids(user, competition_id=None) -> set:
         return {'*'}
     if membership.identity == CompetitionMembership.Identity.ADMIN:
         return {int(c) for c in (membership.managed_companies or [])}
-    # 参赛代表：本队公司
+    # 参赛代表：本队公司（队长 + 队员）
     from apps.global_.teams.models import Team
     team_ids = Team.objects.filter(
         competition_id=competition_id, members__user=user,
@@ -42,8 +52,42 @@ def user_company_ids(user, competition_id=None) -> set:
     return {int(c) for c in team_ids if c}
 
 
-def can_act_for_company(user, company_id, competition_id=None) -> bool:
+def user_operable_company_ids(user, competition_id=None) -> set:
+    """用户在当前比赛**可操作**的公司 ID 集合（'*' = 全部）。
+
+    2026-10 决策：公司分配给队伍后**只有队长**能操作本公司（股票下单/撤单、
+    合同创建/确认/申请修改等），其他队员只读。管理员按所辖公司操作，
+    比赛超管/系统超管全部可操作。
+    """
+    competition_id = competition_id or get_competition_id()
+    if not (user and user.is_authenticated and competition_id):
+        return set()
+    if user.is_superuser:
+        return {'*'}
+    membership = user_membership(user, competition_id)
+    if membership is None:
+        return set()
+    if membership.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN:
+        return {'*'}
+    if membership.identity == CompetitionMembership.Identity.ADMIN:
+        return {int(c) for c in (membership.managed_companies or [])}
+    # 参赛代表：**仅队长**的本队公司
+    from apps.global_.teams.models import Team
+    captain_ids = Team.objects.filter(
+        competition_id=competition_id, captain=user,
+    ).values_list('company_id', flat=True)
+    return {int(c) for c in captain_ids if c}
+
+
+def can_view_company(user, company_id, competition_id=None) -> bool:
+    """能否**查看**该公司（队长与队员都可以）。"""
     ids = user_company_ids(user, competition_id)
+    return '*' in ids or int(company_id or 0) in ids
+
+
+def can_act_for_company(user, company_id, competition_id=None) -> bool:
+    """能否**操作**该公司（仅队长 / 所辖管理员 / 超管）。"""
+    ids = user_operable_company_ids(user, competition_id)
     return '*' in ids or int(company_id or 0) in ids
 
 
@@ -75,6 +119,32 @@ def company_actor_ids(company_id) -> set:
         elif m.identity == CompetitionMembership.Identity.ADMIN:
             if int(company_id) in {int(c) for c in (m.managed_companies or [])}:
                 ids.add(m.user_id)
+    return ids
+
+
+def company_strict_actor_ids(company_id) -> set:
+    """对某公司可**表态/操作**的**严格**用户 ID 集（**仅队长** + 所辖管理员）。
+
+    与 ``company_actor_ids`` 的区别（两处都收紧）：
+    1. **排除**比赛超管与系统超管——超级权限不自动替公司投票（其他方逐方确认按公司计票，§3.3 T8）；
+    2. **只取队长**——队员只读，不能代公司表态/操作（2026-10 决策）。
+    """
+    competition_id = get_competition_id()
+    ids = set()
+    if not company_id or not competition_id:
+        return ids
+    from apps.global_.teams.models import Team
+
+    ids.update(
+        Team.objects.filter(competition_id=competition_id, company_id=company_id)
+        .values_list('captain_id', flat=True)
+    )
+    for m in CompetitionMembership.objects.filter(
+        competition_id=competition_id, is_active=True,
+        identity=CompetitionMembership.Identity.ADMIN,
+    ):
+        if int(company_id) in {int(c) for c in (m.managed_companies or [])}:
+            ids.add(m.user_id)
     return ids
 
 

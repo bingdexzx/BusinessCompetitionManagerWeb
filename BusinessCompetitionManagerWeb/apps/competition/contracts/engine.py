@@ -37,6 +37,10 @@ class ContractError(Exception):
     """业务错误（前置守卫不满足 / 检查不通过）。"""
 
 
+class ContractPermissionError(ContractError):
+    """权限不足（视图映射为 403）。"""
+
+
 class CheckFailedError(ContractError):
     """检查不通过（用于区分其它业务错误，失败检查也要补记留痕）。"""
 
@@ -485,15 +489,34 @@ def _auto_number_and_execute(contract: Contract):
         raise
 
 
-def execute_and_post(contract: Contract):
+def _assert_backfill_backup(contract: Contract):
+    """补录合同执行前置守卫：必须有所补录财年末备份快照（§3.4 / §10.2）。"""
+    from apps.competition.fiscal.models import FiscalYearBackup
+
+    if not FiscalYearBackup.objects.filter(fiscal_year_id=contract.fiscal_year_id).exists():
+        raise ContractError('缺少财年末备份快照，无法执行补录')
+
+
+def retry_execute(contract: Contract, *, user):
+    """EXEC_FAILED → 重试执行：不重新生成统一编号（编号已存在），重跑 execute_and_post。"""
+    if contract.status != Contract.Status.EXEC_FAILED:
+        raise ContractError(f'当前状态 {contract.status} 不允许重试执行')
+    contract.status = Contract.Status.PENDING_EXEC
+    contract.save(update_fields=['status', 'updated_at'])
+    return execute_and_post(contract, operator=user)
+
+
+def execute_and_post(contract: Contract, *, operator=None):
     """PENDING_EXEC → EXECUTED（apply）→ 再次检查 → POSTED（落账 + 冻结）。
 
     整体一个事务：自动执行失败不落半账（§7.5）。
     """
+    if contract.is_backfill:
+        _assert_backfill_backup(contract)
     module = load_contract_module(contract)
     competition = _competition()
     source = FieldLog.Source.CONTRACT_REPOST if contract.round_no else FieldLog.Source.CONTRACT_POST
-    operator = _actor(contract)
+    operator = operator or _actor(contract)
 
     try:
         with comp_atomic():
@@ -634,7 +657,11 @@ def review_modify(contract: Contract, *, user, approve: bool, note: str = ''):
 
 
 def other_party_review(contract: Contract, *, user, approve: bool, note: str = ''):
-    """T8 / T8'：所有其他方逐一通过（任一方驳回 → 回到落账态）。"""
+    """T8 / T8'：所有其他方逐一通过（任一方驳回 → 回到落账态）。
+
+    按**公司**计票：投票人必须是「申请方公司之外」的参与方公司的严格主体
+    （队长/队员/所辖管理员，比赛超管与系统超管不自动投票）；每家公司一票。
+    """
     if contract.status != Contract.Status.MOD_EDITING:
         raise ContractError(f'当前状态 {contract.status} 不在修改中')
     mod = contract.mod_requests.filter(status=ContractModRequest.Status.EDITING).first()
@@ -643,12 +670,33 @@ def other_party_review(contract: Contract, *, user, approve: bool, note: str = '
     if user.id == mod.requested_by:
         raise ContractError('申请方不能代替其他方表态')
 
+    from apps.common.authority import company_strict_actor_ids
+
+    parties = list(contract.parties)
+    applicant_companies = {
+        p.get('companyId') for p in parties
+        if p.get('companyId') and mod.requested_by in company_strict_actor_ids(p.get('companyId'))
+    }
+    voter_parties = [
+        p for p in parties
+        if p.get('companyId') and p.get('companyId') not in applicant_companies
+        and user.id in company_strict_actor_ids(p.get('companyId'))
+    ]
+    if not voter_parties:
+        raise ContractPermissionError('只有其他参与方公司的成员可以表态')
+
     approvals = list(mod.other_party_approvals or [])
-    if any(a.get('userId') == user.id for a in approvals):
-        raise ContractError('你已表态过')
+    voted_companies = {a.get('companyId') for a in approvals}
+    if any(p.get('companyId') in voted_companies for p in voter_parties):
+        raise ContractError('贵公司已表态过')
+
+    party = voter_parties[0]
     approvals.append({
-        'userId': user.id, 'username': user.username,
-        'approved': bool(approve), 'note': note or '',
+        'companyId': party.get('companyId'),
+        'role': party.get('role'),
+        'username': user.username,
+        'approved': bool(approve),
+        'note': note or '',
         'at': timezone.now().isoformat(),
     })
     mod.other_party_approvals = approvals
@@ -675,15 +723,22 @@ def submit_changes(contract: Contract, *, user, inputs=None, parties=None):
     if mod is None:
         raise ContractError('没有进行中的修改流程')
 
-    # 所有其他方逐一通过后方可提交（决策 D8）：申请方所在参与方之外的每一方都要通过
-    member_ids = _company_member_ids(contract)
-    applicant_roles = {
-        role for role, uids in member_ids.items() if mod.requested_by in uids
+    # 所有其他方逐一通过后方可提交（决策 D8）：申请方所在参与方之外的每一方公司都要通过
+    from apps.common.authority import company_strict_actor_ids
+
+    party_entries = list(contract.parties)
+    applicant_companies = {
+        p.get('companyId') for p in party_entries
+        if p.get('companyId') and mod.requested_by in company_strict_actor_ids(p.get('companyId'))
     }
-    approved = {a.get('userId') for a in (mod.other_party_approvals or []) if a.get('approved')}
+    approved_companies = {
+        a.get('companyId') for a in (mod.other_party_approvals or []) if a.get('approved')
+    }
     pending = [
-        role for role, uids in member_ids.items()
-        if role not in applicant_roles and not (uids & approved)
+        p.get('role') for p in party_entries
+        if p.get('companyId')
+        and p.get('companyId') not in applicant_companies
+        and p.get('companyId') not in approved_companies
     ]
     if pending:
         raise ContractError('以下参与方尚未通过修改：' + '、'.join(pending))
@@ -729,6 +784,8 @@ def submit_changes(contract: Contract, *, user, inputs=None, parties=None):
 
 def _execute_after_modify(contract: Contract):
     """修改后重新进入执行流：自动执行 → 再次检查 → 重新落账（round 保持）。"""
+    if contract.is_backfill:
+        _assert_backfill_backup(contract)
     module = load_contract_module(contract)
     competition = _competition()
     operator = _actor(contract)
@@ -752,12 +809,6 @@ def _execute_after_modify(contract: Contract):
     freeze_contract(contract)
     _notify_mod_parties(contract, '修改完成，合同已重新落账',
                         f'统一编号 {contract.unified_number}（第 {contract.round_no} 轮）')
-
-
-def _company_member_ids(contract: Contract) -> dict:
-    """参与方公司 → 可表态的用户 ID 集（队长/队员、所辖管理员、比赛超管）。"""
-    from apps.common.authority import company_actor_ids
-    return {p['role']: company_actor_ids(p.get('companyId')) for p in contract.parties}
 
 
 # ================================================================ 补录审核（§3.4）

@@ -4,15 +4,29 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authority import can_manage_competition
+from apps.common.authority import can_manage_competition, user_company_ids, user_membership
 from apps.competition.fiscal import services as fiscal_services
 from apps.competition.fiscal.models import FiscalYear, FiscalYearBackup
+
+
+def _require_member(user, cid) -> bool:
+    """读权限：本比赛成员（系统超管恒通过；对齐 basedata.views._require_member）。"""
+    if user is not None and user.is_authenticated:
+        if user.is_superuser:
+            return True
+        if user_membership(user, cid) is not None:
+            return True
+        if user_company_ids(user, cid):
+            return True
+    return False
 
 
 class FiscalYearListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return Response({'code': 403, 'message': '需要比赛成员身份', 'details': ''}, status=403)
         years = FiscalYear.objects.all().order_by('year')
         return Response([
             {
@@ -62,6 +76,8 @@ class FiscalYearBackupListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, fy_id):
+        if not _require_member(request.user, cid):
+            return Response({'code': 403, 'message': '需要比赛成员身份', 'details': ''}, status=403)
         backups = FiscalYearBackup.objects.filter(fiscal_year_id=fy_id).select_related('company')
         return Response([
             {
