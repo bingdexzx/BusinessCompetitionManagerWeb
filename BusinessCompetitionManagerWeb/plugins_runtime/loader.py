@@ -68,18 +68,26 @@ def validate_contract_plugin(module):
     """合同类型插件接口校验（§8.1）。返回问题列表。"""
     problems = []
     key = _require(problems, module, 'CONTRACT_KEY', str)
-    _require(problems, module, 'CONTRACT_NAME', str)
+    display_name = _require(problems, module, 'CONTRACT_NAME', str)
     roles = _require(problems, module, 'PARTY_ROLES', list)
     schema = _require(problems, module, 'INPUT_SCHEMA', list)
+
+    # 界面一律展示中文：缺少中文名会导致前端只能显示 key
+    if isinstance(display_name, str) and not display_name.strip():
+        problems.append('CONTRACT_NAME 不能为空（合同类型中文显示名）')
 
     if roles is not None:
         for i, role in enumerate(roles):
             if not isinstance(role, dict) or 'role' not in role:
                 problems.append(f'PARTY_ROLES[{i}] 缺少 role')
+            elif not str(role.get('label') or '').strip():
+                problems.append(f'PARTY_ROLES[{i}]（{role.get("role")}）缺少 label（中文角色名）')
     if schema is not None:
         for i, item in enumerate(schema):
             if not isinstance(item, dict) or 'key' not in item or 'type' not in item:
                 problems.append(f'INPUT_SCHEMA[{i}] 缺少 key/type')
+            elif not str(item.get('label') or '').strip():
+                problems.append(f'INPUT_SCHEMA[{i}]（{item.get("key")}）缺少 label（中文显示名）')
 
     for func_name in ('check', 'apply'):
         func = getattr(module, func_name, None)
@@ -102,8 +110,12 @@ def validate_industry_plugin(module):
     """产业类型插件接口校验（§8.2）。返回问题列表。"""
     problems = []
     key = _require(problems, module, 'INDUSTRY_KEY', str)
-    _require(problems, module, 'INDUSTRY_NAME', str)
+    display_name = _require(problems, module, 'INDUSTRY_NAME', str)
     fields = _require(problems, module, 'FIELDS', list)
+
+    # 界面一律展示中文：产业名与每个字段名都必须有中文显示名
+    if isinstance(display_name, str) and not display_name.strip():
+        problems.append('INDUSTRY_NAME 不能为空（产业类型中文显示名）')
 
     if fields is not None:
         seen = set()
@@ -118,6 +130,8 @@ def validate_industry_plugin(module):
             if fkey in seen:
                 problems.append(f'字段键重复：{fkey}')
             seen.add(fkey)
+            if not str(field.get('name') or '').strip():
+                problems.append(f'字段 {fkey} 缺少 name（字段中文显示名）')
             if field.get('table') not in ('entity', 'finance', None):
                 problems.append(f'字段 {fkey} 的 table 非法：{field.get("table")}')
 

@@ -172,6 +172,13 @@ const selectedType = computed<ContractType | null>(
   () => contractTypes.value.find((t) => t.key === createTypeKey.value) ?? null,
 )
 
+// 合同类型键 → 中文名（列表「类型」列不显示 loan/purchase 这类键）
+function typeLabel(key: string | null | undefined): string {
+  const raw = String(key ?? '')
+  if (!raw) return '—'
+  return contractTypes.value.find((t) => t.key === raw)?.name || raw
+}
+
 // 补录只能选已结束财年
 const closedFiscalYears = computed(() => fiscalYears.value.filter((f) => f.status === 'CLOSED'))
 
@@ -348,7 +355,9 @@ watch(
               <span class="contract-name">{{ row.name || `合同 #${row.id}` }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="contractTypeKey" label="类型" min-width="118" />
+          <el-table-column label="类型" min-width="118">
+            <template #default="{ row }">{{ typeLabel(row.contractTypeKey) }}</template>
+          </el-table-column>
           <el-table-column label="统一编号" min-width="148">
             <template #default="{ row }">
               <span v-if="row.unifiedNumber" class="unified-number value-num">

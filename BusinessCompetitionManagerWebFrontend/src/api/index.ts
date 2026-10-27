@@ -38,6 +38,7 @@ import type {
   AddressBook,
   InmailMessage,
   InmailPage,
+  IndustryFieldMeta,
   IndustryOption,
   SendInmailPayload,
   MyDevice,
@@ -251,6 +252,11 @@ export function adjustTeamIndustry(
 
 export function getIndustries(cid: number | string): Promise<IndustryOption[]> {
   return http.get<IndustryOption[]>(`/competitions/${cid}/industries`)
+}
+
+/** 产业字段元数据（字段键 → 中文名 / 类型），用于把 cash 这类键展示成中文 */
+export function getIndustryFields(cid: number | string): Promise<IndustryFieldMeta[]> {
+  return http.get<IndustryFieldMeta[]>(`/competitions/${cid}/industry-fields`)
 }
 
 // 选产业 + 公司名；后端创建/更新公司并绑定，队长据此获得操作权

@@ -138,9 +138,14 @@ import type { Company, CompanyField, CompanyTable } from '@/api/types'
 import { errorMessage } from '@/utils/errors'
 import { ElMessage } from 'element-plus'
 import { subscribeCompetition, useResourceRefresh } from '@/composables/useNotifications'
+import { useCatalog } from '@/composables/useCatalog'
 import { useCountUp, useFlash } from '@/composables/useMotion'
 
 const props = defineProps<{ cid: string }>()
+
+// 产业键 → 中文名（仪表盘布局未给 title 时用它兜底）
+const catalog = useCatalog(() => props.cid)
+const industryLabel = catalog.industryLabel
 
 const layout = ref<DashboardLayout | null>(null)
 const companies = ref<Company[]>([])
@@ -189,7 +194,8 @@ const MetricValue = defineComponent({
 const industryTabs = computed(() => {
   const seen = new Set<string>()
   const tabs: Array<{ key: string; label: string }> = [{ key: '__all__', label: '全部' }]
-  const labelOf = (key: string): string => layout.value?.industries?.[key]?.title || key
+  const labelOf = (key: string): string =>
+    layout.value?.industries?.[key]?.title || industryLabel(key)
   for (const company of companies.value) {
     const key = company.industryKey || ''
     if (!key || seen.has(key)) continue
@@ -320,7 +326,7 @@ function tableRows(comp: DashboardComponent): Array<{ company: string; industry:
     const value = fieldValue(table, bind.fieldKey)
     return {
       company: company.name,
-      industry: company.industryKey || '—',
+      industry: industryLabel(company.industryKey) || '—',
       value: value === null ? '—' : `${value}${comp.suffix || ''}`,
     }
   })

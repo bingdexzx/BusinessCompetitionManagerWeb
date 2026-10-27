@@ -7,10 +7,14 @@ import * as api from '@/api'
 import type { Company, CompetitionMember, StockAccount, StockAdmin } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useResourceRefresh } from '@/composables/useNotifications'
+import { useCatalog } from '@/composables/useCatalog'
 import { errorMessage } from '@/utils/errors'
 import { toDisplay } from '@/utils/format'
 
 const props = defineProps<{ cid: string }>()
+
+// 产业字段目录：PE 绑定字段 / 账户绑定字段显示中文名，不再让管理员填数字 ID
+const catalog = useCatalog(() => props.cid)
 const auth = useAuthStore()
 
 /** 系统超管或本比赛超管：可新增/编辑/删除（其余整页提示） */
@@ -40,6 +44,20 @@ function companyOptions(extra?: number | null): Array<{ id: number; name: string
   const list = companies.value.map((c) => ({ id: c.id, name: c.name }))
   if (extra != null && !list.some((c) => c.id === extra)) list.push({ id: extra, name: `#${extra}` })
   return list
+}
+
+/** 产业字段下拉（PE 绑定字段 / 账户绑定字段）：显示中文名而不是字段 ID */
+const fieldOptions = computed(() =>
+  catalog.fields.value.map((f) => ({
+    id: f.id,
+    label: f.name && f.name !== f.key ? `${f.name}（${f.key}）` : f.name || f.key,
+  })),
+)
+
+function fieldLabelById(id: number | null | undefined): string {
+  if (id == null) return '—'
+  const hit = catalog.fields.value.find((f) => f.id === id)
+  return hit ? hit.name || hit.key : `#${id}`
 }
 
 function userOptions(extra?: number | null): Array<{ id: number; name: string }> {
@@ -159,7 +177,7 @@ interface StockForm {
 interface StockFieldConfig {
   key: string
   label: string
-  kind: 'text' | 'number' | 'company'
+  kind: 'text' | 'number' | 'company' | 'industryField'
   required?: boolean
   placeholder?: string
 }
@@ -177,7 +195,7 @@ const STOCK_FIELDS: StockFieldConfig[] = [
   { key: 'happiness', label: '幸福度', kind: 'number' },
   { key: 'companyId', label: '关联公司', kind: 'company' },
   { key: 'pbCompanyId', label: 'PE 关联公司', kind: 'number', placeholder: '留空为随机 PE' },
-  { key: 'pbFieldId', label: 'PE 绑定字段', kind: 'number', placeholder: '与 PE 关联公司同填' },
+  { key: 'pbFieldId', label: 'PE 绑定字段', kind: 'industryField', placeholder: '与 PE 关联公司同填' },
   { key: 'pbRandom', label: '随机PE', kind: 'number', placeholder: '0-20' },
 ]
 
@@ -553,8 +571,8 @@ watch(
               <span class="value-num">{{ toDisplay(row.cashBalance) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="绑定字段" width="100" align="center">
-            <template #default="{ row }">{{ toDisplay(row.bindFieldId) }}</template>
+          <el-table-column label="绑定字段" min-width="130" show-overflow-tooltip>
+            <template #default="{ row }">{{ fieldLabelById(row.bindFieldId) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="130" fixed="right">
             <template #default="{ row }">
@@ -607,6 +625,17 @@ watch(
               :label="c.name"
               :value="c.id"
             />
+          </el-select>
+          <el-select
+            v-else-if="f.kind === 'industryField'"
+            :model-value="toNum(stockForm[f.key]) ?? undefined"
+            placeholder="选择产业字段"
+            clearable
+            filterable
+            style="width: 100%"
+            @update:model-value="setNum(f.key, $event)"
+          >
+            <el-option v-for="opt in fieldOptions" :key="opt.id" :label="opt.label" :value="opt.id" />
           </el-select>
           <el-input-number
             v-else-if="f.kind === 'number'"
@@ -695,12 +724,15 @@ watch(
           />
         </el-form-item>
         <el-form-item label="绑定字段" prop="bindFieldId">
-          <el-input-number
+          <el-select
             v-model="accountForm.bindFieldId"
-            placeholder="字段 ID，可空"
-            :controls="false"
+            placeholder="选择产业字段（可空）"
+            clearable
+            filterable
             style="width: 100%"
-          />
+          >
+            <el-option v-for="opt in fieldOptions" :key="opt.id" :label="opt.label" :value="opt.id" />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>

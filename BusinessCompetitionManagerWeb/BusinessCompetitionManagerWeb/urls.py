@@ -31,6 +31,8 @@ urlpatterns = [
     path('api/', include('apps.global_.files.urls')),
     # 比赛域（/api/competitions/{cid}/... 由多库路由解析到对应比赛库）
     path('api/', include('apps.competition.companies.urls')),
+    # 产业字段元数据（字段键 → 中文名，前端展示用）
+    path('api/', include('apps.competition.industries.urls')),
     path('api/', include('apps.competition.contracts.urls')),
     path('api/', include('apps.competition.fiscal.urls')),
     path('api/', include('apps.competition.fieldlogs.urls')),

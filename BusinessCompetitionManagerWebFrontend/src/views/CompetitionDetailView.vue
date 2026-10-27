@@ -18,6 +18,7 @@ import {
   type School,
 } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
+import { useCatalog } from '@/composables/useCatalog'
 import { useResourceRefresh } from '@/composables/useNotifications'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
@@ -25,6 +26,18 @@ import { errorMessage } from '@/utils/errors'
 const props = defineProps<{ cid: string }>()
 const router = useRouter()
 const auth = useAuthStore()
+
+// 产业键 → 中文名（导入报告里不显示 manufacturer 这类 key）
+const { industryLabel, contractTypeLabel } = useCatalog(() => props.cid)
+
+/** 导入报告里的插件中文名：新报告带 name；历史报告按 kind 从目录反查 */
+function pluginLabel(row: { name?: string; key?: string; kind?: string }): string {
+  const key = String(row.key ?? '')
+  if (row.name) return row.name
+  if (row.kind === 'INDUSTRY') return industryLabel(key) || key
+  if (row.kind === 'CONTRACT') return contractTypeLabel(key) || key
+  return key
+}
 
 const competition = ref<Competition | null>(null)
 const loading = ref(false)
@@ -675,12 +688,16 @@ onMounted(() => {
           <section class="report-section">
             <h4 class="section-title">插件（{{ activeReport.plugins?.length ?? 0 }}）</h4>
             <el-table :data="activeReport.plugins" size="small" border>
-              <el-table-column prop="file" label="文件" min-width="140" />
-              <el-table-column prop="key" label="Key" min-width="110" />
+              <el-table-column label="名称" min-width="120">
+                <template #default="{ row }">
+                  {{ pluginLabel(row) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="file" label="文件" min-width="160" />
               <el-table-column label="类型" width="110">
                 <template #default="{ row }">
                   <el-tag size="small" :type="row.kind === 'CONTRACT' ? 'primary' : 'success'">
-                    {{ row.kind }}
+                    {{ row.kind === 'CONTRACT' ? '合同类型' : '产业类型' }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -698,7 +715,11 @@ onMounted(() => {
               字段迁移（{{ activeReport.fieldMigrations?.length ?? 0 }}）
             </h4>
             <el-table :data="activeReport.fieldMigrations" size="small" border>
-              <el-table-column prop="industryKey" label="产业类型" min-width="120" />
+              <el-table-column label="产业类型" min-width="120">
+                <template #default="{ row }">
+                  {{ row.industryName || industryLabel(row.industryKey) }}
+                </template>
+              </el-table-column>
               <el-table-column label="新增字段" width="100">
                 <template #default="{ row }">
                   <span class="value-num">+{{ row.added }}</span>

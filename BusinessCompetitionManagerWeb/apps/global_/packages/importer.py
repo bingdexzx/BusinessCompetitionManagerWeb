@@ -303,11 +303,22 @@ def _load_plugins(root: Path, manifest: dict, report: dict, user) -> dict:
 
             sha = loader.sha256_file(path)
             version = str(entry.get('version') or '1.0.0')
+            # 中文显示名：manifest.name → 插件自带的 INDUSTRY_NAME/CONTRACT_NAME → key（兜底，界面上才会显示英文）
+            module_name = getattr(
+                module, 'INDUSTRY_NAME' if kind == 'INDUSTRY' else 'CONTRACT_NAME', '')
+            display_name = (
+                str(entry.get('name') or '').strip()
+                or str(module_name or '').strip()
+                or key
+            )
+            if not str(entry.get('name') or '').strip():
+                report['warnings'].append(
+                    f'{file_rel}：manifest 未声明插件中文名 name，已回退为「{display_name}」')
             stored = _store_plugin_file(path, key, version)
             registry, _ = PluginRegistry.objects.get_or_create(
                 kind=kind, key=key, version=version, sha256=sha,
                 defaults={
-                    'name': entry.get('name') or key,
+                    'name': display_name,
                     'file_name': Path(file_rel).name,
                     'file_path': stored,
                     'number_prefix': prefix,
@@ -318,8 +329,9 @@ def _load_plugins(root: Path, manifest: dict, report: dict, user) -> dict:
                 },
             )
             plugins[key] = {'module': module, 'version': version, 'kind': kind,
-                            'registry': registry, 'file': file_rel}
+                            'registry': registry, 'file': file_rel, 'name': display_name}
             report['plugins'].append({'file': file_rel, 'key': key, 'kind': kind,
+                                      'name': display_name,
                                       'version': version, 'sha256': sha})
         if report['errors']:
             raise ImportFailure(report)
@@ -363,6 +375,8 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user):
                     entry['module'].FIELDS, plugin_key=key,
                     plugin_version=entry['version'], operator=user,
                 )
+                # 报告里带上中文产业名，前端不必再显示 manufacturer 这类 key
+                stats['industryName'] = entry.get('name') or key
                 report['fieldMigrations'].append(stats)
 
             # industries.xlsx 对账（规范 §6）

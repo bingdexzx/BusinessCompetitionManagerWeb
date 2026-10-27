@@ -39,6 +39,7 @@
 | PATCH | `/competitions/{cid}/teams/{tid}/industry` | **管理员手动调整** `{industryFinal, industryChoice?, industryAdjustAccepted?}`；同步创建/更新公司并回填产业初始值 |
 | POST | `/competitions/{cid}/teams/{tid}/company` | **分配/修改队伍公司** `{industryKey, companyName}`（系统超管 / 比赛超管）→ 建/改公司（一队一公司）并按产业回填初始字段值；分配后**队长可操作**本公司、**队员只读** |
 | GET | `/competitions/{cid}/industries` | 本比赛**已导入**的产业插件 `[{key, name, version}]`（分配公司选产业用；比赛成员可见） |
+| GET | `/competitions/{cid}/industry-fields` | 本比赛全部产业字段元数据 `[{id, key, name, fieldType, dataTable, pluginKey}]`（前端把 `cash` 这类字段键显示成中文名；比赛成员可见） |
 | GET/POST | `/competitions/{cid}/invites` | 激活码列表 / 生成 `{identity?, maxUses?, validDays?, note?}`（超管） |
 | POST | `/invites/redeem` | 凭激活码加入比赛 `{code}` → 获得比赛内身份 |
 

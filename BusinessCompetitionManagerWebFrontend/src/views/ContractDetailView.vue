@@ -21,10 +21,14 @@ import { formatDateTime, toDisplay } from '@/utils/format'
 import { opLabel } from '@/utils/fieldOps'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications, useResourceRefresh } from '@/composables/useNotifications'
+import { useCatalog } from '@/composables/useCatalog'
 import { useCountUp, useFlash } from '@/composables/useMotion'
 import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string; id: string }>()
+
+// 字段键 / 合同类型 / 输入项 / 参与方角色 → 中文名（均来自比赛包插件定义）
+const { fieldLabel, contractTypeLabel, inputLabel, partyRoleLabel } = useCatalog(() => props.cid)
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -182,7 +186,7 @@ const timelineNodes = computed<DisplayNode[]>(() => {
     nodes.push({
       type: 'WAITING',
       at: '',
-      title: `等待 ${waiting.companyName || waiting.role} 确认`,
+      title: `等待 ${waiting.companyName || partyRoleLabel(contract.value?.contractTypeKey, waiting.role)} 确认`,
       actor: '—',
       detail: `按确认顺序第 ${waiting.confirmOrder} 位参与方尚未确认`,
       waiting: true,
@@ -442,7 +446,7 @@ function goBack(): void {
             {{ contract?.name || `合同 #${props.id}` }}
           </h1>
           <div class="meta-row">
-            <span class="meta-item">类型：<b>{{ contract?.contractTypeKey || '—' }}</b></span>
+            <span class="meta-item">类型：<b>{{ contractTypeLabel(contract?.contractTypeKey) || '—' }}</b></span>
             <el-tag :type="statusMeta(contract?.status ?? '').type">
               {{ statusMeta(contract?.status ?? '').label }}
             </el-tag>
@@ -502,7 +506,9 @@ function goBack(): void {
           >
             <div class="party-card__head">
               <b>{{ p.companyName || '—' }}</b>
-              <el-tag size="small" effect="plain">{{ p.role }}</el-tag>
+              <el-tag size="small" effect="plain">
+                {{ partyRoleLabel(contract?.contractTypeKey, p.role) }}
+              </el-tag>
             </div>
             <div class="party-card__body">
               <template v-if="p.confirmAt">
@@ -529,7 +535,7 @@ function goBack(): void {
         <h2 class="section-title">输入项</h2>
         <div v-if="inputEntries.length" class="input-grid">
           <div v-for="[key, value] in inputEntries" :key="key" class="input-item">
-            <span class="input-key">{{ key }}</span>
+            <span class="input-key">{{ inputLabel(contract?.contractTypeKey, key) }}</span>
             <span class="input-value value-num">{{ toDisplay(value) }}</span>
           </div>
         </div>
@@ -572,10 +578,12 @@ function goBack(): void {
             <template #default="{ row }">
               <div v-if="row.basis && Object.keys(row.basis).length" class="basis-list">
                 <div v-for="(fields, role) in row.basis" :key="role" class="basis-row">
-                  <span class="basis-role">{{ role }}：</span>
+                  <span class="basis-role">
+                    {{ partyRoleLabel(contract?.contractTypeKey, String(role)) }}：
+                  </span>
                   <template v-for="(val, field) in fields" :key="field">
                     <span class="basis-item">
-                      {{ field }}
+                      {{ fieldLabel(String(field)) }}
                       <b class="basis-replay">{{ toDisplay(row.replayBasis?.[role]?.[field] ?? val) }}</b>
                       <span
                         v-if="toDisplay(row.replayBasis?.[role]?.[field] ?? val) !== toDisplay(val)"
@@ -607,7 +615,9 @@ function goBack(): void {
           <template #empty>
             <el-empty description="暂无落账效果" />
           </template>
-          <el-table-column prop="fieldKey" label="字段" min-width="140" />
+          <el-table-column label="字段" min-width="140">
+            <template #default="{ row }">{{ fieldLabel(row.fieldKey) }}</template>
+          </el-table-column>
           <el-table-column prop="op" label="操作" width="90" align="center">
             <template #default="{ row }">
               <el-tag size="small" effect="plain">{{ opLabel(row.op) }}</el-tag>
@@ -666,7 +676,7 @@ function goBack(): void {
           class="ledger-chain"
         >
           <div class="ledger-head">
-            <span class="ledger-title">公司 #{{ chain.companyId }} · 字段 <b>{{ chain.fieldKey }}</b></span>
+            <span class="ledger-title">公司 #{{ chain.companyId }} · 字段 <b>{{ fieldLabel(chain.fieldKey) }}</b></span>
             <span class="ledger-range">
               初始 <b>{{ toDisplay(chain.initialValue) }}</b>
               <span class="effect-arrow"> ⇒ </span>
@@ -755,7 +765,10 @@ function goBack(): void {
                 末方确认后自动编号并落账
               </template>
               <template v-else>
-                当前不是待确认方「{{ pendingParty?.companyName || pendingParty?.role }}」
+                当前不是待确认方「{{
+                  pendingParty?.companyName ||
+                  partyRoleLabel(contract?.contractTypeKey, pendingParty?.role)
+                }}」
               </template>
             </span>
           </template>

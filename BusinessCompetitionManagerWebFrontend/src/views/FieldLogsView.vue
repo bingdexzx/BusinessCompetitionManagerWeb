@@ -6,11 +6,15 @@ import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import { exportFieldLogs, getFieldLogs } from '@/api'
 import type { FieldLogItem, FieldLogQuery } from '@/api/types'
 import { useResourceRefresh } from '@/composables/useNotifications'
+import { useCatalog } from '@/composables/useCatalog'
 import { formatDateTime, toDisplay, truncate } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
 import { opLabel } from '@/utils/fieldOps'
 
 const props = defineProps<{ cid: string }>()
+
+// 字段键 → 中文名（筛选与列表都不显示 cash 这类键）
+const { fieldLabel, fieldOptions } = useCatalog(() => props.cid)
 
 const PAGE_SIZE = 20
 
@@ -158,13 +162,21 @@ onMounted(() => void load())
 
       <!-- 过滤栏（单条工具条：所有筛选项 + 查询/重置在一行内换行排列） -->
       <el-form :inline="true" class="filter-bar query-toolbar" @submit.prevent>
-        <el-form-item label="字段键">
-          <el-input
+        <el-form-item label="字段">
+          <el-select
             v-model="filters.fieldKey"
-            placeholder="如 cash"
+            filterable
             clearable
-            style="width: 150px"
-          />
+            placeholder="全部字段"
+            style="width: 180px"
+          >
+            <el-option
+              v-for="opt in fieldOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="合同 ID">
           <el-input
@@ -236,7 +248,9 @@ onMounted(() => void load())
         <el-table-column prop="companyName" label="公司" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.companyName || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="fieldKey" label="字段键" min-width="130" show-overflow-tooltip />
+        <el-table-column label="字段" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ fieldLabel(row.fieldKey) }}</template>
+        </el-table-column>
         <el-table-column label="事件" width="100">
           <template #default="{ row }">
             <el-tag :type="eventTagType(row.event)" size="small">

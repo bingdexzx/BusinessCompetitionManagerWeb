@@ -211,9 +211,24 @@ export interface ImportReport {
   startedAt: string
   finishedAt: string | null
   files: Array<{ file: string; stage: string; rows: number; errors: string[]; warnings: string[] }>
-  plugins: Array<{ file: string; key: string; kind: string; version: string; sha256: string }>
+  plugins: Array<{
+    file: string
+    key: string
+    kind: string
+    /** 插件中文名（manifest.name / 插件 INDUSTRY_NAME|CONTRACT_NAME） */
+    name?: string
+    version: string
+    sha256: string
+  }>
   createdDatabase: string | null
-  fieldMigrations: Array<{ industryKey: string; added: number; updated: number; total: number }>
+  fieldMigrations: Array<{
+    industryKey: string
+    /** 产业中文名 */
+    industryName?: string
+    added: number
+    updated: number
+    total: number
+  }>
   basedataRows: Record<string, number>
   contractsCreated: number
   /** 重导入去重：同类型 + 名称 + 参与方 + 输入 已存在则跳过 */
@@ -247,6 +262,16 @@ export interface IndustryOption {
   key: string
   name: string
   version?: string
+}
+
+/** 产业字段元数据：界面用 key → name 把 cash 这类字段键显示成中文 */
+export interface IndustryFieldMeta {
+  id: number
+  key: string
+  name: string
+  fieldType: string
+  dataTable?: string
+  pluginKey?: string
 }
 
 export type PluginKind = 'CONTRACT' | 'INDUSTRY'

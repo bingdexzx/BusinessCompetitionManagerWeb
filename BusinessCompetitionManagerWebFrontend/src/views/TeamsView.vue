@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import * as api from '@/api'
-import type { IndustryOption, Team, TeamJoinCode } from '@/api/types'
+import type { Team, TeamJoinCode } from '@/api/types'
+import { useCatalog } from '@/composables/useCatalog'
 import { useResourceRefresh } from '@/composables/useNotifications'
 import { useCountUp, useFlash } from '@/composables/useMotion'
 import { useAuthStore } from '@/stores/auth'
@@ -12,6 +13,11 @@ import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
+
+// 产业键 → 中文名（比赛包里的 manufacturer 这类 key 不直接展示）
+const catalog = useCatalog(() => props.cid)
+const industryLabel = catalog.industryLabel
+const industryOptions = catalog.industryOptions
 
 const teams = ref<Team[]>([])
 const loading = ref(false)
@@ -192,36 +198,23 @@ async function submitAdjust(): Promise<void> {
 const showAssign = ref(false)
 const assigning = ref(false)
 const assignTarget = ref<Team | null>(null)
-const industries = ref<IndustryOption[]>([])
-const industriesLoading = ref(false)
+// 已导入产业（含中文名）：来自共享目录，随比赛包变更自动刷新
+const industries = catalog.industries
+const industriesLoading = catalog.loading
 const assignForm = ref({
   industryKey: '',
   companyName: '',
 })
 
-async function loadIndustries(): Promise<void> {
-  industriesLoading.value = true
-  try {
-    industries.value = await api.getIndustries(props.cid)
-    if (!assignForm.value.industryKey) {
-      assignForm.value.industryKey = industries.value[0]?.key ?? ''
-    }
-  } catch (err) {
-    ElMessage.error(errorMessage(err, '产业列表加载失败'))
-  } finally {
-    industriesLoading.value = false
-  }
-}
-
 // 默认产业：最终产业 → 首个志愿 → 首个已导入产业
 async function openAssign(team: Team): Promise<void> {
   assignTarget.value = team
   assignForm.value = {
-    industryKey: team.industryFinal || team.industryChoice?.[0] || '',
+    industryKey:
+      team.industryFinal || team.industryChoice?.[0] || industries.value[0]?.key || '',
     companyName: team.companyName || team.name,
   }
   showAssign.value = true
-  await loadIndustries()
 }
 
 async function submitAssign(): Promise<void> {
@@ -348,9 +341,9 @@ onMounted(() => void load())
                 <span
                   class="relation-value"
                   :class="{ 'is-pending': !team.industryFinal }"
-                  :title="team.industryFinal || '产业未定'"
+                  :title="industryLabel(team.industryFinal) || '产业未定'"
                 >
-                  {{ team.industryFinal || '未定' }}
+                  {{ industryLabel(team.industryFinal) || '未定' }}
                 </span>
               </div>
             </div>
@@ -389,7 +382,7 @@ onMounted(() => void load())
                   size="small"
                   class="mini-tag"
                 >
-                  {{ c }}
+                  {{ industryLabel(c) }}
                 </el-tag>
                 <span v-if="!team.industryChoice?.length" class="muted">—</span>
               </div>
@@ -405,7 +398,7 @@ onMounted(() => void load())
                   type="info"
                   class="mini-tag"
                 >
-                  {{ c }}
+                  {{ industryLabel(c) }}
                 </el-tag>
                 <span v-if="!team.industryAdjustAccepted?.length" class="muted">—</span>
               </div>
@@ -478,9 +471,16 @@ onMounted(() => void load())
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="输入产业 key 后回车，可多个"
+            placeholder="选择产业（可多选）"
             style="width: 100%"
-          />
+          >
+            <el-option
+              v-for="opt in industryOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="接受调剂">
           <el-select
@@ -490,9 +490,16 @@ onMounted(() => void load())
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="可接受的调剂产业 key，可多个"
+            placeholder="可接受的调剂产业（可多选）"
             style="width: 100%"
-          />
+          >
+            <el-option
+              v-for="opt in industryOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -534,9 +541,16 @@ onMounted(() => void load())
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="该队伍最终确定的产业 key"
+            placeholder="选择该队伍最终确定的产业"
             style="width: 100%"
-          />
+          >
+            <el-option
+              v-for="opt in industryOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="产业志愿">
           <el-select
@@ -548,7 +562,14 @@ onMounted(() => void load())
             :reserve-keyword="false"
             placeholder="可一并修订产业志愿"
             style="width: 100%"
-          />
+          >
+            <el-option
+              v-for="opt in industryOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="接受调剂">
           <el-select
@@ -560,7 +581,14 @@ onMounted(() => void load())
             :reserve-keyword="false"
             placeholder="可一并修订接受调剂范围"
             style="width: 100%"
-          />
+          >
+            <el-option
+              v-for="opt in industryOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>

@@ -28,12 +28,16 @@ import type {
   SettlementResult,
 } from '@/api/types'
 import { useResourceRefresh } from '@/composables/useNotifications'
+import { useCatalog } from '@/composables/useCatalog'
 import { useCountUp } from '@/composables/useMotion'
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
+
+// 字段键 → 中文名（评分准则里选字段、列表展示都用中文）
+const { fieldLabel, fieldOptions } = useCatalog(() => props.cid)
 const auth = useAuthStore()
 
 // 仅系统超管/本比赛超管可见、可管理
@@ -451,7 +455,9 @@ onMounted(() => {
 
       <el-table :data="config?.criteria ?? []" v-loading="configLoading" stripe>
         <el-table-column prop="name" label="准则名称" min-width="150" show-overflow-tooltip />
-        <el-table-column prop="fieldKey" label="字段键" min-width="140" show-overflow-tooltip />
+        <el-table-column label="评分字段" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ fieldLabel(row.fieldKey) }}</template>
+        </el-table-column>
         <el-table-column label="聚合方式" width="110">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ AGG_LABELS[row.aggregation] ?? row.aggregation }}</el-tag>
@@ -783,8 +789,22 @@ onMounted(() => {
           <el-form-item label="准则名称" required>
             <el-input v-model="form.name" placeholder="如：净利润" maxlength="64" />
           </el-form-item>
-          <el-form-item label="字段键" required>
-            <el-input v-model="form.fieldKey" placeholder="如：netProfit" maxlength="64" />
+          <el-form-item label="评分字段" required>
+            <el-select
+              v-model="form.fieldKey"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选择产业字段（可搜索中文名）"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="opt in fieldOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
           </el-form-item>
           <el-form-item label="聚合方式">
             <el-select v-model="form.aggregation" style="width: 100%">
