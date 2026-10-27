@@ -31,6 +31,8 @@ export function useCountUp(
 
   const initial = typeof source.value === 'number' ? source.value : 0
   const displayed = ref(initial)
+  // 首屏拿到的第一个真实值直接落定：否则会从 0 滚到目标值，看起来像"先显示 0 再变对"
+  let seeded = typeof source.value === 'number'
   let frame = 0
 
   const cancel = (): void => {
@@ -43,6 +45,11 @@ export function useCountUp(
   watch(source, (next) => {
     cancel()
     const to = typeof next === 'number' && Number.isFinite(next) ? next : 0
+    if (!seeded) {
+      seeded = true
+      displayed.value = round(to)
+      return
+    }
     const from = displayed.value
     if (from === to || prefersReducedMotion() || duration <= 0) {
       displayed.value = round(to)

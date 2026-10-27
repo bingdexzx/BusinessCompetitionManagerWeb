@@ -597,7 +597,10 @@ watch(
       </div>
     </div>
 
-    <div class="metric-grid overview-grid anim-fade-in-up">
+    <div
+      class="metric-grid overview-grid anim-fade-in-up"
+      :class="{ 'metrics-loading': loadingStocks }"
+    >
       <div class="metric-card">
         <span class="metric-label">当前轮次</span>
         <div class="metric-value">{{ roundReady ? roundShown : '—' }}</div>

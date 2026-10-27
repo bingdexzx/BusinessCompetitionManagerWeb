@@ -7,7 +7,11 @@
           <div class="brand-name">商赛办赛管理系统</div>
         </div>
         <div class="brand-meta">
-          <div v-if="competitionName" class="meta-row">
+          <!-- 会话恢复中：不要先闪一句「未选择比赛」 -->
+          <div v-if="auth.booting" class="meta-row">
+            <div class="skeleton skeleton-line meta-skeleton" />
+          </div>
+          <div v-else-if="competitionName" class="meta-row">
             <el-tag type="success" size="small" effect="plain" class="meta-name">{{
               competitionName
             }}</el-tag>
@@ -265,6 +269,11 @@ const activeMenu = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.brand-meta .meta-skeleton {
+  width: 108px;
+  height: 20px;
+  margin-bottom: 0;
 }
 .brand-meta .meta-hint {
   font-size: 12px;

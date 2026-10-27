@@ -24,6 +24,8 @@ export const useAuthStore = defineStore('auth', () => {
   const refreshToken = ref(getRefreshToken())
   const user = ref<User | null>(null)
   const selectedCompetitionId = ref<number | null>(sanitizeId(getCompetitionId()))
+  /** 冷启动/刷新时正在恢复会话（有 token 还没拿到 /me）：界面此时先显示骨架 */
+  const booting = ref(Boolean(accessToken.value))
 
   const isAuthenticated = computed(() => Boolean(accessToken.value))
   const isSuperuser = computed(() => Boolean(user.value?.isSuperuser))
@@ -65,12 +67,18 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function init(): Promise<void> {
-    if (!accessToken.value) return
+    if (!accessToken.value) {
+      booting.value = false
+      return
+    }
     try {
       await fetchMe()
     } catch {
       // token 已失效：清空本地会话
       clearSession()
+    } finally {
+      // 冷启动/刷新期间界面先给骨架，避免"侧栏未选择比赛 + 内容区空白"的闪烁
+      booting.value = false
     }
   }
 
@@ -116,6 +124,7 @@ export const useAuthStore = defineStore('auth', () => {
     refreshToken,
     user,
     selectedCompetitionId,
+    booting,
     isAuthenticated,
     isSuperuser,
     memberships,

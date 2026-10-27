@@ -589,6 +589,36 @@ button:focus-visible,
     animation: skeleton-sweep 1.4s var(--ease-standard) infinite;
   }
 }
+
+// 指标值未到位：用骨架条占位，**不要先亮一个 0**（0 是有效数据，会让人误判）
+// 用法：给指标容器加 `.metrics-loading`（首屏请求未返回时）。
+.metrics-loading .metric-value,
+.metrics-loading .metric-delta {
+  position: relative;
+  color: transparent !important;
+  &::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 58%;
+    min-width: 40px;
+    height: 0.78em;
+    transform: translateY(-50%);
+    border-radius: var(--radius-xs);
+    background: var(--surface-sunken);
+    animation: value-skeleton-pulse 1.2s var(--ease-standard) infinite;
+  }
+}
+@keyframes value-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 .skeleton-line {
   height: 12px;
   margin-bottom: 10px;

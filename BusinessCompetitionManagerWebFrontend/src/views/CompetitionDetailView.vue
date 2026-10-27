@@ -503,6 +503,15 @@ onMounted(() => {
     <el-button size="small" @click="loadCompetition">重试</el-button>
   </el-alert>
 
+  <div v-if="loading && !competition" class="detail-skeleton" aria-busy="true">
+    <div class="skeleton skeleton-line detail-skeleton__title" />
+    <div class="detail-skeleton__cards">
+      <div v-for="n in 3" :key="`sk-card-${n}`" class="skeleton detail-skeleton__card" />
+    </div>
+    <div class="skeleton skeleton-line" />
+    <div class="skeleton skeleton-line" />
+  </div>
+
   <div v-if="competition" class="detail-page">
     <div class="page-toolbar">
       <h2 class="page-title">{{ competition.name }}</h2>
@@ -1021,6 +1030,31 @@ onMounted(() => {
 </template>
 
 <style scoped lang="scss">
+// 首屏骨架：比赛信息未返回前先占位，避免空白页与布局跳动
+.detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 8px;
+
+  &__title {
+    width: 240px;
+    height: 26px;
+    margin-bottom: 4px;
+  }
+
+  &__cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+
+  &__card {
+    height: 84px;
+    border-radius: var(--radius-md);
+  }
+}
+
 .page-toolbar {
   display: flex;
   align-items: center;

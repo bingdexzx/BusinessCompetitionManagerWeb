@@ -153,7 +153,7 @@ watch(() => props.cid, loadYears)
 
     <!-- 补录说明 -->
     <!-- 关键数字：财年 / 状态 / 备份总量 -->
-    <div class="metric-grid anim-fade-in-up">
+    <div class="metric-grid anim-fade-in-up" :class="{ 'metrics-loading': loading && !years.length }">
       <div class="metric-card">
         <div class="metric-label">财年总数</div>
         <div class="metric-value">{{ yearTotalShown }}<span class="metric-unit">个</span></div>
