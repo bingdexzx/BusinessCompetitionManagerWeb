@@ -56,8 +56,12 @@ def _party_data(contract: Contract, company_map=None) -> list:
 
 
 def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
-                   company_map=None) -> dict:
-    """合同序列化；列表/增量走 thin=True（字段裁剪：不带 inputs 等大字段）。"""
+                   company_map=None, viewer=None) -> dict:
+    """合同序列化；列表/增量走 thin=True（字段裁剪：不带 inputs 等大字段）。
+
+    ``with_timeline`` 只对**超级管理员**生效：确认时间线与检查记录（含重演依据）属于
+    审计信息，不对参赛代表与主席团返回（与效果审计/资金账本同口径）。
+    """
     data = {
         'id': contract.id,
         'contractTypeKey': contract.contract_type_key,
@@ -80,7 +84,7 @@ def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
     }
     if not thin or with_timeline:
         data['inputs'] = contract.inputs
-    if with_timeline:
+    if with_timeline and can_manage_competition(viewer, ctx.get_competition_id()):
         data['timeline'] = _timeline(contract)
         data['checks'] = _checks_data(contract)
     return data
@@ -313,7 +317,7 @@ class ContractDetailView(APIView):
         if contract is None:
             return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
                             status=status.HTTP_404_NOT_FOUND)
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
     def delete(self, request, cid, pk):
@@ -373,7 +377,7 @@ class ContractSubmitView(APIView):
         except ContractError as exc:
             return _error(str(exc))
         audit_services.log_action('CONTRACT_SUBMIT', actor=request.user, target=str(contract.id))
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
 
@@ -395,7 +399,7 @@ class ContractConfirmView(APIView):
         except ContractError as exc:
             return _error(str(exc))
         audit_services.log_action('CONTRACT_CONFIRM', actor=request.user, target=str(contract.id))
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
 
@@ -413,18 +417,24 @@ class ContractRetryExecuteView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_RETRY_EXECUTE', actor=request.user,
                                   target=str(contract.id))
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
 
 class ContractEffectsView(APIView):
-    """效果审计（§7.2）：每行带轮次状态与重演值（replayBefore/replayAfter，上游修改后重算）。"""
+    """效果审计（§7.2）：每行带轮次状态与重演值（replayBefore/replayAfter，上游修改后重算）。
+
+    仅系统超管 / 比赛超管可读（含重演值与检查依据，属审计信息）。
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):
         from apps.competition.contracts import ledger
 
+        if not can_manage_competition(request.user, cid):
+            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''},
+                            status=status.HTTP_403_FORBIDDEN)
         contract = _visible_contract_or_none(request, pk)
         if contract is None:
             return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
@@ -468,7 +478,7 @@ class ContractRequestModifyView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_APPLY', actor=request.user,
                                   target=str(contract.id), payload={'reason': mod.reason})
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])),
                         status=status.HTTP_201_CREATED)
 
@@ -490,7 +500,7 @@ class ContractModifyReviewView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_REVIEW', actor=request.user,
                                   target=str(contract.id), payload={'approve': approve})
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
 
@@ -509,7 +519,7 @@ class ContractModifyOtherPartyView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_MOD_OTHER_PARTY', actor=request.user,
                                   target=str(contract.id), payload={'approve': approve})
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
 
@@ -529,7 +539,7 @@ class ContractModifySubmitView(APIView):
         audit_services.log_action('CONTRACT_MOD_SUBMIT', actor=request.user,
                                   target=str(contract.id),
                                   payload={'roundNo': contract.round_no})
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))
 
 
@@ -548,5 +558,5 @@ class ContractBackfillReviewView(APIView):
             return _error(str(exc))
         audit_services.log_action('CONTRACT_BACKFILL_REVIEW', actor=request.user,
                                   target=str(contract.id), payload={'approve': approve})
-        return Response(_contract_data(contract, with_timeline=True,
+        return Response(_contract_data(contract, with_timeline=True, viewer=request.user,
                                        company_map=_company_map_for([contract])))

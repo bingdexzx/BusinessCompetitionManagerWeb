@@ -96,6 +96,11 @@ async function load(): Promise<void> {
 }
 
 async function loadEffects(): Promise<void> {
+  // 效果审计只给超级管理员：非超管不发起请求（后端同样会 403）
+  if (!canViewAudit.value) {
+    effects.value = []
+    return
+  }
   effectsLoading.value = true
   try {
     effects.value = await getContractEffects(props.cid, Number(props.id))
@@ -111,7 +116,7 @@ const ledger = ref<ContractLedger | null>(null)
 
 async function loadLedger(): Promise<void> {
   // 账本链只给超级管理员：非超管不发起请求（后端同样会 403）
-  if (!canViewLedger.value) {
+  if (!canViewAudit.value) {
     ledger.value = null
     return
   }
@@ -207,8 +212,9 @@ const isCompSuperAdmin = computed(() =>
   ),
 )
 const canReview = computed(() => auth.isSuperuser || isCompSuperAdmin.value)
-// 资金账本链（重演）会暴露其他公司的资金流与重算依据 → 只给超级管理员看（与后端一致）
-const canViewLedger = canReview
+// 「效果与账本」「确认时间线」「资金账本链（重演）」都是审计信息（含重演值/跨公司资金流），
+// 只给超级管理员看；后端同样只对超管返回 timeline/checks 并校验 effects/ledger 接口。
+const canViewAudit = canReview
 
 // 可操作公司：参赛代表=本队公司，管理员=所辖公司；null=未知按放开
 const myCompanyIds = ref<Set<number> | null>(null)
@@ -549,7 +555,7 @@ function goBack(): void {
         <el-empty v-else :image-size="60" description="暂无输入项" />
       </section>
 
-      <section class="panel effects-panel anim-fade-in-up">
+      <section v-if="canViewAudit" class="panel effects-panel anim-fade-in-up">
         <h2 class="section-title">效果与账本</h2>
         <h3 class="section-title section-title--sub">检查记录</h3>
         <el-table :data="checks" border stripe style="width: 100%">
@@ -671,7 +677,7 @@ function goBack(): void {
           </el-table-column>
         </el-table>
 
-        <template v-if="canViewLedger">
+        <template v-if="canViewAudit">
           <h3 v-if="ledger?.chains?.length" class="section-title section-title--sub">
             资金账本链（重演）
           </h3>
@@ -680,7 +686,7 @@ function goBack(): void {
           </div>
         </template>
         <div
-          v-for="chain in canViewLedger ? (ledger?.chains ?? []) : []"
+          v-for="chain in canViewAudit ? (ledger?.chains ?? []) : []"
           :key="`${chain.companyId}-${chain.fieldKey}`"
           class="ledger-chain"
         >
@@ -715,7 +721,7 @@ function goBack(): void {
         </div>
       </section>
 
-      <section class="panel timeline-panel anim-fade-in-up">
+      <section v-if="canViewAudit" class="panel timeline-panel anim-fade-in-up">
         <h2 class="section-title">确认时间线</h2>
         <el-timeline v-if="timelineNodes.length > 0" class="confirm-timeline">
           <el-timeline-item
