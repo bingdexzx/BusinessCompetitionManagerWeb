@@ -3,10 +3,6 @@
     <div class="page-head">
       <div class="page-head-main">
         <h2 class="page-title">{{ layout?.title || '仪表盘' }}</h2>
-        <p class="page-sub">
-          布局来自比赛包 <b>dashboard.json</b>，<b>按产业分屏</b>：通用区聚合全部可操作公司，
-          产业页签只聚合该产业公司并绑定其产业字段（本队 / 被分配管理）。
-        </p>
       </div>
       <el-button @click="load">刷新</el-button>
     </div>
@@ -408,14 +404,6 @@ useResourceRefresh(
 .page-head > .el-button {
   flex-shrink: 0;
   margin-left: auto;
-}
-
-.page-sub {
-  margin: 0;
-  max-width: 760px;
-  font-size: var(--font-sm);
-  line-height: 1.7;
-  color: var(--color-text-secondary);
 }
 
 .dashboard-error {
