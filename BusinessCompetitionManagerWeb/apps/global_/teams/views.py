@@ -80,14 +80,20 @@ def _industry_available(competition, industry_key: str) -> bool:
         package__competition=competition, kind='INDUSTRY', key=industry_key).exists()
 
 
-def _require_player(request, competition) -> CompetitionMembership:
-    """组队前提：本比赛参赛身份；没有就**自动补一条 PLAYER**（成员列表里要能看到队长/队员）。
+def _require_player(request, competition):
+    """组队前提：**已进入本比赛**（有效成员身份）。
 
-    返回 ``(membership, error)``：身份被管理员停用时不静默复活，而是明确拒绝。
+    队伍归属于比赛，所以没进比赛就不能建队/进队；未加入与被停用分别给明确提示。
+    返回 ``(membership, error)``。
     """
-    from apps.global_.memberships.services import ensure_and_announce
-
-    return ensure_and_announce(request.user, competition)
+    membership = get_membership(request.user, competition.id)
+    if membership is None:
+        inactive = CompetitionMembership.objects.filter(
+            user=request.user, competition=competition).exists()
+        if inactive:
+            return None, '你的参赛身份已被停用，请联系比赛管理员'
+        return None, '请先加入本比赛（激活码 / 管理员添加）后再组队'
+    return membership, None
 
 
 class TeamListCreateView(APIView):
