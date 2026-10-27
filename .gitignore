@@ -21,3 +21,7 @@ BusinessCompetitionManagerWeb/media/
 gipfel_full_*/
 gipfel_m1_*/
 
+
+# pnpm 试用产物（本项目以 npm + package-lock.json 为准；这两个文件是不完整的旧产物）
+BusinessCompetitionManagerWebFrontend/pnpm-lock.yaml
+BusinessCompetitionManagerWebFrontend/pnpm-workspace.yaml
