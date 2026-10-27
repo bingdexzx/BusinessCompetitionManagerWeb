@@ -23,31 +23,9 @@ def user_membership(user, competition_id=None):
 def user_company_ids(user, competition_id=None) -> set:
     """用户在当前比赛**可查看**的公司 ID 集合（'*' = 全部）。
 
-    参赛代表取「本队公司」——**队长与队员都在内**（队员只读）；能否操作看 ``can_act_for_company``。"""
-    competition_id = competition_id or get_competition_id()
-    if not (user and user.is_authenticated and competition_id):
-        return set()
-    if user.is_superuser:
-        return {'*'}
-    membership = user_membership(user, competition_id)
-    if membership is None:
-        return set()
-    if membership.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN:
-        return {'*'}
-    if membership.identity == CompetitionMembership.Identity.ADMIN:
-        return {int(c) for c in (membership.managed_companies or [])}
-    from apps.global_.teams.models import Team
-    team_ids = Team.objects.filter(
-        competition_id=competition_id, members__user=user,
-    ).values_list('company_id', flat=True)
-    return {int(c) for c in team_ids if c}
-
-
-def user_operable_company_ids(user, competition_id=None) -> set:
-    """用户在当前比赛**可操作**的公司 ID 集合（'*' = 全部）。
-
-    2026-10 决策：公司分配给队伍后**只有队长**能操作本公司（下单/撤单、合同创建/确认/申请
-    修改等），队员只读。管理员按所辖公司操作，超管全部可操作。
+    参赛代表取「本队公司」——**队长与队员都在内**（队员只读）；能否操作看 ``can_act_for_company``。
+    管理员（主席团）**兼任队长/队员**时，本队公司与此人所辖公司取并集——否则"既当裁判又参赛"
+    的人反而看不到自己队伍的公司。
     """
     competition_id = competition_id or get_competition_id()
     if not (user and user.is_authenticated and competition_id):
@@ -59,14 +37,39 @@ def user_operable_company_ids(user, competition_id=None) -> set:
         return set()
     if membership.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN:
         return {'*'}
+    from apps.global_.teams.models import Team
+    team_ids = {int(c) for c in Team.objects.filter(
+        competition_id=competition_id, members__user=user,
+    ).values_list('company_id', flat=True) if c}
     if membership.identity == CompetitionMembership.Identity.ADMIN:
-        return {int(c) for c in (membership.managed_companies or [])}
+        return {int(c) for c in (membership.managed_companies or [])} | team_ids
+    return team_ids
+
+
+def user_operable_company_ids(user, competition_id=None) -> set:
+    """用户在当前比赛**可操作**的公司 ID 集合（'*' = 全部）。
+
+    2026-10 决策：公司分配给队伍后**只有队长**能操作本公司（下单/撤单、合同创建/确认/申请
+    修改等），队员只读。管理员按所辖公司操作（兼任队长时并上本队公司），超管全部可操作。
+    """
+    competition_id = competition_id or get_competition_id()
+    if not (user and user.is_authenticated and competition_id):
+        return set()
+    if user.is_superuser:
+        return {'*'}
+    membership = user_membership(user, competition_id)
+    if membership is None:
+        return set()
+    if membership.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN:
+        return {'*'}
     # 参赛代表：**仅队长**的本队公司
     from apps.global_.teams.models import Team
-    captain_ids = Team.objects.filter(
+    captain_ids = {int(c) for c in Team.objects.filter(
         competition_id=competition_id, captain=user,
-    ).values_list('company_id', flat=True)
-    return {int(c) for c in captain_ids if c}
+    ).values_list('company_id', flat=True) if c}
+    if membership.identity == CompetitionMembership.Identity.ADMIN:
+        return {int(c) for c in (membership.managed_companies or [])} | captain_ids
+    return captain_ids
 
 
 def can_read_competition(user, competition_id=None) -> bool:

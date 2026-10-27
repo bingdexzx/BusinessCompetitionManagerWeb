@@ -107,6 +107,34 @@ class CompanyPermissionTests(TestCase):
         self.assertEqual(user_company_ids(stranger, self.cid), set())
         self.assertEqual(user_operable_company_ids(stranger, self.cid), set())
 
+    # ------------------------------------------------------------ 管理员兼任队长/队员
+
+    def _admin(self, name: str, managed=None):
+        user = User.objects.create_user(
+            username=name, password='x' * 12, email=f'{name}@test.local')
+        CompetitionMembership.objects.create(
+            user=user, competition=self.competition,
+            identity=CompetitionMembership.Identity.ADMIN, managed_companies=managed or [])
+        return user
+
+    def test_admin_as_captain_operates_own_team_company(self):
+        """主席团成员兼任队长：所辖公司 ∪ 本队公司（否则"既当裁判又参赛"的人操作不了自己公司）。"""
+        admin = self._admin('admin_cap', managed=[])
+        TeamMember.objects.create(team=self.team, user=admin, role=TeamMember.Role.MEMBER)
+        self.team.captain = admin
+        self.team.save(update_fields=['captain'])
+
+        self.assertEqual(user_company_ids(admin, self.cid), {42})
+        self.assertEqual(user_operable_company_ids(admin, self.cid), {42})
+
+    def test_admin_as_member_views_but_not_operates_team_company(self):
+        admin = self._admin('admin_mate', managed=[7])
+        TeamMember.objects.create(team=self.team, user=admin, role=TeamMember.Role.MEMBER)
+
+        # 可查看：所辖 7 ∪ 本队 42；可操作：只有所辖 7（队员只读）
+        self.assertEqual(user_company_ids(admin, self.cid), {42, 7})
+        self.assertEqual(user_operable_company_ids(admin, self.cid), {7})
+
     # ------------------------------------------------------------ 表态（其他方确认）
 
     def test_strict_actor_ids_is_captain_only(self):

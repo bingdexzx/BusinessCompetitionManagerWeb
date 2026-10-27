@@ -8,6 +8,7 @@
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.common import context as ctx
@@ -17,7 +18,7 @@ from apps.global_.competitions.models import Competition
 from apps.global_.memberships.models import CompetitionMembership
 from apps.global_.packages.models import Package, PackagePlugin
 from apps.global_.plugins.models import PluginRegistry
-from apps.global_.teams.models import Team, TeamMember
+from apps.global_.teams.models import Team, TeamJoinCode, TeamMember
 from BusinessCompetitionManagerWeb.settings.databases import register_competition_db
 
 ALIAS = 'comp_unittest'
@@ -196,3 +197,92 @@ class TeamCompanyAssignTests(TestCase):
             username='outsider', password='x' * 12, email='outsider@test.local')
         self.client.force_authenticate(outsider)
         self.assertEqual(self.client.get(self._url('/industries')).status_code, 403)
+
+
+class TeamMembershipProvisionTests(TestCase):
+    """组队自动补齐「参赛选手」身份（2026-10 决策）。
+
+    建队/凭码进队都会把用户补进比赛成员（PLAYER），不降级已有的管理员/超管身份；
+    已被停用的身份不静默复活，而是明确拒绝。
+    """
+
+    databases = {'default', ALIAS}
+
+    @classmethod
+    def tearDownClass(cls):
+        ctx.clear_request_context()
+        super().tearDownClass()
+
+    def setUp(self):
+        self.competition = Competition.objects.create(
+            name='自动身份测试赛', code='AUTOPLAYER', db_name=ALIAS)
+        self.cid = self.competition.pk
+        ctx.set_competition_context(self.cid, ALIAS)
+        self.client = APIClient()
+
+    def _url(self, suffix: str) -> str:
+        return f'/api/competitions/{self.cid}{suffix}'
+
+    def _membership(self, user):
+        return CompetitionMembership.objects.filter(
+            user=user, competition=self.competition).first()
+
+    def _user(self, name: str):
+        return User.objects.create_user(
+            username=name, password='x' * 12, email=f'{name}@test.local')
+
+    def test_create_team_auto_provisions_player(self):
+        user = self._user('newbie')
+        self.assertIsNone(self._membership(user))  # 建队前不是成员
+        self.client.force_authenticate(user)
+        resp = self.client.post(self._url('/teams'), {'name': '新手队'}, format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        membership = self._membership(user)
+        self.assertIsNotNone(membership)  # 自动成为比赛成员
+        self.assertEqual(membership.identity, CompetitionMembership.Identity.PLAYER)
+        self.assertTrue(membership.is_active)
+
+    def test_create_team_does_not_downgrade_admin(self):
+        admin = self._user('teamadmin')
+        CompetitionMembership.objects.create(
+            user=admin, competition=self.competition,
+            identity=CompetitionMembership.Identity.ADMIN, managed_companies=[999])
+        self.client.force_authenticate(admin)
+        resp = self.client.post(self._url('/teams'), {'name': '主席团队'}, format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(self._membership(admin).identity, CompetitionMembership.Identity.ADMIN)
+
+    def test_inactive_membership_cannot_create_team(self):
+        user = self._user('disabled')
+        CompetitionMembership.objects.create(
+            user=user, competition=self.competition,
+            identity=CompetitionMembership.Identity.PLAYER, is_active=False)
+        self.client.force_authenticate(user)
+        resp = self.client.post(self._url('/teams'), {'name': '被停用队'}, format='json')
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertIn('停用', resp.json()['message'])
+        self.assertFalse(Team.objects.filter(competition=self.competition).exists())
+
+    def test_join_team_auto_provisions_player(self):
+        captain = self._user('oldcap')
+        CompetitionMembership.objects.create(
+            user=captain, competition=self.competition,
+            identity=CompetitionMembership.Identity.PLAYER)
+        team = Team.objects.create(
+            competition=self.competition, name='老队', captain=captain)
+        TeamMember.objects.create(team=team, user=captain, role=TeamMember.Role.CAPTAIN)
+        TeamJoinCode.objects.create(
+            team=team, code='JOINME01', max_uses=1, created_by=captain.id,
+            expires_at=timezone.now() + timezone.timedelta(days=1))
+
+        joiner = self._user('joiner')
+        self.client.force_authenticate(joiner)
+        resp = self.client.post(self._url('/teams/join'), {'code': 'JOINME01'}, format='json')
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        membership = self._membership(joiner)
+        self.assertIsNotNone(membership)
+        self.assertEqual(membership.identity, CompetitionMembership.Identity.PLAYER)
+        self.assertTrue(team.members.filter(user=joiner).exists())
+

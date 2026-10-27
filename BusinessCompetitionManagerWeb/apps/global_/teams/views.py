@@ -81,11 +81,13 @@ def _industry_available(competition, industry_key: str) -> bool:
 
 
 def _require_player(request, competition) -> CompetitionMembership:
-    """加入组队的前提：本比赛的参赛身份（§2.2 阶段三）。"""
-    m = get_membership(request.user, competition.id)
-    if m is None and not request.user.is_superuser:
-        return None
-    return m
+    """组队前提：本比赛参赛身份；没有就**自动补一条 PLAYER**（成员列表里要能看到队长/队员）。
+
+    返回 ``(membership, error)``：身份被管理员停用时不静默复活，而是明确拒绝。
+    """
+    from apps.global_.memberships.services import ensure_and_announce
+
+    return ensure_and_announce(request.user, competition)
 
 
 class TeamListCreateView(APIView):
@@ -102,9 +104,9 @@ class TeamListCreateView(APIView):
     def post(self, request, cid):
         """队长建队：录入想要的产业与接受调剂的产业（§2.2 阶段三）。"""
         competition = get_object_or_404(Competition, pk=cid)
-        membership = _require_player(request, competition)
-        if membership is None:
-            return Response({'code': 403, 'message': '需要本比赛参赛身份', 'details': ''}, status=403)
+        membership, error = _require_player(request, competition)
+        if error is not None:
+            return Response({'code': 403, 'message': error, 'details': ''}, status=403)
         if Team.objects.filter(competition=competition, members__user=request.user).exists():
             return Response({'code': 400, 'message': '你已加入其他队伍', 'details': ''}, status=400)
         name = (request.data.get('name') or '').strip()
@@ -162,9 +164,9 @@ class TeamJoinView(APIView):
 
     def post(self, request, cid):
         competition = get_object_or_404(Competition, pk=cid)
-        membership = _require_player(request, competition)
-        if membership is None:
-            return Response({'code': 403, 'message': '需要本比赛参赛身份', 'details': ''}, status=403)
+        membership, error = _require_player(request, competition)
+        if error is not None:
+            return Response({'code': 403, 'message': error, 'details': ''}, status=403)
         code = (request.data.get('code') or '').strip()
         join_code = TeamJoinCode.objects.select_related('team').filter(code=code).first()
         if join_code is None or join_code.team.competition_id != cid or not join_code.is_valid:

@@ -32,10 +32,10 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/POST | `/competitions/{cid}/teams` | 队伍列表（含 `companyId`/`companyName`，未分配为空串）/ 队长建队 `{name, industryChoice[], industryAdjustAccepted[]}` |
+| GET/POST | `/competitions/{cid}/teams` | 队伍列表（含 `companyId`/`companyName`，未分配为空串）/ 队长建队 `{name, industryChoice[], industryAdjustAccepted[]}`；**自动补齐比赛成员身份**（见下） |
 | GET | `/competitions/{cid}/teams/{tid}` | 队伍详情（成员、产业志愿） |
 | POST | `/competitions/{cid}/teams/{tid}/join-codes` | 生成组队码 `{maxUses?}`（队长） |
-| POST | `/competitions/{cid}/teams/join` | 凭组队码加入 `{code}` |
+| POST | `/competitions/{cid}/teams/join` | 凭组队码加入 `{code}`；同样**自动补齐比赛成员身份** |
 | PATCH | `/competitions/{cid}/teams/{tid}/industry` | **管理员手动调整** `{industryFinal, industryChoice?, industryAdjustAccepted?}`；同步创建/更新公司并回填产业初始值 |
 | POST | `/competitions/{cid}/teams/{tid}/company` | **分配/修改队伍公司** `{industryKey, companyName}`（系统超管 / 比赛超管）→ 建/改公司（一队一公司）并按产业回填初始字段值；分配后**队长可操作**本公司、**队员只读** |
 | GET | `/competitions/{cid}/industries` | 本比赛**已导入**的产业插件 `[{key, name, version}]`（分配公司选产业用；比赛成员可见） |
@@ -46,6 +46,12 @@
 > **公司权限口径（2026-10 决策）**：`user_company_ids`（可查看：队长 + 队员）与
 > `user_operable_company_ids`（可操作：**仅队长**，另含所辖管理员/超管）分离——
 > 队员可只读查看本公司合同/行情/公司表格，下单、建单、确认、申请修改等**操作仅队长**。
+> **兼任**：管理员（主席团）同时当队长/队员时，本队公司与所辖公司**取并集**（查看并集；
+> 操作＝所辖公司 ∪ 本人任队长的队伍公司），避免"既当裁判又参赛"的人看不到自己公司。
+>
+> **组队自动补身份（2026-10）**：建队 / 凭组队码进队时若用户还没有本比赛成员身份，
+> 自动创建 `PLAYER` 并广播 `members`（幂等；**不降级**已有的 ADMIN / 比赛超管身份）；
+> 若身份已被管理员停用，则返回 403「你的参赛身份已被停用，请联系比赛管理员」。
 
 ## 4. 比赛包 / 合同类型 / 插件（M1）
 
