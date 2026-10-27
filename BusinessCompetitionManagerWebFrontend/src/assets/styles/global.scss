@@ -401,6 +401,20 @@ button:focus-visible,
   border-radius: var(--radius-xs);
 }
 
+// 表单控件豁免上面这条通用焦点环：Element Plus 给内层 <input> 带了 tabindex，而**文本输入
+// 鼠标点击也满足 :focus-visible** → 会在输入框内部叠出一个小蓝框（外层的 wrapper 本来
+// 已经有 inset 1px + 4px 光晕的焦点态）。这里只去掉内层描边，焦点可见性由容器承担。
+.el-input__inner:focus-visible,
+.el-textarea__inner:focus-visible,
+.el-select__wrapper:focus-visible,
+.el-select__input:focus-visible,
+.el-range-input:focus-visible,
+.el-checkbox__original:focus-visible,
+.el-radio__original:focus-visible,
+.el-switch__input:focus-visible {
+  outline: none;
+}
+
 // 可点击元素：按下微缩（精致克制，不用回弹）；键盘可达时给可见焦点环。
 .pressable {
   transition:
