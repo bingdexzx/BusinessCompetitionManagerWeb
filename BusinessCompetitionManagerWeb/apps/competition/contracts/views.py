@@ -433,13 +433,19 @@ class ContractEffectsView(APIView):
 
 
 class ContractLedgerView(APIView):
-    """资金账本链（查账）：(公司, 字段) 全链——初始值 → 各合同节点（当时值+重演值）→ 当前值。"""
+    """资金账本链（查账）：(公司, 字段) 全链——初始值 → 各合同节点（当时值+重演值）→ 当前值。
+
+    仅系统超管 / 比赛超管可读：链路含跨公司资金流与重算依据，不对参赛代表与主席团开放。
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):
         from apps.competition.contracts import ledger
 
+        if not can_manage_competition(request.user, cid):
+            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''},
+                            status=status.HTTP_403_FORBIDDEN)
         contract = _visible_contract_or_none(request, pk)
         if contract is None:
             return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},

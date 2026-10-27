@@ -110,6 +110,11 @@ async function loadEffects(): Promise<void> {
 const ledger = ref<ContractLedger | null>(null)
 
 async function loadLedger(): Promise<void> {
+  // 账本链只给超级管理员：非超管不发起请求（后端同样会 403）
+  if (!canViewLedger.value) {
+    ledger.value = null
+    return
+  }
   try {
     ledger.value = await getContractLedger(props.cid, Number(props.id))
   } catch {
@@ -202,6 +207,8 @@ const isCompSuperAdmin = computed(() =>
   ),
 )
 const canReview = computed(() => auth.isSuperuser || isCompSuperAdmin.value)
+// 资金账本链（重演）会暴露其他公司的资金流与重算依据 → 只给超级管理员看（与后端一致）
+const canViewLedger = canReview
 
 // 可操作公司：参赛代表=本队公司，管理员=所辖公司；null=未知按放开
 const myCompanyIds = ref<Set<number> | null>(null)
@@ -664,14 +671,16 @@ function goBack(): void {
           </el-table-column>
         </el-table>
 
-        <h3 v-if="ledger?.chains?.length" class="section-title section-title--sub">
-          资金账本链（重演）
-        </h3>
-        <div v-if="ledger?.chains?.length" class="effects-hint">
-          以重演值为当前账目口径，当时值仅作审计留存。
-        </div>
+        <template v-if="canViewLedger">
+          <h3 v-if="ledger?.chains?.length" class="section-title section-title--sub">
+            资金账本链（重演）
+          </h3>
+          <div v-if="ledger?.chains?.length" class="effects-hint">
+            以重演值为当前账目口径，当时值仅作审计留存。
+          </div>
+        </template>
         <div
-          v-for="chain in ledger?.chains ?? []"
+          v-for="chain in canViewLedger ? (ledger?.chains ?? []) : []"
           :key="`${chain.companyId}-${chain.fieldKey}`"
           class="ledger-chain"
         >
