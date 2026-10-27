@@ -30,7 +30,6 @@ const auth = useAuthStore()
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 
-// 合同状态展示映射
 const STATUS_META: Record<string, { label: string; type: TagType }> = {
   BACKFILL_REVIEW: { label: '补录待审核', type: 'warning' },
   DRAFT: { label: '草稿', type: 'info' },
@@ -48,7 +47,6 @@ function statusMeta(status: string): { label: string; type: TagType } {
   return STATUS_META[status] ?? { label: status, type: 'info' }
 }
 
-// 时间线节点类型展示映射（§14.6 确认时间线）
 const TIMELINE_META: Record<string, { label: string; type: TagType }> = {
   CREATED: { label: '创建', type: 'info' },
   CONFIRM: { label: '参与方确认', type: 'primary' },
@@ -66,18 +64,14 @@ function timelineMeta(type: string): { label: string; type: TagType } {
   return TIMELINE_META[type] ?? { label: type, type: 'info' }
 }
 
-// ---------- 数据 ----------
 const contract = ref<Contract | null>(null)
 const effects = ref<ContractEffect[]>([])
 const loading = ref(false)
 const effectsLoading = ref(false)
-/** 首次加载标记（骨架屏）与就地错误提示 */
 const loaded = ref(false)
 const loadError = ref('')
 const initialLoading = computed(() => !loaded.value)
-/** 实时数据落位时概览轻微闪烁（不介入原有同步流程，只监听展示数据） */
 const { flashing: overviewFlashing, flash: flashOverview } = useFlash(1200)
-/** 落账效果条数：随实时刷新平滑滚动 */
 const shownEffectCount = useCountUp(
   computed<number | null | undefined>(() => effects.value.length),
   { duration: 400 },
@@ -108,7 +102,7 @@ async function loadEffects(): Promise<void> {
   }
 }
 
-// ---------- 资金账本链（查账同步：当时值=审计，重演值=按当前内容重算） ----------
+// 账本链：当时值=审计，重演值=按当前内容重算
 const ledger = ref<ContractLedger | null>(null)
 
 async function loadLedger(): Promise<void> {
@@ -119,15 +113,13 @@ async function loadLedger(): Promise<void> {
   }
 }
 
-// ---------- 检查记录（§7.3 四检查点落库；修改后按轮次回放；依据带重演值） ----------
+// 检查记录：修改后按轮次回放，依据带重演值
 const checks = computed<ContractCheck[]>(() => ledger.value?.checks ?? contract.value?.checks ?? [])
 
-/** 输入项摊平（纯展示，键名原样呈现，不改写业务字段） */
 const inputEntries = computed<Array<[string, unknown]>>(() =>
   Object.entries(contract.value?.inputs ?? {}),
 )
 
-// 数据落位后轻微闪烁概览：纯视觉提示，不介入任何同步/业务判断
 watch(contract, (_next, prev) => {
   if (prev) flashOverview()
 })
@@ -136,7 +128,7 @@ function effectRowClass({ row }: { row: ContractEffect }): string {
   return row.isCurrent ? '' : 'effect-rolled-back' // 已回滚轮次置灰（审计历史）
 }
 
-// ---------- WS 自动同步：本合同被他人确认/修改后自动刷新（解决“修改后显示不同步”） ----------
+// 本合同被他人确认/修改后刷新；1s 内多条信号合并为一次
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 useNotifications((message) => {
   const payload = message.payload || {}
@@ -150,27 +142,23 @@ useNotifications((message) => {
   }, 1000)
 })
 
-// 资源变更广播（400ms 去抖合并）：合同/公司/财年写操作后自动重拉当前合同
+// 合同/公司/财年写操作后 400ms 去抖重拉
 useResourceRefresh(['contracts', 'companies', 'fiscal-years'], load)
 
-// ---------- 参与方 / 待确认方 ----------
 const sortedParties = computed<ContractParty[]>(() =>
   [...(contract.value?.parties ?? [])].sort((a, b) => a.confirmOrder - b.confirmOrder),
 )
 
-/** 已确认参与方数量（概览指标用） */
 const confirmedPartyCount = computed(
   () => sortedParties.value.filter((party) => party.confirmAt).length,
 )
 
-/** 待确认方（按 confirmOrder 排序 + pendingPartyIndex） */
 const pendingParty = computed<ContractParty | null>(() => {
   const c = contract.value
   if (!c || c.status !== 'PENDING_PARTY') return null
   return sortedParties.value[c.pendingPartyIndex] ?? null
 })
 
-// ---------- 确认时间线（含等待确认高亮节点） ----------
 interface DisplayNode {
   type: string
   at: string
@@ -189,7 +177,6 @@ const timelineNodes = computed<DisplayNode[]>(() => {
     detail: n.detail ?? '',
     waiting: false,
   }))
-  // 状态为待确认时，在时间线末尾高亮「等待 xx 确认」
   const waiting = pendingParty.value
   if (waiting) {
     nodes.push({
@@ -204,17 +191,15 @@ const timelineNodes = computed<DisplayNode[]>(() => {
   return nodes
 })
 
-// ---------- 权限（best-effort，最终以后端校验为准） ----------
+// 权限仅前端预判，最终以后端校验为准
 const isCompSuperAdmin = computed(() =>
   auth.memberships.some(
     (m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN',
   ),
 )
-/** 超管 / 比赛超管可审核修改与补录 */
 const canReview = computed(() => auth.isSuperuser || isCompSuperAdmin.value)
 
-/** 我在本比赛可操作的公司 ID 集（null=未知，按放开处理）：
- *  参赛代表 → 本队公司（队伍映射）；管理员 → 所辖公司 */
+// 可操作公司：参赛代表=本队公司，管理员=所辖公司；null=未知按放开
 const myCompanyIds = ref<Set<number> | null>(null)
 
 async function loadMyCompanies(): Promise<void> {
@@ -233,7 +218,6 @@ async function loadMyCompanies(): Promise<void> {
   }
 }
 
-/** 当前用户是否可能代待确认方操作（无法判断时放开，由后端校验） */
 const canActForPending = computed(() => {
   const user = auth.user
   if (!user) return true
@@ -244,11 +228,9 @@ const canActForPending = computed(() => {
   const companyId = pendingParty.value?.companyId
   if (companyId == null) return true
   if (m.identity === 'ADMIN') return m.managedCompanies.includes(companyId)
-  // 参赛代表：本队公司
   return myCompanyIds.value === null || myCompanyIds.value.has(companyId)
 })
 
-// ---------- 状态操作 ----------
 const actionLoading = ref(false)
 
 async function runAction(action: () => Promise<unknown>, success: string): Promise<void> {
@@ -274,7 +256,7 @@ function doConfirm(): void {
   void runAction(() => confirmContract(props.cid, Number(props.id)), '已确认，末方确认后自动编号并落账')
 }
 
-/** 删除合同：rollback=true「删除（回滚）」；false「不回滚删除」（仅限无落账效果） */
+// 删除（回滚）先回滚已落账效果；不回滚删除仅限无落账效果
 async function removeContract(rollback: boolean): Promise<void> {
   const tip = rollback
     ? '删除（回滚）会先回滚该合同已落账的字段效果再删除，确定继续？'
@@ -296,7 +278,6 @@ async function removeContract(rollback: boolean): Promise<void> {
   }
 }
 
-// --- 申请修改 ---
 const showModifyDialog = ref(false)
 const modifyReason = ref('')
 
@@ -317,7 +298,6 @@ function submitModifyRequest(): void {
   )
 }
 
-// --- 审核（修改审核 / 其他方表态 / 补录审核） ---
 type ReviewMode = 'modify' | 'otherParty' | 'backfill'
 const showReviewDialog = ref(false)
 const reviewMode = ref<ReviewMode>('modify')
@@ -353,7 +333,6 @@ function submitReview(): void {
   void runAction(apiCall, label)
 }
 
-// --- 提交修改（编辑 inputs 后回滚重执行） ---
 interface EditField {
   key: string
   kind: 'number' | 'boolean' | 'json' | 'text'
@@ -426,7 +405,6 @@ function submitChanges(): void {
   )
 }
 
-// ---------- 初始化 ----------
 onMounted(() => {
   void load()
   void loadEffects()
@@ -450,7 +428,6 @@ function goBack(): void {
 
 <template>
   <div v-loading="loading && !initialLoading" class="contract-detail-page">
-    <!-- 首屏骨架 -->
     <div v-if="initialLoading" class="detail-skeleton" aria-busy="true">
       <div class="skeleton skeleton-head" />
       <div class="skeleton skeleton-block" />
@@ -458,7 +435,6 @@ function goBack(): void {
     </div>
 
     <template v-else>
-      <!-- 头部信息 -->
       <div class="detail-header anim-fade-in-up">
         <div class="detail-header__main">
           <el-button class="back-btn" text @click="goBack">← 返回合同列表</el-button>
@@ -482,13 +458,11 @@ function goBack(): void {
         </div>
       </div>
 
-      <!-- 错误就地提示（原有 ElMessage 保留） -->
       <div v-if="loadError" class="notice notice--danger detail-error">
         <span>{{ loadError }}</span>
         <el-button link type="primary" @click="load">重试</el-button>
       </div>
 
-      <!-- 概览：关键数值一屏可读 -->
       <section class="panel overview-panel anim-fade-in-up">
         <h2 class="section-title">概览</h2>
         <div class="metric-grid">
@@ -517,7 +491,6 @@ function goBack(): void {
         </div>
       </section>
 
-      <!-- 参与方 -->
       <section class="panel party-panel anim-fade-in-up">
         <h2 class="section-title">参与方</h2>
         <div v-if="sortedParties.length" class="party-grid">
@@ -552,7 +525,6 @@ function goBack(): void {
         <el-empty v-else :image-size="60" description="暂无参与方" />
       </section>
 
-      <!-- 输入项 -->
       <section class="panel inputs-panel anim-fade-in-up">
         <h2 class="section-title">输入项</h2>
         <div v-if="inputEntries.length" class="input-grid">
@@ -564,7 +536,6 @@ function goBack(): void {
         <el-empty v-else :image-size="60" description="暂无输入项" />
       </section>
 
-      <!-- 效果与账本：检查记录 → 效果审计 → 资金账本链 -->
       <section class="panel effects-panel anim-fade-in-up">
         <h2 class="section-title">效果与账本</h2>
         <h3 class="section-title section-title--sub">检查记录</h3>
@@ -683,7 +654,6 @@ function goBack(): void {
           </el-table-column>
         </el-table>
 
-        <!-- 资金账本链（查账同步：上游修改后下游重演值自动重算） -->
         <h3 v-if="ledger?.chains?.length" class="section-title section-title--sub">
           资金账本链（重演）
         </h3>
@@ -726,7 +696,6 @@ function goBack(): void {
         </div>
       </section>
 
-      <!-- 确认时间线（§14.6） -->
       <section class="panel timeline-panel anim-fade-in-up">
         <h2 class="section-title">确认时间线</h2>
         <el-timeline v-if="timelineNodes.length > 0" class="confirm-timeline">
@@ -750,7 +719,6 @@ function goBack(): void {
                 <span>操作人：{{ node.actor }}</span>
                 <span v-if="node.at">时间：{{ formatDateTime(node.at) }}</span>
               </div>
-              <!-- CONFIRM 节点：展示谁在何时确认 + 设备/IP 信息 -->
               <div v-if="node.detail" class="node-detail" :class="{ 'node-detail--confirm': node.type === 'CONFIRM' }">
                 <template v-if="node.type === 'CONFIRM'">
                   <div class="confirm-line">
@@ -766,7 +734,7 @@ function goBack(): void {
         <el-empty v-else description="暂无时间线记录" />
       </section>
 
-      <!-- 常驻操作条：状态操作 / 删除在滚动时始终可达 -->
+      <!-- 常驻操作条：滚动时始终可达 -->
       <div class="sticky-actions detail-actions" role="group" aria-label="状态操作">
         <div class="action-row">
           <template v-if="contract?.status === 'DRAFT'">
@@ -863,7 +831,6 @@ function goBack(): void {
           <span v-else class="action-hint">暂无可用操作</span>
         </div>
 
-        <!-- 删除（仅超管）：删除（回滚）/ 不回滚删除 -->
         <div v-if="canReview" class="action-row delete-row">
           <el-button type="danger" plain :loading="actionLoading" @click="removeContract(true)">
             删除（回滚）
@@ -876,7 +843,6 @@ function goBack(): void {
       </div>
     </template>
 
-    <!-- 申请修改弹窗 -->
     <el-dialog v-model="showModifyDialog" title="申请修改" width="520px" append-to-body>
       <el-form label-position="top">
         <el-form-item label="修改原因" required>
@@ -896,7 +862,6 @@ function goBack(): void {
       </template>
     </el-dialog>
 
-    <!-- 审核弹窗 -->
     <el-dialog
       v-model="showReviewDialog"
       :title="`${REVIEW_TITLES[reviewMode]}（${reviewAction === 'approve' ? '通过' : '驳回'}）`"
@@ -925,7 +890,6 @@ function goBack(): void {
       </template>
     </el-dialog>
 
-    <!-- 提交修改弹窗 -->
     <el-dialog v-model="showChangesDialog" title="提交修改" width="600px" append-to-body>
       <el-form label-position="top">
         <el-form-item
@@ -973,7 +937,6 @@ function goBack(): void {
   gap: 16px;
 }
 
-// ---------- 头部 ----------
 .detail-header {
   display: flex;
   align-items: flex-start;
@@ -1025,12 +988,11 @@ function goBack(): void {
   color: var(--color-text-tertiary);
 }
 
-// ---------- 通用区块 ----------
 .panel {
   padding: 20px 22px;
 }
 
-// 页内分区入场顺序（只做入场，不循环）
+// 分区入场只做一次，不循环
 .overview-panel {
   --anim-delay: 40ms;
 }
@@ -1047,7 +1009,6 @@ function goBack(): void {
   --anim-delay: 200ms;
 }
 
-// 分区内的子标题（效果与账本里的三块数据）
 .section-title--sub {
   font-size: var(--font-base);
   margin-top: 18px;
@@ -1059,12 +1020,10 @@ h2.section-title + .section-title--sub {
   margin-top: 0;
 }
 
-// ---------- 概览 ----------
 .overview-panel .metric-grid {
   margin-top: 2px;
 }
 
-// ---------- 输入项 ----------
 .input-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1092,7 +1051,6 @@ h2.section-title + .section-title--sub {
   word-break: break-word;
 }
 
-// ---------- 状态操作（常驻底部） ----------
 .action-row {
   display: flex;
   align-items: center;
@@ -1112,7 +1070,7 @@ h2.section-title + .section-title--sub {
   gap: 6px;
   padding: 10px 16px;
   margin-top: 0;
-  /* 抵消内容区底部内距，让常驻条贴合视口底部，不露出下方滚动内容 */
+  /* 抵消内容区底部内距，让常驻条贴合视口底 */
   bottom: calc(var(--content-padding) * -1);
   border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
@@ -1124,7 +1082,6 @@ h2.section-title + .section-title--sub {
   border-top: 1px dashed var(--color-border);
 }
 
-// ---------- 首屏骨架 / 错误 ----------
 .detail-skeleton {
   display: flex;
   flex-direction: column;
@@ -1144,7 +1101,6 @@ h2.section-title + .section-title--sub {
   justify-content: space-between;
 }
 
-// ---------- 时间线 ----------
 .node-card {
   background: var(--surface-raised);
   border: 1px solid var(--color-border);
@@ -1194,7 +1150,6 @@ h2.section-title + .section-title--sub {
   font-size: var(--font-xs);
 }
 
-// ---------- 参与方 ----------
 .party-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1228,7 +1183,6 @@ h2.section-title + .section-title--sub {
   font-size: var(--font-sm);
 }
 
-// ---------- 效果审计 ----------
 .effect-before {
   color: var(--color-text-tertiary);
 }
@@ -1245,7 +1199,7 @@ h2.section-title + .section-title--sub {
   margin-bottom: 10px;
   line-height: 1.7;
 }
-// 已回滚轮次的置灰（审计历史，不代表当前生效值）
+// 已回滚轮次置灰（审计历史）
 :deep(tr.effect-rolled-back) {
   opacity: 0.55;
 }
@@ -1258,7 +1212,6 @@ h2.section-title + .section-title--sub {
   text-decoration: none;
 }
 
-// ---------- 检查记录 ----------
 .check-problems {
   display: flex;
   flex-direction: column;
@@ -1294,7 +1247,6 @@ h2.section-title + .section-title--sub {
   text-decoration: line-through;
 }
 
-// ---------- 重演值 / 资金账本链 ----------
 .effect-replay {
   color: var(--color-accent, #8b5cf6);
   font-weight: 600;
@@ -1328,7 +1280,7 @@ h2.section-title + .section-title--sub {
   font-weight: 500;
 }
 
-/* 手机：概览指标两列，减少首屏空白与常驻条的遮挡比例 */
+/* 手机概览两列，减少首屏空白 */
 @media (max-width: 640px) {
   .overview-panel .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

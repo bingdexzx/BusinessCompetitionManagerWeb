@@ -141,28 +141,6 @@ def read_table(path):
     return headers, out
 
 
-def read_worksheet(path, sheet_name):
-    """读取指定工作表（xlsx）；不存在返回 (None, None)。"""
-    from openpyxl import load_workbook
-    wb = load_workbook(path, read_only=True, data_only=True)
-    if sheet_name not in wb.sheetnames:
-        wb.close()
-        return None, None
-    ws = wb[sheet_name]
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
-    if not rows:
-        return [], []
-    headers = [str(h).strip() if h is not None else '' for h in rows[0]]
-    out = []
-    for raw in rows[1:]:
-        if all(c is None or str(c).strip() == '' for c in raw):
-            continue
-        out.append({headers[i]: ('' if i >= len(raw) or raw[i] is None else raw[i])
-                    for i in range(len(headers)) if headers[i]})
-    return headers, out
-
-
 # ---------------------------------------------------------------- 基础数据解析
 
 

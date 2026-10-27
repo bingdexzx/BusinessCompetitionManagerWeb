@@ -1,13 +1,10 @@
-"""统一业务错误响应：{code, message, details} —— **message 一律中文**（面向最终用户）。
+"""统一业务错误响应：{code, message, details}，**message 一律中文**（面向最终用户）。
 
-DRF 默认异常文案是英文（Not found. / Authentication credentials were not provided. 等），
-这里按异常类型/状态码翻译成简洁中文；details 保留原始信息供排查。
-"""
+DRF 默认异常文案是英文，这里按异常类型/状态码翻译；details 保留原始信息供排查。"""
 
 from rest_framework import exceptions as drf_exceptions
 from rest_framework.views import exception_handler
 
-# 状态码 → 简洁中文兜底（异常类型未命中时使用）
 _STATUS_MESSAGES = {
     400: '请求参数有误',
     401: '请先登录',
@@ -69,15 +66,13 @@ def gipfel_exception_handler(exc, context):
         return None
     data = response.data
     # 认证/权限类异常形如 {"detail": "..."}；序列化器校验错误则是 {字段: [消息]}。
-    # 旧实现一律取 .get('detail')，导致字段级错误被丢成 details=None（用户只看到
-    # 「请求参数有误」，看不到"缺什么/哪里不对"），这里按结构分别处理。
+    # 旧实现一律取 .get('detail')，字段级错误被丢成 details=None，这里按结构分别处理。
     if isinstance(data, dict) and set(data.keys()) == {'detail'}:
         detail = data['detail']
     else:
         detail = data
 
     message = _chinese_message(exc, response.status_code)
-    # 校验类错误：把字段级中文原因直接作为 message（一眼可见），原始结构保留在 details
     if isinstance(exc, drf_exceptions.ValidationError):
         texts = list(dict.fromkeys(_collect_texts(detail)))
         if texts:
@@ -85,7 +80,6 @@ def gipfel_exception_handler(exc, context):
     response.data = {
         'code': response.status_code,
         'message': message,
-        # details 保留原始信息（字段级错误结构/英文 detail）供前端定位与排查
         'details': detail,
     }
     return response

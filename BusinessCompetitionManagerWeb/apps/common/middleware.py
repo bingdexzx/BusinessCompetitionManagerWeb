@@ -17,19 +17,14 @@ _COMPETITION_URL_RE = re.compile(r'^/api/competitions/(\d+)(?:/|$)')
 
 
 class DatabaseBackpressureMiddleware(MiddlewareMixin):
-    """数据库背压（限流）：并发请求先排队再服务，防止打爆 PostgreSQL 连接数。
+    """数据库背压：并发请求排队，防止打爆 PostgreSQL 连接数。
 
-    - 多库路由下每个请求最多同时占 **全局库 + 比赛库** 两条连接；
-      60 并发账号 × 2 ≈ 120 连接 > PG 默认 max_connections=100 → `too many clients`；
-    - 信号量把「同时处理中的请求」封顶在 `DB_MAX_CONCURRENT_REQUESTS`（默认 32，
-      **全部 worker 合计**的全局预算）；进程级信号量无法跨进程共享，故按
-      `WEB_CONCURRENCY` 分摊成每 worker 额度（`DB_MAX_CONCURRENT_REQUESTS_PER_WORKER`），
-      加核扩容不会放大连接峰值；
-    - 超出并发的请求最多排队 DB_BACKPRESSURE_TIMEOUT 秒，超时 503（快速失败 +
-      Retry-After，前端有退避重试；总比整机假死好——这正是「后期卡死」的根源之一）。
+    每请求最多 2 条连接，60 并发 × 2 ≈ 120 > PG 默认 100 → ``too many clients``。信号量只能
+    进程内共享，故把全局预算按 ``WEB_CONCURRENCY`` 分摊到每 worker（加核不放大峰值）；
+    排队超 ``DB_BACKPRESSURE_TIMEOUT`` 秒则 503 + Retry-After，避免整机假死。
     """
 
-    _semaphore = None  # 进程内共享
+    _semaphore = None
 
     @classmethod
     def _sem(cls):
@@ -61,11 +56,7 @@ class DatabaseBackpressureMiddleware(MiddlewareMixin):
 
 
 class ApiErrorHtmlMiddleware(MiddlewareMixin):
-    """/api/* 的 HTML 错误页 → 简洁中文 JSON（DEBUG 404/500 页不直接抛给前端）。
-
-    前端只认 JSON {code,message,details}；URL 未匹配/未捕获异常在 DEBUG 下会返回
-    Django 调试页（大段 HTML），这里统一改写为中文 JSON，保证**所有错误提示简洁且中文**。
-    """
+    """/api/* 的 HTML 错误页 → 简洁中文 JSON（DEBUG 的 404/500 调试页不直接抛给前端）。"""
 
     _MESSAGES = {404: '接口不存在', 500: '服务器内部错误，请稍后重试'}
 
@@ -90,8 +81,7 @@ class ApiErrorHtmlMiddleware(MiddlewareMixin):
 class CompetitionContextMiddleware(MiddlewareMixin):
     """解析比赛上下文（URL 参数 / X-Competition-Id 头），注册比赛库 alias。
 
-    比赛域模型的读写由 CompetitionDatabaseRouter 依此路由到 comp_<id>（§5.2）。
-    """
+    比赛域模型由 CompetitionDatabaseRouter 依此路由到 comp_<id>（§5.2）。"""
 
     def process_request(self, request):
         competition_id = None
@@ -111,9 +101,8 @@ class CompetitionContextMiddleware(MiddlewareMixin):
 
             competition = Competition.objects.filter(pk=competition_id).first()
             if competition is None:
-                # 比赛不存在/已删除：**URL 明确指向该比赛的接口直接 404**（干净响应），
-                # 否则视图内比赛域模型会以 RuntimeError 500 暴露（路由器无上下文）。
-                # 仅带头（X-Competition-Id）的全局接口（/api/me 等）不拦，避免旧头误伤。
+                # 比赛不存在/已删除：URL 明确指向该比赛的接口直接 404，否则视图内
+                # 比赛域模型会因无上下文 RuntimeError 500。仅带头的全局接口不拦，避旧头误伤。
                 if from_path:
                     return JsonResponse(
                         {'code': 404, 'message': '比赛不存在或已删除', 'details': ''},
@@ -128,7 +117,7 @@ class CompetitionContextMiddleware(MiddlewareMixin):
 
 
 class NetworkLogMiddleware(MiddlewareMixin):
-    """记录每一次 API 交互：方法/路径/状态码/耗时/IP/设备/用户 + 脱敏摘要（§14.3）。"""
+    """记录每次 API 交互：方法/路径/状态码/耗时/IP/设备/用户 + 脱敏摘要（§14.3）。"""
 
     def process_request(self, request):
         trace_id = request.META.get('HTTP_X_TRACE_ID') or uuid.uuid4().hex
@@ -152,15 +141,12 @@ class NetworkLogMiddleware(MiddlewareMixin):
             pass
         return response
 
-    # ------------------------------------------------------------ 资源变更广播（2026-10）
-
     # 不广播的路径前缀：认证/个人/消息读写/日志查询/文件（非业务资源变更）
     _BROADCAST_SKIP = ('/api/auth', '/api/me', '/api/messages', '/api/logs',
                        '/api/files', '/api/version')
     _BROADCAST_ACTIONS = {'POST': 'created', 'PATCH': 'updated', 'PUT': 'updated',
                           'DELETE': 'deleted'}
-    # 比赛子路径 → 广播资源名归一：meta/transition 改的是比赛本体（列表/详情都要响应）；
-    # package（导入）会改产业字段 + 合同类型 + 仪表盘布局，归一为 packages 便于页面统一监听。
+    # 比赛子路径 → 广播资源名归一：package（导入）还改产业字段/合同类型/仪表盘，归一为 packages
     _COMPETITION_RESOURCE_ALIAS = {
         'meta': 'competitions',
         'transition': 'competitions',
@@ -170,11 +156,9 @@ class NetworkLogMiddleware(MiddlewareMixin):
     def _broadcast_change(self, request, response):
         """写接口成功后广播 `resource:changed`（推信号，页面自行增量重拉）。
 
-        资源名取自路径：`/api/<resource>/...` 或 `/api/competitions/<cid>/<resource>/...`。
-
-        **作用域按路径判定**（不看 `X-Competition-Id`）：全局库资源（users/schools/
-        plugins/competitions/settings…）即使带着比赛头，也必须进 `global` 流，否则
-        在别的比赛上下文里操作全局资源时，订阅 global 的页面收不到。
+        资源名取自路径。**作用域按路径判定，不看 `X-Competition-Id`**：全局库资源即使带着
+        比赛头也必须进 `global` 流，否则在别的比赛上下文里操作全局资源时，订阅 global 的
+        页面收不到。
         """
         method = (request.method or '').upper()
         action = self._BROADCAST_ACTIONS.get(method)
@@ -195,8 +179,6 @@ class NetworkLogMiddleware(MiddlewareMixin):
         from apps.common.broadcast import emit_resource_changed
 
         emit_resource_changed(competition_id, resource, action, {'path': path[:200]})
-
-    # ------------------------------------------------------------ 内部
 
     def _write_log(self, request, response, started):
         from apps.global_.logs.models import NetworkLog

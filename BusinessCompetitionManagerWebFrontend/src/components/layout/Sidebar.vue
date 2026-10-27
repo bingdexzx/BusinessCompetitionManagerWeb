@@ -1,6 +1,5 @@
 <template>
   <div class="sidebar" :class="{ 'is-drawer': drawer, 'is-open': open }">
-    <!-- 品牌区：logo + 渐变标题 + 当前比赛信息（旧产品同款视觉） -->
     <div class="sidebar-brand">
       <div class="brand-text">
         <div class="brand-title-row">
@@ -22,13 +21,11 @@
     </div>
 
     <el-menu :default-active="activeMenu" router class="sidebar-menu ai-sidebar">
-      <!-- 比赛列表 -->
       <el-menu-item index="/competitions">
         <el-icon><Trophy /></el-icon>
         <span>比赛列表</span>
       </el-menu-item>
 
-      <!-- 当前比赛：选中比赛（路由带 :cid 或已选上下文）后展示 -->
       <el-menu-item-group v-if="hasCompetition" title="当前比赛" class="sidebar-group">
         <el-menu-item :index="`/competitions/${activeCid}`">
           <el-icon><InfoFilled /></el-icon>
@@ -54,7 +51,6 @@
           <el-icon><MapLocation /></el-icon>
           <span>区域总览</span>
         </el-menu-item>
-        <!-- 股票市场：行情看板 / 交易管理 / 股票管理（超管） -->
         <el-sub-menu index="stocks-group" class="sidebar-group">
           <template #title>
             <el-icon><TrendCharts /></el-icon>
@@ -79,14 +75,12 @@
           <el-icon><DataLine /></el-icon>
           <span>字段日志</span>
         </el-menu-item>
-        <!-- 审计日志：比赛超管/管理员 或 系统超管可见 -->
         <el-menu-item v-if="canViewAudit" :index="`/competitions/${activeCid}/audit`">
           <el-icon><Document /></el-icon>
           <span>审计日志</span>
         </el-menu-item>
       </el-menu-item-group>
 
-      <!-- 个人中心：系统级内容（独立于比赛，任何比赛上下文外都可访问） -->
       <el-menu-item-group title="个人中心" class="sidebar-group">
         <el-menu-item index="/messages">
           <el-icon><Bell /></el-icon>
@@ -98,7 +92,6 @@
         </el-menu-item>
       </el-menu-item-group>
 
-      <!-- 系统：系统级管理工具，仅系统超管可见 -->
       <el-menu-item-group v-if="auth.isSuperuser" title="系统" class="sidebar-group">
         <el-menu-item index="/logs">
           <el-icon><Monitor /></el-icon>
@@ -132,7 +125,6 @@ import * as api from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
 defineProps<{
-  /** 抽屉模式（平板/手机）：由父级 AppLayout 控制显隐 */
   drawer?: boolean
   open?: boolean
 }>()
@@ -155,10 +147,9 @@ const canManageComp = computed(() => {
 })
 /** 审计日志可见性：系统超管 / 比赛超管（主席团与参赛代表不可见） */
 const canViewAudit = canManageComp
-/** 结算与获奖：仅超管可见（决策：结算结果仅超管可见） */
 const canViewSettlement = canManageComp
 
-// 当前比赛名（侧栏品牌区展示）：成员身份自带名称，系统超管按需查询
+// 当前比赛名（侧栏品牌区）：成员身份自带名称，系统超管按需查询
 const competitionName = ref('')
 watch(
   activeCid,
@@ -311,7 +302,6 @@ const activeMenu = computed(() => {
   position: relative;
   overflow: hidden;
 }
-/* Hover: 渐变背景滑入 + 图标微移 */
 .sidebar-menu :deep(.el-sub-menu__title:hover),
 .sidebar-menu :deep(.el-menu-item:not(.is-active):hover) {
   background: var(--el-color-primary-light-9);
@@ -344,7 +334,6 @@ const activeMenu = computed(() => {
   font-size: 17px;
 }
 
-/* ===== 抽屉模式（平板/手机）：固定浮层 + 滑入动画，桌面模式不受影响 ===== */
 .sidebar.is-drawer {
   position: fixed;
   top: 0;

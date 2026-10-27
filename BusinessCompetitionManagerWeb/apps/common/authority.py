@@ -1,15 +1,9 @@
-"""权限/主体解析（§15 权限与账号体系）：用户 ↔ 公司 的**可查看 / 可操作**关系。
+"""权限/主体解析（§15）：用户 ↔ 公司 的**可查看 / 可操作**关系。
 
-2026-10 决策（分配公司）：公司由管理员分配给队伍后——
-- **可查看**（``user_company_ids`` / ``can_view_company``）：**队长与队员**都能看本公司
-  （合同、行情、公司表格等只读）；
-- **可操作**（``user_operable_company_ids`` / ``can_act_for_company``）：**只有队长**能
-  操作本公司（股票下单/撤单、合同创建/确认/申请修改等）；队员只读。
-
-其余身份口径不变：
-- 管理员（主席团）：所辖公司（``membership.managed_companies``）可看可操作；
-- 比赛超管 / 系统超管：本比赛全部公司（§15.2 权限矩阵）。
-"""
+2026-10 决策：公司由管理员分配给队伍后——**可查看**（``user_company_ids`` / ``can_view_company``）
+队长与队员都能看本公司（合同、行情、公司表格等只读）；**可操作**（``user_operable_company_ids``
+/ ``can_act_for_company``）只有队长能操作（下单/撤单、合同创建/确认/申请修改等），队员只读。
+其余口径：管理员看/操作所辖公司，比赛超管/系统超管看/操作本比赛全部公司（§15.2 权限矩阵）。"""
 
 from apps.common.context import get_competition_id
 from apps.global_.memberships.models import CompetitionMembership
@@ -29,9 +23,7 @@ def user_membership(user, competition_id=None):
 def user_company_ids(user, competition_id=None) -> set:
     """用户在当前比赛**可查看**的公司 ID 集合（'*' = 全部）。
 
-    参赛代表取「本队公司」——**队长与队员都在内**（队员只读）；
-    需要判断能不能「操作」时用 ``user_operable_company_ids`` / ``can_act_for_company``。
-    """
+    参赛代表取「本队公司」——**队长与队员都在内**（队员只读）；能否操作看 ``can_act_for_company``。"""
     competition_id = competition_id or get_competition_id()
     if not (user and user.is_authenticated and competition_id):
         return set()
@@ -44,7 +36,6 @@ def user_company_ids(user, competition_id=None) -> set:
         return {'*'}
     if membership.identity == CompetitionMembership.Identity.ADMIN:
         return {int(c) for c in (membership.managed_companies or [])}
-    # 参赛代表：本队公司（队长 + 队员）
     from apps.global_.teams.models import Team
     team_ids = Team.objects.filter(
         competition_id=competition_id, members__user=user,
@@ -55,9 +46,8 @@ def user_company_ids(user, competition_id=None) -> set:
 def user_operable_company_ids(user, competition_id=None) -> set:
     """用户在当前比赛**可操作**的公司 ID 集合（'*' = 全部）。
 
-    2026-10 决策：公司分配给队伍后**只有队长**能操作本公司（股票下单/撤单、
-    合同创建/确认/申请修改等），其他队员只读。管理员按所辖公司操作，
-    比赛超管/系统超管全部可操作。
+    2026-10 决策：公司分配给队伍后**只有队长**能操作本公司（下单/撤单、合同创建/确认/申请
+    修改等），队员只读。管理员按所辖公司操作，超管全部可操作。
     """
     competition_id = competition_id or get_competition_id()
     if not (user and user.is_authenticated and competition_id):
@@ -77,6 +67,22 @@ def user_operable_company_ids(user, competition_id=None) -> set:
         competition_id=competition_id, captain=user,
     ).values_list('company_id', flat=True)
     return {int(c) for c in captain_ids if c}
+
+
+def can_read_competition(user, competition_id=None) -> bool:
+    """能否读本比赛数据：本比赛成员（含只读队员）或系统超管。
+
+    basedata / fiscal / regions / stock 原先各自复制了同一段判断，收敛到此处避免口径漂移。"""
+    if user is None or not user.is_authenticated:
+        return False
+    competition_id = competition_id or get_competition_id()
+    if not competition_id:
+        return False
+    if user.is_superuser:
+        return True
+    if user_membership(user, competition_id) is not None:
+        return True
+    return bool(user_company_ids(user, competition_id))
 
 
 def can_view_company(user, company_id, competition_id=None) -> bool:
@@ -125,9 +131,8 @@ def company_actor_ids(company_id) -> set:
 def company_strict_actor_ids(company_id) -> set:
     """对某公司可**表态/操作**的**严格**用户 ID 集（**仅队长** + 所辖管理员）。
 
-    与 ``company_actor_ids`` 的区别（两处都收紧）：
-    1. **排除**比赛超管与系统超管——超级权限不自动替公司投票（其他方逐方确认按公司计票，§3.3 T8）；
-    2. **只取队长**——队员只读，不能代公司表态/操作（2026-10 决策）。
+    与 ``company_actor_ids`` 相比两处都收紧：排除比赛/系统超管——超级权限不自动替公司投票
+    （逐方确认按公司计票，§3.3 T8）；只取队长——队员只读，不能代公司表态（2026-10 决策）。
     """
     competition_id = get_competition_id()
     ids = set()

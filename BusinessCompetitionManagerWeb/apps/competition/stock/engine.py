@@ -1,41 +1,12 @@
-"""股票撮合 / 定价引擎（契约 §3 引擎：从旧系统 backend/apps/stock/engine.py 忠实移植）。
+"""股票撮合 / 定价引擎（契约 §3；从旧系统 backend/apps/stock/engine.py 移植）。
 
-纯函数部分（compute_match / compute_price / build_candle / compute_init_price）
-严格对齐原 engine.ts；advance_round 为 ORM 依赖的推进轮次编排器，对齐
-stock.service.ts 的 advanceRound / advanceOneStock / generateMarketMakerOrders。
+纯函数（compute_match/compute_price/build_candle/compute_init_price）对齐原 engine.ts；
+advance_round 是 ORM 编排入口。撮合=最高买 vs 最低卖，成交价须夹在 [卖价, 买价] 内
+（全市场中点价会越出单笔限价）；未成交走平盘/趋势漂移但 round 照常推进，K 线无空洞。
 
-逻辑要点（与原 engine.ts 注释一致）：
-- 撮合：最高买价=MAX(买入价)，最低卖价=MIN(卖出价)，成交价=(最高买+最低卖)/2，
-  是否成交=最高买>=最低卖。
-- 定价（消除一字板）：净买压力 pressure=(买量-卖量)/(买量+卖量+1)∈(-1,1)；
-  趋势偏置 drift=happinessImpact*(幸福度-50)/50 + carbonImpact*clamp((均值-碳排)/均值,-1,1)；
-  理论价=上轮收盘×(1+pressure*maxMovePct+drift*maxMovePct)；
-  成交价参与定价 final=限幅(tradePriceWeight*tradePrice+(1-weight)*理论价, 上轮×(1±limitPct))；
-  未成交(单边无对手盘)→平盘：价格不动，但轮次照常推进（round 全局同步）并生成平盘 K 线，
-  保证 K 线序列无空洞（与 StockCandle「每轮每股票一根」的模型约束一致）。
-- K线：开盘=上轮收盘；收盘=最终价；盘高/盘低叠加确定性盘中波动（上下影线）。
-- 做市商（S11 增强）：波动自适应价差（波动越大价差越宽，封顶 2 倍）+
-  反向动量偏置（涨 → 报价下移逢高派发，跌 → 上移逢低承接；封板次轮加倍）
-  + 分级回归锚干预（连续封板 ≥2 轮，量随连续轮数放大）。
-- 防连板硬约束（S10）：上一轮封板时本轮同侧限幅收紧（96% 且不超过 9.6%），
-  连续涨停/跌停在数学上不可能；定价与 K 线上下界同步生效。
-
-多库适配点（§3「适配点」；对比旧 engine.py）：
-1. ``BusinessError`` → 本地 :class:`StockError`；
-2. 事务一律 ``transaction.atomic(using=get_competition_alias() or 'default')``
-   （:func:`comp_atomic`，多库下事务落比赛库连接，参考 contracts/engine.comp_atomic）；
-3. 旧 FK/表引用 → 本应用模型；``competition_id`` 仅保留为对外参数（推送/审计用），
-   ORM 不再按 competition 过滤——一个比赛一个库（comp_<id>），比赛归属即库归属；
-4. 旧 ``apps.companies.CompanyFieldValue`` / ``apps.industry_types.IndustryField``
-   → 新 ``apps.competition.industries.models``（field_key 口径，industry_field_id
-   经 IndustryField pk 解析 field_key）；``apps.company_fields.calc.recompute_calc_fields``
-   → ``industries.services.recompute_company_fields``；
-5. 旧 ``apps.realtime.emit.emit_resource_changed`` 逐条广播 → 按契约 §4.3
-   「推送只当信号」：advance_round 结束后由 services.broadcast_stock_updated
-   发一次 ``{'type':'stock-updated'}`` 信号；
-6. 旧 ``apps.common.signals.suppress_signals`` 屏蔽 per-row 信号 → 新系统无该机制，移除；
-7. 旧 ``apps.common.audit.log_write`` → ``apps.competition.audit.services.log_action``；
-8. Decimal 精度处理（round2 / localcontext prec=70 / EPS / 6 位微调）原样保留。
+多库适配（§3「适配点」）：competition_id 仅对外参数，ORM 不按比赛过滤（一个比赛一个库，
+比赛归属即库归属）；事务一律 comp_atomic() 落比赛库连接；字段值走 field_key 口径
+（IndustryField pk 解析）；推送只当信号（§4.3），轮次末尾广播一次 stock-updated。
 """
 from __future__ import annotations
 
@@ -58,11 +29,7 @@ EPS = Decimal("1e-9")
 
 
 class StockError(Exception):
-    """股票业务错误（契约 §3：旧系统 BusinessError 的本地替代）。
-
-    旧 BusinessError(message, code=..., status_code=...) 语义保留：
-    code/HTTP status 由视图层的统一错误包装（{'code','message','details'}）使用。
-    """
+    """股票业务错误（契约 §3：旧 BusinessError 的本地替代，code/status 供视图层统一包装）。"""
 
     def __init__(self, message, code=400, status_code=None):
         super().__init__(message)
@@ -75,14 +42,11 @@ def comp_atomic():
     return transaction.atomic(using=(get_competition_alias() or 'default'))
 
 
-# ==================== 基础数值工具 ====================
 def round2(v) -> Decimal:
-    """保留 2 位小数（股价精度），用 Decimal 避免 float 累计误差。
+    """保留 2 位小数（Decimal 避免 float 累计误差）。
 
-    接受 Decimal/float/int/str 输入，统一转 Decimal 后四舍五入到 0.01。
-    返回 Decimal（写入 DecimalField 时无需再转 float）。
-    大数安全：quantize 在 localcontext(prec=70) 下执行——默认 context 28 位
-    对 10^26 以上数值会 InvalidOperation，曾被 except 吞成 0（现金清零事故）。
+    必须在 localcontext(prec=70) 下 quantize：默认 context 28 位对 10^26 以上会
+    InvalidOperation，曾被 except 吞成 0（现金清零事故）。
     """
     if isinstance(v, Decimal):
         d = v
@@ -105,33 +69,21 @@ def clamp(v: float, lo: float, hi: float) -> float:
 
 
 def add_fluctuation(value: float, fluctuation_pct: float = 0.2) -> float:
-    """给参数添加随机波动（±fluctuation_pct）。
-
-    提取为模块级函数，避免每次调用做市商时重新定义。
-    """
+    """给参数添加 ±fluctuation_pct 随机波动（模块级函数，避免每次调用重启定义）。"""
     return value * (1 + random.uniform(-fluctuation_pct, fluctuation_pct))
 
 
 def candle_noise(seed_a: float, seed_b: float) -> float:
-    """确定性伪随机：由两个种子派生 [0,1) 的伪随机数（正弦哈希，可复现）。
-
-    输入可能是 Decimal/float/int，内部统一转 float（这是图形指标，非账目）。
-    """
+    """确定性伪随机（正弦哈希，可复现）：种子可为 Decimal/float/int，统一转 float。"""
     x = math.sin(float(seed_a) * 127.1 + float(seed_b) * 311.7) * 43758.5453
     return x - math.floor(x)
 
 
-# ==================== 撮合（纯函数） ====================
 def compute_match(orders: Iterable[dict]) -> dict:
-    """撮合预检：判断是否可成交 + 计算参考成交价。
+    """撮合预检：是否可成交 + 参考成交价（最高买与最低卖的中点）。
 
-    注意：此函数仅做「全局预检」，返回的 tradePrice 是参考价（最高买与最低卖的中点）。
-    实际逐笔撮合时，每对成交价会被夹到 [sell.price, buy.price] 区间内，
-    确保不违反任何一方的限价委托语义。详见 advance_one_stock 中的逐笔撮合循环。
-
-    orders: [{side:"BUY"|"SELL", price, quantity}, ...]
-    返回 {highestBuy, lowestSell, totalBuyQty, totalSellQty,
-          totalBuyAmount, totalSellAmount, matched, tradePrice}
+    注意：此处 tradePrice 只是参考价；逐笔撮合时每对成交价须夹到 [sell.price, buy.price]，
+    否则会违反单方限价委托语义（见 advance_one_stock 的撮合循环）。
     """
     orders = list(orders)
     buys = [o for o in orders if o["side"] == "BUY"]
@@ -160,7 +112,6 @@ def compute_match(orders: Iterable[dict]) -> dict:
     }
 
 
-# ==================== 定价（纯函数） ====================
 def compute_pressure(buy_qty: float, sell_qty: float) -> float:
     """净买压力：∈ (-1, 1)，分母 +1 防除零。"""
     denom = buy_qty + sell_qty + 1
@@ -172,11 +123,7 @@ def compute_carbon_drift(
     industry_avg_carbon: float,
     carbon_saturate_ratio: float = 2,
 ) -> float:
-    """碳排趋势偏置分量（对数压缩）。
-
-    - 碳排=均值 → 0；碳排=R 倍均值 → -1；零碳排 → +1
-    - 行业均值≤0 无法归一 → 0
-    """
+    """碳排趋势偏置（对数压缩）：碳排=均值→0、R 倍均值→-1、零碳排→+1；均值≤0 无法归一→0。"""
     if industry_avg_carbon <= 0:
         return 0
     if current_carbon <= 0:
@@ -211,13 +158,7 @@ def compute_theoretical(
 
 
 def compute_price(factors: dict, config: dict) -> dict:
-    """最终价（限幅后，2 位小数）。
-
-    factors: {lastClose, buyQty, sellQty, matched, tradePrice, happiness,
-              currentCarbon, industryAvgCarbon}
-    config: StockConfig dict
-    返回 {pressure, drift, theoretical, final, usedTradePrice}
-    """
+    """最终价：成交价与理论价加权后限幅，保留 2 位小数。"""
     pressure = compute_pressure(factors["buyQty"], factors["sellQty"])
     drift = compute_drift(
         factors["happiness"],
@@ -231,8 +172,7 @@ def compute_price(factors: dict, config: dict) -> dict:
         factors["lastClose"], pressure, drift, config["maxMovePct"]
     )
 
-    # 非对称限幅（防连板 S10）：upperLimitPct / lowerLimitPct 可分别覆盖涨/跌侧
-    # 限幅；未设置时回落到对称的 limitPct。
+    # 非对称限幅（防连板 S10）：upper/lowerLimitPct 可分别覆盖涨跌侧，缺省回落 limitPct。
     upper_pct = config.get("upperLimitPct", config["limitPct"])
     lower_pct = config.get("lowerLimitPct", config["limitPct"])
     upper = factors["lastClose"] * (1 + upper_pct)
@@ -269,16 +209,11 @@ def build_candle(
     trade_high: float | None = None,
     trade_low: float | None = None,
 ) -> dict:
-    """构建 K 线数据。
+    """构建 K 线（内部 float 运算，末尾 round2 到 0.01）。
 
-    内部保持 float 运算（影线是图形指标，精度足够），
-    仅在最后用 round2 截断到 0.01。
-    upper_pct / lower_pct：非对称限幅（防连板 S10），缺省回落 limit_pct。
-    trade_high / trade_low：本轮实际成交价的最高/最低——真实挂单成交
-    可能超出「body + 理论价 + 噪声影线」的合成范围（如买卖单挂价贴限价），
-    K 线必须如实反映（仍夹在涨跌停限幅内）。
+    trade_high/trade_low 必须喂本轮真实成交价的极值：贴限价的成交会超出
+    「body+理论价+噪声」的合成范围，K 线要如实反映（仍夹在限幅内）。
     """
-    # 确保 open_ 和 close 是 float 类型（避免 Decimal 和 float 混合运算）
     open_ = float(open_)
     close = float(close)
 
@@ -288,7 +223,6 @@ def build_candle(
     lower = float(round2(Decimal(str(open_)) * (Decimal("1") - Decimal(str(dn_pct)))))
     range_ = upper - lower
 
-    # body_high/low 可能是 Decimal（来自 ORM/price["final"]），统一转 float 后再计算
     body_high = float(max(open_, close))
     body_low = float(min(open_, close))
 
@@ -298,40 +232,32 @@ def build_candle(
         t = float(min(max(theoretical, lower), upper))
         high = max(high, t)
         low = min(low, t)
-    # 实际成交价并入影线（夹在限幅内）
     if trade_high is not None and math.isfinite(trade_high):
         high = max(high, float(min(max(trade_high, lower), upper)))
     if trade_low is not None and math.isfinite(trade_low):
         low = min(low, float(min(max(trade_low, lower), upper)))
 
-    # 影线长度控制：基于真实订单数据和股价百分比
-    # 优先使用真实成交价范围，其次使用理论价，最后使用噪声
+    # 影线长度：优先真实成交价范围，其次理论价差，最后股价百分比。
     price = float(open_)
     if price > 0:
-        # 计算基于真实订单的影线范围
         if trade_high is not None and trade_low is not None:
-            # 有真实成交：影线基于成交价范围
             trade_range = float(trade_high) - float(trade_low)
             # 影线基础长度 = 成交价范围的30%~70%（确保影线能覆盖成交价）
             base_wick = trade_range * (0.3 + 0.4 * candle_noise(round_, open_))
         elif theoretical is not None and math.isfinite(theoretical):
-            # 无成交但有理论价：影线基于理论价与收盘价的差异
             theory_diff = abs(float(theoretical) - close)
             base_wick = theory_diff * (0.5 + 0.5 * candle_noise(round_, open_))
         else:
-            # 无成交无理论价：使用股价百分比
             change_pct_abs = abs(close - open_) / price if price > 0 else 0
             base_wick_pct = 0.003 + min(0.007, change_pct_abs * 0.3)
             base_wick = price * base_wick_pct
 
-        # 添加随机性：基础长度的0.6~1.4倍
         random_factor_a = 0.6 + 0.8 * candle_noise(round_, open_)
         random_factor_b = 0.6 + 0.8 * candle_noise(round_ * 3 + 7, open_)
 
         up_wick = base_wick * random_factor_a
         down_wick = base_wick * random_factor_b
     else:
-        # 股价为0时的fallback
         wick = range_ * 0.05  # 5%的涨跌停区间
         up_wick = wick * candle_noise(round_, open_)
         down_wick = wick * candle_noise(round_ * 3 + 7, open_)
@@ -363,7 +289,7 @@ def compute_init_price(
 ) -> float:
     """初始价公式：ROUND(initNetProfit*10000/totalShares/industryPE, 2)。"""
     if industry_pe <= 0 or total_shares <= 0:
-        # 非法参数（行业 PE / 股本非正）不再静默返回 0，改为告警便于排查配置错误
+        # 非法参数不再静默返回 0：告警便于排查配置错误
         logger.warning(
             "compute_init_price 非法参数 industry_pe=%s total_shares=%s，返回 0",
             industry_pe,
@@ -379,43 +305,40 @@ def compute_init_price(
     return float(price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-# ==================== StockConfig ====================
 DEFAULT_STOCK_CONFIG: dict = {
     "limitPct": 0.1,
-    "maxMovePct": 0.08,    # 增大最大移动：从0.05升到0.08（允许更大波动）
-    "happinessImpact": 0.3, # 增大幸福度影响：从0.2升到0.3
-    "carbonImpact": 0.3,   # 增大碳排放影响：从0.2升到0.3
+    "maxMovePct": 0.08,
+    "happinessImpact": 0.3,
+    "carbonImpact": 0.3,
     "mmDepthPct": 0.0005,
     "mmMinQty": 500,
     "mmMaxQty": 50000,
-    "mmSpreadPct": 0.02,   # 增大点差：从0.015升到0.02
-    "mmSkewPct": 0.02,     # 增大偏置：从0.015升到0.02
+    "mmSpreadPct": 0.02,
+    "mmSkewPct": 0.02,
     "interventionMode": "regression",
-    "regressionPct": 0.02,  # 增大回归偏移：从0.015升到0.02
+    "regressionPct": 0.02,
     "tradePriceWeight": 0.7,
     "carbonSaturateRatio": 2,
     # 做市商自成交配置
     "mmSelfTradeEnabled": True,
-    "mmSelfTradePct": 0.005,    # 增大自成交偏移：从0.003升到0.005
+    "mmSelfTradePct": 0.005,
     "mmSelfTradeQtyPct": 0.05,
     # 做市商随机事件配置
-    "mmBadNewsProb": 0.05,      # 增大利空概率：从0.03升到0.05
-    "mmGoodNewsProb": 0.04,     # 增大利好概率：从0.02升到0.04
-    "mmBadNewsImpact": 0.08,    # 增大利空影响：从0.06升到0.08
-    "mmGoodNewsImpact": 0.06,   # 增大利好影响：从0.04升到0.06
+    "mmBadNewsProb": 0.05,
+    "mmGoodNewsProb": 0.04,
+    "mmBadNewsImpact": 0.08,
+    "mmGoodNewsImpact": 0.06,
     # 估值回归配置
-    "mmRegressionThreshold": 0.3, # 提高回归阈值：从0.25升到0.3（更晚触发回归）
-    "mmRegressionStrength": 0.2,  # 降低回归强度：从0.3降到0.2（回归更温和）
+    "mmRegressionThreshold": 0.3,
+    "mmRegressionStrength": 0.2,
     # 市场自然波动配置
     "mmCallbackEnabled": True,
 }
 
-# 防连板因子：上一轮已封板时，本轮同侧限幅收紧（更宽松口径取 96%）。
-# 默认 10% × 0.96 = 9.6% < 9.9%（封板判定线），连续封板在数学上不可能。
+# 防连板因子：上轮封板时本轮同侧限幅收紧。默认 10%×0.96=9.6% < 9.9%（封板判定线）。
 _ANTI_STREAK_FACTOR = 0.96
-# 防连板绝对上限：与封板判定线（advance_round 中 |change_pct| ≥ 9.9 判板）挂钩。
-# 对 limitPct > 10.5% 的高限幅配置，仅按 96% 收缩仍可能 ≥ 9.9%（如 15%×0.96=14.4%），
-# 故同侧限幅取 min(limitPct×0.96, 9.6%)，保证任意配置下连板都不可能。
+# 绝对上限与判板线挂钩：limitPct 大时 96% 收缩仍可能 ≥9.9%（15%×0.96=14.4%），
+# 故同侧取 min(limitPct×0.96, 9.6%)，任意配置下连板都不可能。
 _ANTI_STREAK_CAP_PCT = 0.096
 
 
@@ -428,13 +351,11 @@ def resolve_stock_config(input_: dict | None) -> dict:
     return merged
 
 
-# ==================== 字段值解析（ORM 依赖） ====================
 def _parse_exact_number(text) -> "int | Decimal | None":
-    """数字字符串 → 精确数值：整数字符串 → int（任意精度），小数 → Decimal。
+    """数字字符串 → int（任意精度）或 Decimal；解析失败 None。
 
-    大数安全：绝不 float 化——double 在 2^53 以上丢精度，且 JSON 出站会变成
-    2e+30 科学计数形态，前端正则不识别导致「大数不展示」。
-    解析失败返回 None（与旧 float 路径的 isfinite 拦截语义一致）。
+    绝不 float 化：double 在 2^53 以上丢精度，且 JSON 出站变 2e+30 科学计数，
+    前端正则不识别导致「大数不展示」。
     """
     s = str(text).strip() if text is not None else ""
     if not s:
@@ -454,10 +375,10 @@ _field_key_cache: dict[int, "str | None"] = {}
 
 
 def _field_key_of(industry_field_id) -> "str | None":
-    """产业字段 ID（IndustryField pk，pb_field_id/bind_field_id 的口径）→ field_key。
+    """产业字段 ID（IndustryField pk，pb_field_id/bind_field_id 口径）→ field_key。
 
-    多库适配点 4：旧系统字段值按 (company_id, industry_field_id) 存取，
-    新系统 CompanyFieldValue 按 (company, field_key, fiscal_year) 存取。
+    旧系统按 (company_id, industry_field_id) 存取，新系统 CompanyFieldValue 按
+    (company, field_key, fiscal_year) 存取（§3 适配点 4）。
     """
     try:
         fid = int(industry_field_id)
@@ -475,13 +396,9 @@ def _field_key_of(industry_field_id) -> "str | None":
 def resolve_field_value_or_default(
     company_id: int, industry_field_id: int
 ) -> "int | Decimal | None":
-    """读取公司产业字段的当前值；无记录时回退字段 defaultValue。
+    """读取公司产业字段当前值，无记录回退 IndustryField.default_value。
 
-    返回 int | Decimal | None（精确值，不 float 化；解析失败 None）。
-    调用方注意：与 float 混算会 TypeError——撮合/求和侧统一 Decimal(str(v))。
-    多库适配点 4：旧 (company_id, industry_field_id) → 新 CompanyFieldValue
-    （company, field_key, fiscal_year=None 实体信息表行），字段定义缺省值取
-    IndustryField.default_value（JSON）。
+    返回 int|Decimal|None（不 float 化）；调用方与 float 混算会 TypeError，需 Decimal(str(v))。
     """
     from apps.competition.industries.models import CompanyFieldValue, IndustryField
 
@@ -506,11 +423,9 @@ def resolve_field_value_or_default(
     return None
 
 
-# 区域总览数据源候选（旧系统 apps.regions.views._get_map_overview）。
-# 旧 MapRegion 结构已改为 MapNode/MapEdge 口径：首选 basedata.services 的兼容实现
-# （按 map_nodes/map_edges 聚合区域；旧「区域总览卡片」概念不存在时 cards 为空）；
-# 找不到可调用入口时回退空映射（effective_* 直接回落 stock 静态值，与旧系统
-# 「区域服务不可用」分支语义一致）。
+# 区域总览数据源候选（旧 apps.regions.views._get_map_overview）。MapRegion 已改为
+# MapNode/MapEdge，旧「区域总览卡片」不存在时 cards 为空；找不到入口回退空映射
+# （effective_* 随即回落 stock 静态值）。
 _MAP_OVERVIEW_SOURCES = (
     "apps.competition.basedata.services.get_map_overview",
     "apps.competition.basedata.views.get_map_overview",
@@ -535,11 +450,7 @@ def _load_map_overview(competition_id: int) -> list:
 
 
 def resolve_field_value_map(competition_id: int) -> dict[str, float | None]:
-    """构建「区域:卡片 -> 实时值」映射，供股票绑定字段实时引用。
-
-    语义来源：旧 engine.resolve_field_value_map（区域总览卡片实时值）；
-    多库适配：数据源改为 _load_map_overview 可插拔入口，其余解析逻辑原样保留。
-    """
+    """构建「区域:卡片 → 实时值」映射，供股票绑定字段实时引用（数据源见 _MAP_OVERVIEW_SOURCES）。"""
     field_map: dict[str, float | None] = {}
     if not competition_id:
         return field_map
@@ -563,7 +474,6 @@ def resolve_field_value_map(competition_id: int) -> dict[str, float | None]:
 
 
 def _parse_field_ref(raw: str | None) -> dict | None:
-    """解析绑定引用字符串（JSON {region, cardId}）。空/非法返回 None。"""
     if not raw:
         return None
     try:
@@ -578,7 +488,6 @@ def _parse_field_ref(raw: str | None) -> dict | None:
 
 
 def _parse_field_refs(raw: str | None) -> list[dict]:
-    """解析绑定引用数组字符串（JSON [{region, cardId}, ...]）。空/非法返回 []。"""
     if not raw:
         return []
     try:
@@ -629,7 +538,6 @@ def effective_industry_avg_carbon(stock, field_map: dict) -> float:
     return stock.industry_avg_carbon
 
 
-# ==================== PE 联动 / 随机 ====================
 def random_pb() -> float:
     """生成一个 0~20 的随机 PE（保留两位小数）。"""
     return round(random.random() * 20 * 100) / 100
@@ -646,14 +554,10 @@ def clamp_pb(v: float) -> float:
 
 
 def resolve_effective_pbs(stocks: list) -> dict[int, float]:
-    """批量计算股票的有效 PE。
+    """批量计算股票的有效 PE：字段值 → 字段默认值 → industry_pe 逐级回退。
 
-    与原实现一致：value 非数值或 default 非数值时静默 fallback 到产业 PE；
-    现改为 logger.warning 留据，便于排查"为什么 PE 与公司字段值对不上"。
-    玩家填写垃圾数据时仍按 fallback 行为工作（避免拖崩列表渲染），
-    但后台记录每条非法值供管理员复查。
-    多库适配点 4：字段值查询按 (company_id, field_key)（pb_field_id 经
-    IndustryField pk 解析 field_key）。
+    非法值仍按旧行为静默 fallback（避免拖崩列表渲染），但逐条 logger.warning 留据，
+    便于排查「PE 与公司字段值对不上」。
     """
     result: dict[int, float] = {}
     linked = [s for s in stocks if getattr(s, "pb_company_id", None) and getattr(s, "pb_field_id", None)]
@@ -715,15 +619,9 @@ def resolve_effective_pbs(stocks: list) -> dict[int, float]:
 
 
 def apply_pb_round(stock, pb_value_map: dict | None = None) -> None:
-    """推进一轮时更新 PE 并据最新有效 PE 实时重算初始价。
+    """推进一轮时更新 PE，并据最新有效 PE 实时重算初始价。
 
-    - 联动模式刷新实时字段值；
-    - 随机模式做 ±2 随机游走并钳制到 [0,20]。
-    两种模式下初始价均按 compute_init_price 实时重算。
-
-    pb_value_map：可选，由 _build_pb_value_map 一次性批量构建的
-    {(company_id, field_id): value} 映射。传入后可避免对每只股票逐一查库
-    （原实现每只联动股票都调用 resolve_field_value_or_default，产生 N+1 查询）。
+    pb_value_map 由 _build_pb_value_map 批量构建；不传则逐股查库（原实现的 N+1 查询）。
     """
     pb_company_id = getattr(stock, "pb_company_id", None)
     pb_field_id = getattr(stock, "pb_field_id", None)
@@ -750,13 +648,10 @@ def apply_pb_round(stock, pb_value_map: dict | None = None) -> None:
 
 
 def _build_pb_value_map(stocks: list) -> dict[tuple[int, int], float | None]:
-    """批量构建 {(company_id, field_id): 有效PE值} 映射（联动模式用）。
+    """批量构建 {(company_id, field_id): 有效PE值}（联动模式用），消除 N+1 查库（H4）。
 
-    与 resolve_field_value_or_default 语义一致：优先取 CompanyFieldValue 当前值，
-    缺失则回退 IndustryField.default_value；均不可用为 None。一次性查询供
-    apply_pb_round 复用，消除推进轮次时的 N+1 查库（H4）。
-    多库适配点 4：字段值按 (company_id, field_key) 查询，键仍保持
-    (company_id, pb_field_id) 供 apply_pb_round 原样使用。
+    口径同 resolve_field_value_or_default；内部按 field_key 查，键仍为
+    (company_id, pb_field_id) 供调用方原样使用。
     """
     linked = [s for s in stocks if getattr(s, "pb_company_id", None) and getattr(s, "pb_field_id", None)]
     result: dict[tuple[int, int], float | None] = {}
@@ -799,15 +694,10 @@ def _build_pb_value_map(stocks: list) -> dict[tuple[int, int], float | None]:
     return result
 
 
-# ==================== 字段值写入（事务内） ====================
 def write_field_value_in_tx(
     company_id: int, industry_field_id: int, value: str
 ) -> None:
-    """事务内写入单个字段值（乐观锁语义，与旧 company_fields._write_field_value 一致）。
-
-    多库适配点 4：写入新系统 CompanyFieldValue（company, field_key,
-    fiscal_year=None 实体信息表行）；version 乐观锁 + 冲突重试一次的语义原样保留。
-    """
+    """事务内写入单个字段值（version 乐观锁 + 冲突重试一次，同旧 _write_field_value）。"""
     from apps.competition.industries.models import CompanyFieldValue
 
     field_key = _field_key_of(industry_field_id)
@@ -828,13 +718,12 @@ def write_field_value_in_tx(
             version=1,
         )
         return
-    # 乐观锁：WHERE 含 version（与旧 company_fields._write_field_value 一致），
-    # 避免并发手动编辑/定时器写入被静默覆盖，也避免 version 计数写歪导致后续编辑永久 409。
+    # 乐观锁：WHERE 含 version，避免并发写入被静默覆盖、version 写歪导致后续编辑永久 409。
     updated = CompanyFieldValue.objects.filter(
         pk=fv.pk, version=fv.version
     ).update(value=value, version=fv.version + 1)
     if not updated:
-        # 版本冲突：重新读取最新版本后重试一次（竞争中已提交的并发写入优先）
+        # 版本冲突：重读最新版本后重试一次（并发写入优先）。
         fv = CompanyFieldValue.objects.filter(
             company_id=company_id, field_key=field_key, fiscal_year__isnull=True
         ).first()
@@ -851,13 +740,10 @@ def write_field_value_in_tx(
 
 
 def _recompute_calc_after_cash_write(company_ids) -> None:
-    """结算写入绑定字段后，重算这些公司的计算字段（失败不拖垮整轮结算）。
+    """结算写入绑定字段后重算这些公司的计算字段（失败不拖垮整轮结算）。
 
-    每家公司套一个独立保存点：重算异常时只回滚该公司的这部分写入，外层
-    advance_one_stock 事务仍能正常提交。若不加保存点，except 之后当前事务已被
-    标记为「需回滚」，后续任何查询都会直接抛 TransactionManagementError。
-    多库适配点 4：旧 apps.company_fields.calc.recompute_calc_fields →
-    apps.competition.industries.services.recompute_company_fields。
+    必须逐家公司套独立保存点：重算异常后若不加保存点，当前事务已被标记「需回滚」，
+    后续任何查询都会抛 TransactionManagementError。
     """
     from apps.competition.companies.models import Company
     from apps.competition.industries.services import recompute_company_fields
@@ -875,29 +761,22 @@ def _recompute_calc_after_cash_write(company_ids) -> None:
             )
 
 
-# ==================== 做市商 ====================
 def calculate_raw_fundamental_score(stock) -> float:
-    """计算股票的原始基本面评分（用于相对排名）。
+    """原始基本面评分（0-100，越高越好），用于相对排名：PE/碳排/幸福度/股本四因子。"""
+    score = 50.0
 
-    返回0-100之间的分数，分数越高基本面越好。
-    """
-    score = 50.0  # 基础分50
-
-    # 1. PE评分：PE越低，估值越有吸引力
     pe = getattr(stock, 'industry_pe', None)
     if pe and pe > 0:
         pe_float = float(pe)
-        # PE在5-25之间评分
         if pe_float <= 10:
-            score += 20  # 低PE加分
+            score += 20
         elif pe_float <= 15:
-            score += 10  # 合理PE加分
+            score += 10
         elif pe_float <= 20:
-            score += 0   # 中性
+            score += 0
         else:
-            score -= 10  # 高PE减分
+            score -= 10
 
-    # 2. 碳排评分：碳排越低越好
     carbon = getattr(stock, 'current_carbon', None)
     avg_carbon = getattr(stock, 'industry_avg_carbon', None)
     if carbon is not None and avg_carbon and avg_carbon > 0:
@@ -905,75 +784,59 @@ def calculate_raw_fundamental_score(stock) -> float:
         avg_carbon_float = float(avg_carbon)
         carbon_ratio = carbon_float / avg_carbon_float
         if carbon_ratio < 0.7:
-            score += 15  # 碳排明显优于行业平均
+            score += 15
         elif carbon_ratio < 0.9:
-            score += 5   # 碳排略优于行业平均
+            score += 5
         elif carbon_ratio > 1.3:
-            score -= 15  # 碳排明显高于行业平均
+            score -= 15
         elif carbon_ratio > 1.1:
-            score -= 5   # 碳排略高于行业平均
+            score -= 5
 
-    # 3. 幸福度评分：幸福度越高越好
     happiness = getattr(stock, 'happiness', None)
     if happiness is not None:
         happiness_float = float(happiness)
         if happiness_float >= 80:
-            score += 15  # 高幸福度
+            score += 15
         elif happiness_float >= 60:
-            score += 5   # 中等幸福度
+            score += 5
         elif happiness_float < 40:
-            score -= 10  # 低幸福度
+            score -= 10
 
-    # 4. 股本规模评分：适中股本更受欢迎
     total_shares = getattr(stock, 'total_shares', None)
     if total_shares and total_shares > 0:
         shares_billion = float(total_shares) / 10000
         if 2 <= shares_billion <= 8:
-            score += 10  # 适中股本
+            score += 10
         elif shares_billion < 1:
-            score -= 5   # 小盘股风险
+            score -= 5
         elif shares_billion > 15:
-            score -= 5   # 超大盘股流动性
+            score -= 5
 
     return clamp(score, 0, 100)
 
 
 def calculate_relative_fundamental_score(stock, all_stocks: list) -> float:
-    """基于相对排名计算基本面评分（-0.5到0.5之间）。
-
-    关键改进：通过横向比较所有股票，避免同涨同跌。
-    只有基本面排名靠前的股票才能获得正面评分。
-    """
-    # 当股票数量太少时，使用绝对评分兜底
+    """基于相对排名的基本面评分（-0.5~0.5）：横向比较避免同涨同跌，仅前 30% 得正分。"""
     if not all_stocks or len(all_stocks) <= 2:
         raw_score = calculate_raw_fundamental_score(stock)
-        # 将0-100转换为-0.3到0.3之间
         return clamp((raw_score - 50) / 100.0, -0.3, 0.3)
 
-    # 计算所有股票的原始评分
     raw_scores = []
     for s in all_stocks:
         raw_scores.append(calculate_raw_fundamental_score(s))
 
-    # 计算当前股票的排名（百分位）
-    # 使用 (rank + 0.5) / len 避免所有股票基本面相同时全部得最低分
     current_score = calculate_raw_fundamental_score(stock)
     rank = sum(1 for s in raw_scores if s < current_score)
-    # 使用标准百分位公式：比当前分数低的个数 + 0.5（处理并列情况）
-    percentile = (rank + 0.5) / len(raw_scores)  # 0到1之间
+    # (rank + 0.5) / len：避免所有股票基本面相同时全部得最低分
+    percentile = (rank + 0.5) / len(raw_scores)
 
-    # 将百分位转换为评分：只有前30%得正分，后30%得负分
     if percentile >= 0.7:
-        # 前30%：正面评分，越靠前评分越高
-        score = (percentile - 0.7) * 1.67  # 0到0.5
+        score = (percentile - 0.7) * 1.67
     elif percentile <= 0.3:
-        # 后30%：负面评分，越靠后评分越低
-        score = (percentile - 0.3) * 1.67  # -0.5到0
+        score = (percentile - 0.3) * 1.67
     else:
-        # 中间40%：中性评分
         score = 0.0
 
-    # 添加随机波动，增加市场不确定性
     random_factor = random.uniform(-0.1, 0.1)
     score += random_factor
 
@@ -981,19 +844,12 @@ def calculate_relative_fundamental_score(stock, all_stocks: list) -> float:
 
 
 def calculate_fundamental_score(stock, all_stocks: list | None = None) -> float:
-    """计算股票的基本面评分。
-
-    评分策略：
-    - 股票数量≤2时：使用绝对评分，避免极端分化
-    - 股票数量>2时：使用相对排名评分，实现市场分化
-    """
-    # 当股票数量太少时，使用绝对评分兜底
+    """基本面评分：≤2 只股票用绝对评分（避免极端分化），否则用相对排名（实现市场分化）。"""
     if not all_stocks or len(all_stocks) <= 2:
         raw_score = calculate_raw_fundamental_score(stock)
-        # 将0-100转换为-0.3到0.3之间（缩小范围，避免极端）
+        # 0-100 → -0.3~0.3，缩小范围避免极端
         return clamp((raw_score - 50) / 100.0, -0.3, 0.3)
     else:
-        # 股票数量足够时，使用相对排名评分
         return calculate_relative_fundamental_score(stock, all_stocks)
 
 
@@ -1008,18 +864,10 @@ def generate_market_maker_orders(
     field_map: dict | None = None,
     all_stocks: list | None = None,
 ) -> tuple[int, bool]:
-    """AI 做市商：为指定股票自动生成买卖挂单，提供流动性。
+    """AI 做市商：为指定股票生成买卖挂单，返回 (生成订单数, 是否干预)。
 
-    报价算法（基于根源数据的智能调控）：
-    1. 基本面驱动：PE、碳排、幸福度、股本等根源数据影响报价中心
-    2. 相对排名评分：基于所有股票的横向比较，避免同涨同跌
-    3. 波动自适应价差：近期波动越大，买卖档位价差越宽
-    4. 反向动量偏置：涨 → 报价下移，跌 → 上移，抑制追涨杀跌
-    5. 智能干预：连续封板时根据基本面评分决定干预方向和力度
-    6. 自成交机制：无人交易时主动制造价格波动
-
-    返回 (生成订单数, 是否干预)。
-    多库适配：competition_id 仅作兼容参数（比赛归属即库归属，ORM 不再过滤）。
+    报价中心 = 基本面/相对排名评分 + 反向动量偏置（涨→下移、跌→上移，抑制追涨杀跌）；
+    再叠加波动自适应价差（封顶 2 倍）、连续封板回归锚干预与自成交。
     """
     from .models import StockFundsAccount, StockHolding, StockOrder
 
@@ -1027,28 +875,24 @@ def generate_market_maker_orders(
     if not enabled:
         return 0, False
 
-    # 获取干预强度因子（用户交易越活跃，做市商干预越少）
+    # 用户交易越活跃，做市商干预越少
     mm_intensity = (mm_override or {}).get("intensity", 1.0)
 
-    # 自动生成参数并带有波动
-    # 基础参数从配置获取
     base_spread_pct = stock_config.get("mmSpreadPct", 0.02)
     base_levels = stock_config.get("mmLevels", 3)
     base_skew_pct = stock_config.get("mmSkewPct", 0.02)
     base_depth_pct = stock_config.get("mmDepthPct", 0.001)
 
-    # 问题10: 应用波动并 clamp 到合理范围（防止多次叠加后偏离过大）
+    # 波动后 clamp 到 ±30%，防止多次叠加后偏离过大
     spread_pct = clamp(add_fluctuation(base_spread_pct, 0.15), base_spread_pct * 0.7, base_spread_pct * 1.3)
     levels = max(1, min(10, int(round(add_fluctuation(base_levels, 0.1)))))
     skew_pct = clamp(add_fluctuation(base_skew_pct, 0.2), base_skew_pct * 0.7, base_skew_pct * 1.3)
     depth_pct = clamp(add_fluctuation(base_depth_pct, 0.25), base_depth_pct * 0.7, base_depth_pct * 1.3)
 
-    # 计算基础数量（带波动）
     override_base = (mm_override or {}).get("baseQuantity")
     if override_base is not None:
         base_quantity = override_base
     else:
-        # 根据股本和深度比例计算，并添加波动
         calculated_quantity = int(round(Decimal(str(stock.total_shares or 0)) * 10000 * Decimal(str(depth_pct))))
         base_quantity = max(
             stock_config["mmMinQty"],
@@ -1058,40 +902,34 @@ def generate_market_maker_orders(
             ),
         )
 
-    # 其他参数也添加波动
-    mm_self_trade_pct = add_fluctuation(stock_config.get("mmSelfTradePct", 0.005), 0.3)  # 自成交偏移波动±30%
-    mm_self_trade_qty_pct = add_fluctuation(stock_config.get("mmSelfTradeQtyPct", 0.1), 0.2)  # 自成交数量波动±20%
+    mm_self_trade_pct = add_fluctuation(stock_config.get("mmSelfTradePct", 0.005), 0.3)  # 偏移±30%
+    mm_self_trade_qty_pct = add_fluctuation(stock_config.get("mmSelfTradeQtyPct", 0.1), 0.2)  # 数量±20%
 
     base_price = stock.current_price
     if base_price <= 0:
         return 0, False
 
-    # 1. 计算基本面评分（基于相对排名）
     fundamental_score = calculate_fundamental_score(stock, all_stocks)
 
-    # 2. 波动自适应价差：|上轮涨跌| 越大价差越宽（封顶 2 倍）
+    # 波动自适应价差：|上轮涨跌| 越大价差越宽（封顶 2 倍）
     vol_scale = 1 + min(1.0, abs(last_change) / 10.0)
     spread_eff = spread_pct * vol_scale
 
-    # 3. 综合偏置：动量偏置 + 基本面偏置 + 估值回归
-    # 动量偏置：涨 → 报价下移，跌 → 上移（反向操作，抑制追涨杀跌）
+    # 动量偏置：涨 → 报价下移，跌 → 上移（反向操作，抑制追涨杀跌）；封板时放大
     momentum_skew = clamp(last_change / 10.0, -1.0, 1.0) * skew_pct
     if consecutive_up >= 1 or consecutive_down >= 1:
-        momentum_skew *= 1.5  # 减小封板时的偏置倍数：从2降到1.5
+        momentum_skew *= 1.5
 
-    # 基本面偏置：评分高 → 报价上移，评分低 → 下移
-    fundamental_skew = fundamental_score * skew_pct * 0.2  # 进一步降低基本面权重：从30%降到20%
+    fundamental_skew = fundamental_score * skew_pct * 0.2
 
-    # 估值回归偏置：当价格偏离初始价过远时，产生回归力量
+    # 估值回归偏置：价格偏离初始价过远时产生回归力量
     init_price = float(getattr(stock, 'init_price', 0))
     current_price_float = float(stock.current_price)
     if init_price > 0:
         price_deviation = (current_price_float - init_price) / init_price
-        # 从配置获取回归参数
         regression_threshold = stock_config.get("mmRegressionThreshold", 0.25)
         regression_strength = stock_config.get("mmRegressionStrength", 0.3)
 
-        # 偏离超过阈值时产生回归力量
         if abs(price_deviation) > regression_threshold:
             regression_skew = -price_deviation * skew_pct * regression_strength
         else:
@@ -1099,32 +937,29 @@ def generate_market_maker_orders(
     else:
         regression_skew = 0.0
 
-    # 综合偏置（动量权重60%，基本面权重20%，估值回归权重20%）
+    # 动量 60% / 基本面 20% / 估值回归 20%
     skew = momentum_skew * 0.6 + fundamental_skew * 0.2 + regression_skew * 0.2
 
     # 限制偏置范围，避免过度偏移
-    skew = clamp(skew, -skew_pct * 1.2, skew_pct * 1.2)  # 减小偏置限制：从1.5降到1.2
+    skew = clamp(skew, -skew_pct * 1.2, skew_pct * 1.2)
 
-    # 4. 随机利空因素：模拟真实市场的不确定性
-    # 从配置获取参数
+    # 随机利空/利好事件（独立概率，不互斥）：模拟真实市场的不确定性
     bad_news_prob = stock_config.get("mmBadNewsProb", 0.03)
     good_news_prob = stock_config.get("mmGoodNewsProb", 0.02)
     bad_news_impact = stock_config.get("mmBadNewsImpact", 0.06)
     good_news_impact = stock_config.get("mmGoodNewsImpact", 0.04)
 
-    # 利空事件（独立概率）
     if random.random() < bad_news_prob:
         impact = random.uniform(bad_news_impact * 0.3, bad_news_impact * 1.2)
         skew -= impact * skew_pct
         logger.info(f"[stock] 做市商利空事件: stock={stock.code}, impact={impact:.3f}")
 
-    # 利好事件（独立概率，与利空不互斥）
     if random.random() < good_news_prob:
         impact = random.uniform(good_news_impact * 0.3, good_news_impact * 1.2)
         skew += impact * skew_pct
         logger.info(f"[stock] 做市商利好事件: stock={stock.code}, impact={impact:.3f}")
 
-    # 查找或创建做市商资金账户（多库适配：比赛归属即库归属，不再传 competition_id）
+    # 做市商资金账户（比赛归属即库归属，无需 competition_id）
     mm_account, _ = StockFundsAccount.objects.get_or_create(
         name="AI做市商",
         defaults={"owner_type": "COMPANY", "cash_balance": 1_000_000_000},
@@ -1132,8 +967,7 @@ def generate_market_maker_orders(
 
     current_round = stock.round
 
-    # 问题4: 只取消做市商的旧轮订单（本轮订单保留，旧轮价格仍在范围内的也保留）
-    # 跨轮有效的做市商旧单在 advance_one_stock 中统一按价格范围筛选
+    # 只撤做市商旧轮订单：跨轮仍在价格范围内的旧单由 advance_one_stock 统一筛选保留
     StockOrder.objects.filter(
         stock_id=stock.id,
         status="PENDING",
@@ -1142,21 +976,17 @@ def generate_market_maker_orders(
     ).update(status="CANCELLED")
 
     # 回归锚干预（连续封板 ≥ 3 轮）：挂大单对冲，量随连续轮数放大
-    # 提高干预门槛：从2轮提高到3轮
     consec = max(consecutive_up, consecutive_down)
     need_intervene = (
         stock_config["interventionMode"] == "regression" and consec >= 3
     )
-    # 减小干预数量：从3倍降到2倍
     intervention_qty = base_quantity * 2 * min(consec, 2) if need_intervene else 0
 
-    # 计算总卖量，确保持仓足够
     total_sell_qty = sum(base_quantity * i for i in range(1, levels + 1))
     total_sell_qty += intervention_qty
 
-    # 做市商自成交：当没有人工订单时，做市商主动制造价格波动
+    # 自成交：无人交易时主动制造价格波动
     self_trade_enabled = stock_config.get("mmSelfTradeEnabled", True)
-    # 使用已经波动过的参数
     self_trade_pct = mm_self_trade_pct
     self_trade_qty_pct = mm_self_trade_qty_pct
 
@@ -1168,9 +998,8 @@ def generate_market_maker_orders(
 
     orders: list[StockOrder] = []
 
-    # 持仓不足则先建仓
     if need_shares > 0:
-        # P0-#4: 检查做市商现金是否足够，不够则缩减建仓数量
+        # 现金不足则按可用现金缩减建仓数量
         cost_per_share = round2(Decimal(str(base_price)))
         total_cost = cost_per_share * Decimal(str(need_shares))
         available_cash = Decimal(str(mm_account.cash_balance))
@@ -1192,13 +1021,11 @@ def generate_market_maker_orders(
             mm_account.cash_balance = Decimal(str(mm_account.cash_balance)) - actual_cost
             mm_account.save(update_fields=["cash_balance"])
 
-    # 回归锚干预（根据干预强度因子调整）
     if need_intervene and mm_intensity > 0.3:  # 用户交易不活跃时才干预
         is_up = consecutive_up >= 2
         intervention_price = round2(
             base_price * (1 + (stock_config["regressionPct"] if is_up else -stock_config["regressionPct"]))
         )
-        # 根据干预强度因子调整干预数量
         adjusted_intervention_qty = int(round(intervention_qty * mm_intensity))
         if adjusted_intervention_qty > 0:
             orders.append(StockOrder(
@@ -1214,18 +1041,17 @@ def generate_market_maker_orders(
 
     # 报价中心：按反向动量偏置整体平移（涨 → 下移，跌 → 上移）
     quote_center = round2(Decimal(str(base_price)) * (Decimal("1") - Decimal(str(skew))))
-    # 问题7: 防止 quote_center 极端值
+    # 防止 quote_center 极端值
     min_center = round2(base_price * Decimal("0.5"))
     max_center = round2(base_price * Decimal("2.0"))
     quote_center = max(min_center, min(max_center, quote_center))
 
-    # 问题2: 跟踪做市商可用持仓，卖单不超持仓
+    # 卖单不超可用持仓：跟踪做市商当前持仓
     mm_holding_refresh = StockHolding.objects.filter(
         funds_account_id=mm_account.id, stock_id=stock.id
     ).first()
     available_shares = Decimal(str(mm_holding_refresh.shares)) if mm_holding_refresh else Decimal("0")
 
-    # 根据干预强度因子调整做市商挂单数量
     adjusted_base_quantity = int(round(base_quantity * mm_intensity))
 
     for i in range(1, levels + 1):
@@ -1250,7 +1076,6 @@ def generate_market_maker_orders(
                 status="PENDING",
                 round=current_round,
             ))
-        # 问题2: 卖单检查持仓是否足够，不够则缩减或跳过
         actual_sell_qty = min(Decimal(str(sell_qty)), available_shares)
         if actual_sell_qty > 0:
             orders.append(StockOrder(
@@ -1265,13 +1090,12 @@ def generate_market_maker_orders(
             ))
             available_shares -= actual_sell_qty
 
-    # 问题5: 自成交放在建仓和报价之后，确保持仓已补充
+    # 自成交须在建仓之后（确保持仓已补充）
     if self_trade_enabled and not need_intervene and mm_intensity > 0.5:
         base_self_qty = max(1, int(round(base_quantity * self_trade_qty_pct * mm_intensity)))
         self_sell_qty = min(base_self_qty, int(available_shares))
         self_buy_qty = base_self_qty
 
-        # 价格偏移方向：基于动量
         if last_change > 1.0:
             direction = -1 if random.random() < 0.7 else 1
         elif last_change < -1.0:
@@ -1286,7 +1110,6 @@ def generate_market_maker_orders(
         st_buy_price = round2(self_trade_price * (Decimal("1") + Decimal("0.001")))
         st_sell_price = round2(self_trade_price * (Decimal("1") - Decimal("0.001")))
 
-        # 生成买单
         if self_buy_qty > 0:
             orders.append(StockOrder(
                 stock_id=stock.id,
@@ -1299,7 +1122,6 @@ def generate_market_maker_orders(
                 round=current_round,
             ))
 
-        # 生成卖单（持仓不足时跳过）
         if self_sell_qty > 0:
             orders.append(StockOrder(
                 stock_id=stock.id,
@@ -1325,22 +1147,14 @@ def generate_market_maker_orders(
     return len(orders), need_intervene
 
 
-# ==================== 平盘推进（辅助） ====================
 def _advance_round_flat(
     stock, competition_id: int, limit_pct: float,
     drift_data: dict | None = None,
 ) -> tuple[int, dict]:
-    """平盘推进：轮次 +1、生成 K 线、作废旧轮订单。
+    """平盘推进：轮次 +1、生成 K 线、作废旧轮订单（无订单/不成交两种情形共用）。
 
-    用于「无任何订单」或「撮合不成交」两种情形，保证各股票
-    round 全局同步、K 线序列无空洞。
-
-    drift_data: 可选的趋势漂移参数 {happiness, currentCarbon, industryAvgCarbon,
-                happinessImpact, carbonImpact, carbonSaturateRatio, maxMovePct}。
-                提供时会根据幸福度/碳排放计算价格漂移，否则价格不动。
-
-    返回 (新轮次, K 线 dict)。调用方须处于 comp_atomic() 内。
-    多库适配：competition_id 仅作兼容参数（比赛归属即库归属）。
+    保证各股票 round 全局同步、K 线无空洞；调用方须处于 comp_atomic() 内。
+    drift_data 提供时按幸福度/碳排计算价格漂移，否则价格不动。
     """
     from .models import Stock, StockCandle, StockOrder
     from decimal import Decimal as D
@@ -1348,7 +1162,7 @@ def _advance_round_flat(
     new_round = stock.round + 1
     old_price = stock.current_price
 
-    # 计算趋势漂移（即使无交易，股价也应随幸福度/碳排放自然波动）
+    # 无交易也按幸福度/碳排趋势漂移
     if drift_data:
         drift = compute_drift(
             drift_data["happiness"],
@@ -1359,18 +1173,15 @@ def _advance_round_flat(
             drift_data["carbonSaturateRatio"],
         )
         max_move = drift_data["maxMovePct"]
-        # 趋势漂移：drift 方向确定，幅度有 ±60% 随机波动（增加随机性）
+        # drift 定方向，幅度 ±60% 随机
         trend_drift = drift * (1 + random.uniform(-0.6, 0.6))
-        # 基础随机波动：直接作用于价格，±0.5% ~ ±2%（增加波动幅度）
-        # 不乘以 maxMovePct，确保即使 drift 接近 0 也有明显波动
+        # 基础噪声直接作用于价格（不乘 maxMovePct）：drift≈0 时也有波动
         base_noise_pct = random.uniform(-0.02, 0.02)
-        # 计算新价格：趋势漂移（通过 maxMovePct 缩放）+ 基础噪声（直接作用）
         theoretical = float(old_price) * (1 + trend_drift * max_move + base_noise_pct)
-        # 限幅
         upper = float(old_price) * (1 + limit_pct)
         lower = float(old_price) * (1 - limit_pct)
         new_price = round2(max(lower, min(upper, theoretical)))
-        # 确保价格不为 0
+        # 价格不为 0
         if new_price < Decimal("0.01"):
             new_price = Decimal("0.01")
     else:
@@ -1400,12 +1211,10 @@ def _advance_round_flat(
     )
 
     if old_orders.exists():
-        # 获取当前价格和涨跌幅限制
         current_price = new_price
         upper_limit = current_price * (1 + D(str(limit_pct)))
         lower_limit = current_price * (1 - D(str(limit_pct)))
 
-        # 批量筛选需要撤销的订单（价格超出限制）
         cancel_ids = []
         keep_ids = []
         for order in old_orders:
@@ -1415,19 +1224,16 @@ def _advance_round_flat(
             else:
                 keep_ids.append(order.id)
 
-        # 批量撤销（多库适配点 5：旧 emit_resource_changed('stock-orders', ...) 广播
-        # 改为契约 §4.3 推送只当信号——advance_round 结束统一发 stock-updated）
+        # 多库适配点 5：旧 emit_resource_changed 逐条广播改为 §4.3「推送只当信号」，轮末统一发
         if cancel_ids:
             StockOrder.objects.filter(id__in=cancel_ids).update(status="CANCELLED")
 
-        # 批量更新轮次
         if keep_ids:
             StockOrder.objects.filter(id__in=keep_ids).update(round=new_round)
 
     return new_round, candle
 
 
-# ==================== 单只股票推进 ====================
 def advance_one_stock(
     stock,
     competition_id: int,
@@ -1441,27 +1247,20 @@ def advance_one_stock(
 ) -> dict | None:
     """推进单只股票一轮：撮合、定价、写持仓/现金/订单状态、生成 K 线。
 
-    last_change：上一根 K 线的涨跌%（做市商反向偏置与波动自适应价差输入）。
-    all_stocks：所有股票列表，用于相对排名评分。
-    返回结果 dict（skipped=True 表示平盘轮：无成交，价格不动但 round 照常推进）或 None。
-    多库适配：competition_id 仅作兼容参数（比赛归属即库归属，ORM 不再过滤）。
+    skipped=True 表示平盘轮（无成交，价格不动但 round 照常推进）；
+    last_change 为上一根 K 线涨跌%（做市商反向偏置与波动自适应价差输入）。
     """
     from .models import Stock, StockCandle, StockFundsAccount, StockHolding, StockOrder
 
     with comp_atomic():
-        # 分析用户交易活跃度，决定做市商干预程度
-        # 统计本轮用户订单数量（非做市商订单）
+        # 本轮用户订单数（非做市商）：越少则做市商干预越强
         user_orders_count = StockOrder.objects.filter(
             stock_id=stock.id,
             round=stock.round,
             status="PENDING",
         ).exclude(funds_account__name="AI做市商").count()
 
-        # 计算做市商干预强度因子（用户交易越活跃，做市商干预越少）
-        # 用户订单0个：干预强度1.0（完全干预）
-        # 用户订单1-2个：干预强度0.7（减少干预）
-        # 用户订单3-5个：干预强度0.4（大幅减少干预）
-        # 用户订单5个以上：干预强度0.1（几乎不干预）
+        # 干预强度分档：0 单 1.0 / 1-2 单 0.7 / 3-5 单 0.4 / >5 单 0.1
         if user_orders_count == 0:
             mm_intensity = 1.0
         elif user_orders_count <= 2:
@@ -1471,7 +1270,6 @@ def advance_one_stock(
         else:
             mm_intensity = 0.1
 
-        # 将干预强度传递给做市商函数
         mm_config_with_intensity = dict(mm_config or {})
         mm_config_with_intensity["intensity"] = mm_intensity
 
@@ -1481,8 +1279,7 @@ def advance_one_stock(
             consecutive_up, consecutive_down, last_change, field_map, all_stocks,
         )
 
-        # 读取本事务内刚生成的 PENDING 订单（包括当前轮和旧轮有效订单）
-        # 旧轮订单如果价格仍在有效范围内，应继续参与撮合
+        # 含旧轮 PENDING 单：价格仍在范围内的继续参与撮合
         all_orders = list(
             StockOrder.objects.select_related("funds_account").filter(
                 stock_id=stock.id,
@@ -1491,7 +1288,6 @@ def advance_one_stock(
             ).order_by("created_at")
         )
 
-        # 验证旧轮订单价格是否在当前轮次有效范围内
         from decimal import Decimal as D
         current_price = stock.current_price
         upper_limit = current_price * (1 + D(str(stock_config["limitPct"])))
@@ -1501,22 +1297,17 @@ def advance_one_stock(
         cancel_ids = []
         for order in all_orders:
             if order.round == stock.round:
-                # 当前轮订单直接保留
                 orders.append(order)
             else:
-                # 旧轮订单需要验证价格是否在有效范围内
                 order_price = D(str(order.price))
                 if lower_limit <= order_price <= upper_limit:
                     orders.append(order)
                 else:
-                    # 价格超出限制，标记为撤销
                     cancel_ids.append(order.id)
 
-        # 批量撤销超出限制的订单
         if cancel_ids:
             StockOrder.objects.filter(id__in=cancel_ids).update(status="CANCELLED")
-        # 无任何订单（做市商关闭且无玩家委托）→ 趋势漂移推进：
-        # 即使无交易，股价也应随幸福度/碳排放自然波动，避免平盘。
+        # 无任何订单（做市商关闭且无委托）→ 按幸福度/碳排趋势漂移，避免长期平盘
         if not orders:
             drift_data = {
                 "happiness": float(effective_happiness(stock, field_map)),
@@ -1547,14 +1338,12 @@ def advance_one_stock(
                 "candle": candle,
             }
 
-        # 撮合
         match = compute_match(
             [{"side": o.side, "price": o.price, "quantity": o.quantity} for o in orders]
         )
 
-        # expand-limit 模式：连续封板 ≥ 2 轮时临时放宽限幅
-        # （注意：下方防连板硬约束会把同侧限幅收紧到 9.6%，连续封板不再可能，
-        #   该模式实际只在「干预模式=扩板」且刻意配置更高封板判定时才有差异，保留兼容）
+        # expand-limit 模式：连续封板 ≥ 2 轮临时放宽限幅；但下方防连板硬约束会把同侧
+        # 收紧到 9.6%，实际只在刻意配置更高封板判定时才有差异，保留兼容
         limit_pct = stock_config["limitPct"]
         if stock_config["interventionMode"] == "expand-limit":
             consec = max(consecutive_up, consecutive_down)
@@ -1563,10 +1352,8 @@ def advance_one_stock(
         cfg = dict(stock_config)
         cfg["limitPct"] = limit_pct
 
-        # 防连板硬约束（S10）：上一轮已封板（|涨跌| ≥ 9.9%）时，本轮同侧限幅
-        # 收紧（96% 且不超过 9.6%）—— 单轮最大变动 < 9.9% 封板判定线，
-        # 无论玩家如何挂单、无论 limitPct 配置多大，连续封板在数学上不可能
-        # （对两侧分别生效）。
+        # 防连板硬约束（S10）：上轮封板则本轮同侧限幅收紧到 min(96%, 9.6%)，
+        # 单轮变动恒 < 9.9% 判板线 —— 任意挂单/任意 limitPct 下连板都不可能（两侧各自生效）。
         upper_pct = limit_pct
         lower_pct = limit_pct
         if consecutive_up >= 1:
@@ -1576,8 +1363,7 @@ def advance_one_stock(
         cfg["upperLimitPct"] = upper_pct
         cfg["lowerLimitPct"] = lower_pct
 
-        # 把所有数值入口转 float（compute_* 内部按 float 接口运行；
-        # price["final"] 再转 Decimal 用于后续 Decimal 化路径）
+        # 数值入口统一转 float（compute_* 走 float），final 再转 Decimal 走 Decimal 化路径
         last_close_dec = Decimal(str(stock.current_price))
         factors_dec = {
             "lastClose": float(last_close_dec),
@@ -1593,23 +1379,19 @@ def advance_one_stock(
         }
         price = compute_price(factors_dec, cfg)
 
-        # 市场自然波动机制：模拟真实市场的随机性和趋势性
+        # 市场自然波动：模拟真实市场的随机性与趋势性
         final_price = price["final"]
 
-        # 从配置获取波动参数
         callback_enabled = stock_config.get("mmCallbackEnabled", True)
 
         if callback_enabled:
-            # 获取最近K线数据，分析市场状态
             recent_candles = list(
                 StockCandle.objects.filter(
                     stock_id=stock.id,
                 ).order_by("-round")[:10]
             )
 
-            # 计算技术指标
             if recent_candles:
-                # 计算近期涨跌幅
                 recent_changes = [float(c.change_pct) for c in recent_candles[:5]]
                 avg_change = sum(recent_changes) / len(recent_changes)
 
@@ -1626,20 +1408,17 @@ def advance_one_stock(
                     else:
                         break
 
-                # 基于多种因素计算回调概率（降低概率，减少压制）
-                base_prob = 0.03  # 基础回调概率3%（从5%降到3%）
+                # 回调概率 = 基础 3% + 连涨/均涨幅加成
+                base_prob = 0.03
 
-                # 因素1：连续上涨轮数（非线性）
-                if candle_consec_up >= 4:  # 提高触发门槛：从3轮提高到4轮
+                if candle_consec_up >= 4:
                     up_factor = min(0.15, (candle_consec_up - 3) * 0.04)
                     base_prob += up_factor
 
-                # 因素2：近期平均涨幅（涨幅越大，回调概率越大）
-                if avg_change > 1.5:  # 提高触发门槛：从1.0%提高到1.5%
+                if avg_change > 1.5:
                     change_factor = min(0.1, (avg_change - 1.5) * 0.04)
                     base_prob += change_factor
 
-                # 因素3：随机市场情绪（15%概率出现市场情绪变化，增加波动）
                 if random.random() < 0.15:
                     sentiment = random.choice([-1, 1])
                     sentiment_pct = random.uniform(0.008, 0.025)  # 0.8%~2.5%
@@ -1647,7 +1426,6 @@ def advance_one_stock(
                     logger.info(f"[stock] 市场情绪变化: stock={stock.code}, "
                                f"{'上涨' if sentiment > 0 else '下跌'}{sentiment_pct*100:.1f}%")
 
-                # 因素4：技术性回调（基于概率，降低幅度）
                 if random.random() < base_prob:
                     if avg_change > 2.0:  # 提高触发门槛
                         callback_pct = random.uniform(0.01, 0.03)  # 1%~3%（降低）
@@ -1660,16 +1438,15 @@ def advance_one_stock(
                     logger.info(f"[stock] 技术性回调: stock={stock.code}, "
                                f"近期平均涨幅{avg_change:.1f}%, 回调{callback_pct*100:.1f}%")
 
-        # P0-#5: 市场波动后强制限制在涨跌停范围内（使用非对称限幅，防止防连板被绕过）
+        # 波动后强制夹回涨跌停：须用非对称限幅，否则可绕过防连板约束
         upper_bound = last_close_dec * (Decimal("1") + Decimal(str(cfg.get("upperLimitPct", limit_pct))))
         lower_bound = last_close_dec * (Decimal("1") - Decimal(str(cfg.get("lowerLimitPct", limit_pct))))
         final_price = max(lower_bound, min(upper_bound, final_price))
 
-        # 把 final 转 Decimal 用于后续 Decimal 化路径（candle 入库、K 线保存等）
+        # final 转 Decimal，供后续 candle 入库/K 线保存等 Decimal 化路径
         price["final"] = final_price
 
-        # 撮合不成交 → 趋势漂移：根据幸福度/碳排放计算价格漂移，
-        # 避免无成交时长期平盘；轮次照常推进，K 线序列无空洞。
+        # 撮合不成交 → 同样走趋势漂移并推进轮次，避免长期平盘、K 线留空洞
         if not match["matched"]:
             drift_data = {
                 "happiness": float(effective_happiness(stock, field_map)),
@@ -1745,10 +1522,8 @@ def advance_one_stock(
             if buy.price < sell.price:
                 break
             qty = min(buy_rem[buy.id], sell_rem[sell.id])
-            # 逐对成交价：全市场统一价 tradePrice 是「最高买价与最低卖价的中点」，
-            # 它可能越出某笔委托的限价（例：买单挂 9.2、卖单挂 9，中点 9.5 会让买方
-            # 以高于自己限价的价格买入）。故把成交价夹到 [卖价, 买价] 区间内，
-            # 保证成交不违反任何一方的限价委托语义（此处已确保 sell.price <= buy.price）。
+            # 统一中点价 tradePrice 可能越出单笔限价（买挂 9.2、卖挂 9 → 中点 9.5 会让买方
+            # 高于自己限价买入），故逐对成交价夹到 [卖价, 买价]（已保证 sell.price <= buy.price）。
             pair_price = min(
                 max(trade_price, Decimal(str(sell.price))),
                 Decimal(str(buy.price)),
@@ -1772,7 +1547,6 @@ def advance_one_stock(
             qty = (qty * Decimal("1000000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) / Decimal("1000000")
             trade_prices.append(pair_price)
 
-            # 买入方：现金减少，持仓增加（加权成本）
             cash_map[buy.funds_account_id] = cash_map[buy.funds_account_id] - qty * pair_price
             bh = holding_map.get(buy.funds_account_id, {"shares": Decimal("0"), "costPrice": Decimal("0")})
             new_shares = bh["shares"] + qty
@@ -1782,7 +1556,6 @@ def advance_one_stock(
                 else pair_price
             )
             holding_map[buy.funds_account_id] = {"shares": new_shares, "costPrice": new_cost}
-            # 卖出方：现金增加，持仓减少
             cash_map[sell.funds_account_id] = cash_map[sell.funds_account_id] + qty * pair_price
             sh = holding_map.get(sell.funds_account_id, {"shares": Decimal("0"), "costPrice": Decimal("0")})
             holding_map[sell.funds_account_id] = {
@@ -1810,9 +1583,8 @@ def advance_one_stock(
         )
         new_round = stock.round + 1
 
-        # 现金（绑定字段的账户更新字段值，否则更新账户余额）
-        # touched_field_companies：本次撮合写入了「绑定产业字段」的公司，结算后重算
-        # 让公司详情/仪表盘等引用方拿到绑定字段（如现金）的最新值。
+        # 现金：绑定字段的账户写字段值，否则写账户余额。
+        # touched_field_companies 为本次写了绑定字段的公司，结算后需重算引用它的计算字段。
         touched_field_companies: set[int] = set()
         for acc_id, cash in cash_map.items():
             acc = account_objs.get(acc_id)
@@ -1824,13 +1596,10 @@ def advance_one_stock(
             if acc is not None:
                 StockFundsAccount.objects.filter(pk=acc_id).update(cash_balance=rounded_cash)
         if touched_field_companies:
-            # 绑定字段（现金）常被计算字段引用（如「总资产 = 现金 + 持仓市值」），
-            # 结算改了现金却不重算，公式字段会一直停在上一轮的旧值。
-            # （多库适配点 5：旧 emit_resource_changed("company-field", ...) 广播
-            #   改为契约 §4.3 推送只当信号）
+            # 现金常被计算字段引用（如「总资产 = 现金 + 持仓市值」），不重算会一直停在旧值
+            # （多库适配点 5：旧 emit_resource_changed 广播改为 §4.3 推送只当信号）。
             _recompute_calc_after_cash_write(touched_field_companies)
 
-        # 持仓（仅被撮合涉及的账户）
         for acc_id in touched_accounts:
             h = holding_map.get(acc_id)
             if h is None:
@@ -1847,7 +1616,6 @@ def advance_one_stock(
             else:
                 StockHolding.objects.filter(funds_account_id=acc_id, stock_id=stock.id).delete()
 
-        # 订单状态
         for o in orders:
             f = filled.get(o.id, Decimal("0"))
             if f > EPS:
@@ -1860,8 +1628,7 @@ def advance_one_stock(
                         amount=round2(Decimal(str(o.price)) * remaining),
                     )
 
-        # K 线（snake_case 字段映射，build_candle 返回驼峰）
-        # 计算成交量：买单成交量总和（买卖配对，取买单侧即可）
+        # K 线字段为 snake_case（build_candle 返回驼峰）；成交量取买单侧合计（买卖配对）
         total_volume = Decimal("0")
         for buy_order in buys:
             total_volume += filled.get(buy_order.id, Decimal("0"))
@@ -1876,12 +1643,10 @@ def advance_one_stock(
             round=candle["round"],
             volume=round2(total_volume),
         )
-        # 股票价 / 轮次
         Stock.objects.filter(pk=stock.id).update(current_price=price["final"], round=new_round)
 
-        # 轮次推进后处理旧轮订单：不再直接撤销，而是重新验证价格限制
-        # 避免限价单跨轮后以过时价限成交（下单时的 ±10% 限制随轮次失效）
-        # 但如果价格仍在有效范围内，订单应保持有效
+        # 旧轮订单不直接撤销：价格仍在新限幅内的保持有效并升级轮次，避免跨轮以过时
+        # 价限成交（下单时的 ±10% 限制随轮次失效）。
         from decimal import Decimal as D
 
         old_orders = StockOrder.objects.filter(
@@ -1891,22 +1656,18 @@ def advance_one_stock(
         )
 
         if old_orders.exists():
-            # 获取当前价格和涨跌幅限制
             current_price = price["final"]
             upper_limit = current_price * (1 + D(str(cfg["upperLimitPct"])))
             lower_limit = current_price * (1 - D(str(cfg["lowerLimitPct"])))
 
             cancelled_count = 0
             for order in old_orders:
-                # 检查订单价格是否仍在有效范围内
                 order_price = D(str(order.price))
                 if order_price < lower_limit or order_price > upper_limit:
-                    # 价格超出限制，撤销订单
                     order.status = "CANCELLED"
                     order.save(update_fields=["status"])
                     cancelled_count += 1
                 else:
-                    # 价格仍在范围内，更新订单轮次保持有效
                     order.round = new_round
                     order.save(update_fields=["round"])
 
@@ -1932,18 +1693,14 @@ def advance_one_stock(
         }
 
 
-# ==================== 推进轮次（主入口） ====================
 _advance_locks: dict[int, threading.Lock] = {}
 _advance_locks_guard = threading.Lock()
 
 
 def _try_acquire_advance_lock(competition_id: int) -> bool:
-    """尝试获取推进锁（非阻塞），成功返回 True。
+    """尝试获取推进锁（非阻塞）。进程内 threading.Lock，不跨进程（H6）。
 
-    说明（H6）：当前为进程内 threading.Lock，对「单进程 ASGI（daphne 单实例）」
-    部署已能防止同一比赛轮次被并发推进。若未来扩展为多进程/多 worker，
-    需改用跨进程互斥（如 Redis 分布式锁 / Postgres 咨询锁），
-    本锁本身不跨进程。写操作的原子性已由 advance_round 内的 comp_atomic() 兜底。
+    单进程 ASGI 足够；扩到多 worker 需换跨进程互斥（Redis / Postgres 咨询锁）。
     """
     with _advance_locks_guard:
         lock = _advance_locks.get(competition_id)
@@ -1954,11 +1711,7 @@ def _try_acquire_advance_lock(competition_id: int) -> bool:
 
 
 def _release_advance_lock(competition_id: int) -> None:
-    """释放推进锁。
-
-    移植修正：旧实现 release 块重复两次（二次 release 会误释放他人刚获取的锁），
-    这里只释放一次。
-    """
+    """释放推进锁（只释放一次：旧实现重复 release 会误释放他人刚获取的锁）。"""
     with _advance_locks_guard:
         lock = _advance_locks.get(competition_id)
         if lock is not None:
@@ -1969,12 +1722,7 @@ def _release_advance_lock(competition_id: int) -> None:
 
 
 def load_stock_config(competition_id: int) -> dict:
-    """解析比赛级 stockConfig，缺失回退默认值。
-
-    多库适配：全局库 Competition 若带 stock_config 配置（JSON）即生效；
-    当前模型无该字段时 getattr 回退 None → DEFAULT_STOCK_CONFIG。
-    请求级覆盖见 advance_round 的 stock_config 参数（旧 AdvanceRoundSerializer 语义）。
-    """
+    """解析比赛级 stockConfig（全局库 Competition.stock_config），缺失回退默认值。"""
     from apps.global_.competitions.models import Competition
 
     comp = Competition.objects.filter(pk=competition_id).first() if competition_id else None
@@ -1991,13 +1739,8 @@ def advance_round(
 ) -> dict:
     """推进一轮：对比赛内（或指定）股票逐只撮合、定价、生成 K 线（契约 §3 编排入口）。
 
-    契约 §3 的 ``advance_round(competition_context, ...)`` 即本函数：
-    competition_id 为比赛上下文 id（比赛库 alias 由 thread-local
-    get_competition_alias() 提供，事务经 comp_atomic 落到比赛库连接）。
-
-    返回 {advanced, skipped, results, marketMakerOrders}。
-    撮合 → 定价 → K线 → 做市商报价 → 推进 Stock.round 全部在单事务内（§1 并发写），
-    异常整体回滚不落半账（§3）。
+    撮合→定价→K线→做市商→推进 round 全在单事务内，异常整体回滚不落半账（§1/§3）；
+    比赛库 alias 由 thread-local get_competition_alias() 提供，事务经 comp_atomic 落库。
     """
     from .models import Stock, StockCandle
 
@@ -2018,10 +1761,8 @@ def advance_round(
 
         total_mm_orders = 0
 
-        # 整轮推进包裹在事务中（H6 加固）：要么全部股票推进成功，要么整体回滚，
-        # 避免半场崩溃导致的部分写入/数据不一致。
-        # 并发推进（#16）：在事务内对目标 Stock 行加行级锁（select_for_update），
-        # 与进程内 threading.Lock 形成「进程内 + DB」双重防护，避免多 worker 部署下双推进。
+        # 整轮一个事务（H6）：要么全部成功要么整体回滚，避免半场崩溃的脏写；
+        # 事务内对 Stock 行加 select_for_update，与进程内锁形成「进程内 + DB」双重防护（#16）。
         with comp_atomic():
             qs = Stock.objects.all()
             if stock_ids:
@@ -2037,7 +1778,6 @@ def advance_round(
             stock_ids_list = [s.id for s in stocks]
             recent_candles_map: dict[int, list] = {sid: [] for sid in stock_ids_list}
             if stock_ids_list:
-                # 获取每只股票最近3轮的K线
                 recent_candles = list(
                     StockCandle.objects.filter(
                         stock_id__in=stock_ids_list,
@@ -2047,7 +1787,6 @@ def advance_round(
                     if len(recent_candles_map[candle.stock_id]) < 3:
                         recent_candles_map[candle.stock_id].append(candle)
 
-            # （多库适配点 6：旧 suppress_signals() 屏蔽 per-row 信号 → 新系统无该机制）
             for stock in stocks:
                 apply_pb_round(stock, pb_value_map)
                 recent = recent_candles_map.get(stock.id, [])
@@ -2072,8 +1811,7 @@ def advance_round(
 
         advanced = sum(1 for x in results if not x.get("skipped"))
 
-        # 审计：核心动账操作（Stock/Order/Holding/FundsAccount 批量变更）留痕
-        # （多库适配点 7：旧 apps.common.audit.log_write → 比赛内审计服务）。
+        # 审计留痕（多库适配点 7：旧 apps.common.audit.log_write → 比赛内审计服务）。
         try:
             from apps.competition.audit import services as audit_services
 

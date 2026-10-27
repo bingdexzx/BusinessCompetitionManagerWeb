@@ -23,13 +23,11 @@ export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref(getAccessToken())
   const refreshToken = ref(getRefreshToken())
   const user = ref<User | null>(null)
-  // 仅接受正整数 id：历史脏值（'undefined'/'NaN'）会被清理，防止污染 X-Competition-Id
   const selectedCompetitionId = ref<number | null>(sanitizeId(getCompetitionId()))
 
   const isAuthenticated = computed(() => Boolean(accessToken.value))
   const isSuperuser = computed(() => Boolean(user.value?.isSuperuser))
   const memberships = computed<Membership[]>(() => user.value?.memberships ?? [])
-  /** 当前选中比赛下我的身份 */
   const currentMembership = computed<Membership | null>(
     () => memberships.value.find((m) => m.id === selectedCompetitionId.value) ?? null,
   )
@@ -66,7 +64,6 @@ export const useAuthStore = defineStore('auth', () => {
     applyUser(await api.getMe())
   }
 
-  /** 应用启动时恢复会话（有 token 就拉取当前用户） */
   async function init(): Promise<void> {
     if (!accessToken.value) return
     try {
@@ -77,17 +74,11 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  // 会话补齐去重：启动时的 init() 与路由守卫的 ensureSession() 可能同时触发，
-  // 不能并发拉两次 /me（否则互相覆盖 user，并多打一次请求）。
+  // 会话补齐去重：main.ts 的 init() 与路由守卫的 ensureSession() 可能同时触发，不能并发拉两次 /me（否则互相覆盖 user）
   let sessionPromise: Promise<void> | null = null
 
-  /**
-   * 确保「已登录且用户资料已加载」。
-   *
-   * 刷新页面或直接打开深链时，`main.ts` 的 `init()` 是异步的，而路由守卫同步执行——
-   * 此刻 `user` 还是 null，`isSuperuser` / `memberships` 都是空，权限判断会把
-   * 系统超管误判成无权限、把深链重定向回比赛列表。守卫必须先 await 这里。
-   */
+/** 刷新/深链时 main.ts 的 init() 是异步的，而路由守卫同步执行：此刻 user 仍为 null、isSuperuser/memberships 为空，
+ *  权限判断会把系统超管误判成无权限、把深链重定向回比赛列表——守卫必须先 await 这里。 */
   async function ensureSession(): Promise<void> {
     if (!accessToken.value || user.value) return
     if (!sessionPromise) {

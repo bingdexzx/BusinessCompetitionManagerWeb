@@ -1,28 +1,14 @@
-"""基础数据模型（照旧项目字段结构重写）。
+"""基础数据模型（照旧项目字段结构重写：表名/字段名/choices/Decimal(60,4)/约束逐项照搬）。
 
-语义来源：旧系统 backend/apps/{fuels,warehouses,vehicles,maps,materials,products,
-parts,infrastructures,tech_tree,production_lines}/models.py —— 表名（db_table）、
-字段名、choices、金额 Decimal(60,4) 口径、唯一约束、关联关系逐项照搬。
-
-多库适配（§5.2，与 stock 同口径）：
-- **不建跨库外键**：旧模型的 competition 外键（指向全局库 Competition）整体去掉
-  （一个比赛一个库 comp_<id>，归属由库本身决定）；如出现指向公司/用户的引用一律
-  BigIntegerField 存整数 ID（本域模型当前没有此类引用）；
-- **同库 FK 保留**：本 app 内部关联（Vehicle.fuel、MapEdge.from_node、
-  ProductPart、PartMaterial、TechPrerequisite 等）全部照旧用外键；
-- **同步用途**：主表保留 created_at/updated_at，并按旧表名建
-  ``idx_<table>_updated`` 索引（delta 同步按 updated_at keyset 拉取）。
+多库适配（§5.2，与 stock 同口径）：不建跨库外键——旧的 competition 外键整体去掉（一个比赛一个库，
+归属由库决定），指向公司/用户一律 BigIntegerField 存 ID；本 app 内部关联照旧用外键；主表保留
+created_at/updated_at 并按旧表名建 idx_<table>_updated 索引（delta 同步按 updated_at keyset 拉取）。
 """
 
 from django.db import models
 
 
-# ---------------------------------------------------------------- 燃料
-
-
 class Fuel(models.Model):
-    """燃料（比赛级基础数据，db_table=fuels）。"""
-
     name = models.CharField('名称', max_length=255)
     # 燃料单价：玩家购买时累加到现金支出，浮点累计会漂。改 Decimal（旧口径）。
     price_per_liter = models.DecimalField(
@@ -46,12 +32,7 @@ class Fuel(models.Model):
         return self.name
 
 
-# ---------------------------------------------------------------- 仓库
-
-
 class Warehouse(models.Model):
-    """仓库（比赛级基础数据，db_table=warehouses）。"""
-
     TYPE_CHOICES = [
         ("MATERIAL", "MATERIAL"),
         ("PART", "PART"),
@@ -82,14 +63,8 @@ class Warehouse(models.Model):
         return self.name
 
 
-# ---------------------------------------------------------------- 载具
-
-
 class Vehicle(models.Model):
-    """载具主数据（db_table=vehicles）。
-
-    fuel 使用 PROTECT：被引用的燃料不允许直接删除（旧口径）。
-    """
+    """载具主数据。fuel 用 PROTECT：被引用的燃料不允许直接删除（旧口径）。"""
 
     name = models.CharField('名称', max_length=128)
     fuel = models.ForeignKey(
@@ -126,12 +101,7 @@ class Vehicle(models.Model):
         return self.name
 
 
-# ---------------------------------------------------------------- 地图
-
-
 class MapNodeType(models.Model):
-    """地图节点类型（db_table=map_node_types）。"""
-
     name = models.CharField('名称', max_length=128)
     description = models.TextField('描述', null=True, blank=True)
     color = models.CharField('颜色', max_length=32, null=True, blank=True)
@@ -154,8 +124,6 @@ class MapNodeType(models.Model):
 
 
 class PathType(models.Model):
-    """路径（道路）类型（db_table=path_types）。"""
-
     name = models.CharField('名称', max_length=128)
     description = models.TextField('描述', null=True, blank=True)
     color = models.CharField('颜色', max_length=32, null=True, blank=True)
@@ -178,8 +146,6 @@ class PathType(models.Model):
 
 
 class MapNode(models.Model):
-    """地图节点（db_table=map_nodes）。"""
-
     name = models.CharField('名称', max_length=128)
     region = models.CharField('所属区域', max_length=128, default="")
     node_type = models.ForeignKey(
@@ -250,12 +216,7 @@ class MapEdge(models.Model):
         return f"边#{self.id}"
 
 
-# ---------------------------------------------------------------- 原料
-
-
 class Material(models.Model):
-    """原料（比赛级基础数据，db_table=materials）。"""
-
     TYPE_CHOICES = [("NORMAL", "NORMAL"), ("SPECIAL", "SPECIAL")]
 
     name = models.CharField('名称', max_length=255)
@@ -282,12 +243,7 @@ class Material(models.Model):
         return self.name
 
 
-# ---------------------------------------------------------------- 产品
-
-
 class Product(models.Model):
-    """产品主数据（db_table=products）。"""
-
     name = models.CharField('名称', max_length=128)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -339,8 +295,6 @@ class ProductPart(models.Model):
 
 
 class ProductTechRequirement(models.Model):
-    """产品-科技节点需求（db_table=product_tech_requirements）。"""
-
     product = models.ForeignKey(
         Product,
         verbose_name='产品',
@@ -368,12 +322,7 @@ class ProductTechRequirement(models.Model):
         return f"{self.product_id}-{self.tech_node_id}"
 
 
-# ---------------------------------------------------------------- 零件
-
-
 class Part(models.Model):
-    """零件主数据（db_table=parts）。"""
-
     name = models.CharField('名称', max_length=128)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -425,8 +374,6 @@ class PartMaterial(models.Model):
 
 
 class PartTechRequirement(models.Model):
-    """零件-科技节点需求（db_table=part_tech_requirements）。"""
-
     part = models.ForeignKey(
         Part,
         verbose_name='零件',
@@ -454,12 +401,7 @@ class PartTechRequirement(models.Model):
         return f"{self.part_id}-{self.tech_node_id}"
 
 
-# ---------------------------------------------------------------- 基建
-
-
 class Infrastructure(models.Model):
-    """基建（比赛级基础数据，db_table=infrastructures）。"""
-
     name = models.CharField('名称', max_length=255)
     # footprint 是面积（可保留 Float：图形属性，非账目）
     footprint = models.FloatField('占地面积')
@@ -491,12 +433,7 @@ class Infrastructure(models.Model):
         return self.name
 
 
-# ---------------------------------------------------------------- 科技树
-
-
 class TechNode(models.Model):
-    """科技节点（db_table=tech_nodes）。"""
-
     name = models.CharField('名称', max_length=128)
     description = models.TextField('描述', null=True, blank=True)
     tier = models.IntegerField('层级', default=0)
@@ -520,11 +457,7 @@ class TechNode(models.Model):
 
 
 class TechPrerequisite(models.Model):
-    """科技节点的前置依赖关系（自关联多对多中间表，db_table=tech_prerequisites）。
-
-    - node → 前置依赖此节点的科技（本节点的前置配置）；
-    - prerequisite → 本节点依赖的前置科技。
-    """
+    """科技节点的前置依赖关系（自关联中间表）：node 为配置方，prerequisite 为本节点依赖的前置科技。"""
 
     node = models.ForeignKey(
         TechNode,
@@ -553,12 +486,7 @@ class TechPrerequisite(models.Model):
         return f"{self.node_id}-{self.prerequisite_id}"
 
 
-# ---------------------------------------------------------------- 生产线
-
-
 class ProductionLine(models.Model):
-    """生产线（比赛级基础数据，db_table=production_lines）。"""
-
     name = models.CharField('名称', max_length=255)
     # 价格 + 年产能：玩家购买场景，必须 Decimal（旧口径）。
     price = models.DecimalField('价格', max_digits=60, decimal_places=4)
@@ -582,15 +510,8 @@ class ProductionLine(models.Model):
         return self.name
 
 
-# ---------------------------------------------------------------- 载具-路径类型关联
-
-
 class VehiclePathType(models.Model):
-    """载具-路径类型关联（db_table=vehicle_path_types）。
-
-    vehicle / path_type 任一删除均级联删除本关联行。
-    沿用旧仓库约定：自增 id 作主键 + unique_together 表达复合唯一约束。
-    """
+    """载具-路径类型关联：任一外键删除均级联删除本行；沿用旧约定自增 id 主键 + 复合唯一约束。"""
 
     vehicle = models.ForeignKey(
         Vehicle,

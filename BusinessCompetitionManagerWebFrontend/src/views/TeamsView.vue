@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// 组队管理页：队伍列表 + 创建队伍 / 加入队伍 + 组队码 + 管理员调整产业
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
@@ -16,13 +15,10 @@ const auth = useAuthStore()
 
 const teams = ref<Team[]>([])
 const loading = ref(false)
-/** 是否已完成首次加载（决定骨架屏 / 空态） */
 const loaded = ref(false)
-/** 加载失败的就地提示（不替代原有的 ElMessage） */
 const loadError = ref('')
 const initialLoading = computed(() => !loaded.value)
 
-/** 列表汇总：纯展示派生，不参与任何业务判断 */
 const summary = computed(() => {
   const total = teams.value.length
   const assigned = teams.value.filter((team) => team.companyName).length
@@ -34,13 +30,11 @@ const shownTeamCount = useCountUp(computed<number | null | undefined>(() => summ
 })
 const { flashing: summaryFlashing, flash: flashSummary } = useFlash(1200)
 
-/** 成员头像取首字（仅展示用） */
 function initial(name: string): string {
   const trimmed = (name || '').trim()
   return trimmed ? Array.from(trimmed)[0]!.toUpperCase() : '?'
 }
 
-// ---------- 创建队伍 ----------
 const showCreate = ref(false)
 const creating = ref(false)
 const createRef = ref<FormInstance>()
@@ -53,12 +47,10 @@ const createRules: FormRules = {
   name: [{ required: true, message: '请填写队伍名称', trigger: 'blur' }],
 }
 
-// ---------- 加入队伍 ----------
 const showJoin = ref(false)
 const joining = ref(false)
 const joinCode = ref('')
 
-// ---------- 调整产业（管理员） ----------
 const showAdjust = ref(false)
 const adjusting = ref(false)
 const adjustTarget = ref<Team | null>(null)
@@ -68,7 +60,7 @@ const adjustForm = ref({
   industryAdjustAccepted: [] as string[],
 })
 
-/** 系统超管或本比赛超管：可调整产业 */
+// 可调整产业：系统超管或本比赛超管
 const canAdjust = computed(() => {
   if (auth.isSuperuser) return true
   return auth.memberships.some(
@@ -76,7 +68,6 @@ const canAdjust = computed(() => {
   )
 })
 
-/** 是否为该队队长 */
 function isCaptain(team: Team): boolean {
   return team.captainId === auth.user?.id
 }
@@ -87,7 +78,6 @@ async function load(): Promise<void> {
   const hadData = loaded.value
   try {
     teams.value = await api.getTeams(props.cid)
-    // 已有首屏数据时的（WS / 资源广播触发的）刷新：轻微闪一下，提示列表已更新
     if (hadData) flashSummary()
   } catch (err) {
     loadError.value = errorMessage(err, '操作失败')
@@ -141,7 +131,6 @@ async function submitJoin(): Promise<void> {
   }
 }
 
-/** 队长生成组队码，弹窗展示 */
 async function genJoinCode(team: Team): Promise<void> {
   let joinCodeInfo: TeamJoinCode
   try {
@@ -162,11 +151,9 @@ async function genJoinCode(team: Team): Promise<void> {
       },
     )
   } catch {
-    // 用户关闭弹窗，忽略
   }
 }
 
-/** 管理员打调整产业弹窗 */
 function openAdjust(team: Team): void {
   adjustTarget.value = team
   adjustForm.value = {
@@ -202,7 +189,6 @@ async function submitAdjust(): Promise<void> {
   }
 }
 
-// ---------- 分配公司（管理员） ----------
 const showAssign = ref(false)
 const assigning = ref(false)
 const assignTarget = ref<Team | null>(null)
@@ -213,7 +199,6 @@ const assignForm = ref({
   companyName: '',
 })
 
-/** 产业下拉：打开弹窗时懒加载本比赛已导入的产业插件 */
 async function loadIndustries(): Promise<void> {
   industriesLoading.value = true
   try {
@@ -228,7 +213,7 @@ async function loadIndustries(): Promise<void> {
   }
 }
 
-/** 管理员打开分配公司弹窗（默认产业：最终产业 → 首个产业志愿 → 首个已导入产业） */
+// 默认产业：最终产业 → 首个志愿 → 首个已导入产业
 async function openAssign(team: Team): Promise<void> {
   assignTarget.value = team
   assignForm.value = {
@@ -265,7 +250,7 @@ async function submitAssign(): Promise<void> {
   }
 }
 
-// 资源变更广播（400ms 去抖合并）：队伍/公司/用户写操作后自动刷新当前列表
+// 队伍/公司/用户变更后 400ms 去抖刷新
 useResourceRefresh(['teams', 'companies', 'users'], load)
 
 onMounted(() => void load())
@@ -273,7 +258,6 @@ onMounted(() => void load())
 
 <template>
   <div class="teams-page">
-    <!-- 标题栏 -->
     <div class="page-toolbar">
       <h2 class="page-title">组队管理</h2>
       <div class="page-actions">
@@ -288,19 +272,16 @@ onMounted(() => void load())
       </div>
     </div>
 
-    <!-- 首屏骨架 -->
     <div v-if="initialLoading" class="team-grid" aria-busy="true">
       <div v-for="n in 3" :key="n" class="skeleton team-skeleton" />
     </div>
 
     <template v-else>
-      <!-- 错误就地提示（原有 ElMessage 保留，失败信息不再只弹一下） -->
       <div v-if="loadError" class="notice notice--danger teams-error">
         <span>{{ loadError }}</span>
         <el-button link type="primary" @click="load">重试</el-button>
       </div>
 
-      <!-- 概览指标：队伍 → 公司 → 成员的数量关系 -->
       <div v-if="teams.length" class="metric-grid anim-fade-in-up">
         <div class="metric-card">
           <div class="metric-label">队伍总数</div>
@@ -328,7 +309,6 @@ onMounted(() => void load())
         </div>
       </div>
 
-      <!-- 队伍卡片：一眼看清 队伍 → 队长 → 公司 → 产业 → 成员 -->
       <div v-if="teams.length" v-loading="loading" class="team-list">
         <div class="team-grid anim-stagger">
           <article v-for="team in teams" :key="team.id" class="team-card hover-lift">
@@ -467,13 +447,11 @@ onMounted(() => void load())
         </div>
       </div>
 
-      <!-- 空态 -->
       <div v-else-if="!loadError" class="panel empty-panel">
         <el-empty description="暂无队伍" />
       </div>
     </template>
 
-    <!-- 创建队伍弹窗 -->
     <el-dialog v-model="showCreate" title="创建队伍" width="520px" destroy-on-close>
       <el-alert
         type="info"
@@ -523,7 +501,6 @@ onMounted(() => void load())
       </template>
     </el-dialog>
 
-    <!-- 加入队伍弹窗 -->
     <el-dialog v-model="showJoin" title="加入队伍" width="420px" destroy-on-close>
       <el-form label-width="80px" @submit.prevent>
         <el-form-item label="组队码">
@@ -541,7 +518,6 @@ onMounted(() => void load())
       </template>
     </el-dialog>
 
-    <!-- 调整产业弹窗（管理员） -->
     <el-dialog v-model="showAdjust" title="调整产业" width="520px" destroy-on-close>
       <el-alert
         type="warning"
@@ -593,7 +569,6 @@ onMounted(() => void load())
       </template>
     </el-dialog>
 
-    <!-- 分配公司弹窗（管理员） -->
     <el-dialog
       v-model="showAssign"
       :title="assignTarget?.companyName ? '修改公司' : '分配公司'"
@@ -693,7 +668,6 @@ onMounted(() => void load())
   justify-content: space-between;
 }
 
-/* ---------- 队伍卡片网格 ---------- */
 .team-list {
   min-height: 120px;
 }
@@ -718,7 +692,7 @@ onMounted(() => void load())
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
-  /* 入场动画结束后交还 transform，悬停轻抬才生效 */
+  /* 动画结束后交还 transform，保留悬停轻抬 */
   animation-fill-mode: backwards;
 }
 
@@ -736,7 +710,7 @@ onMounted(() => void load())
   min-width: 0;
 }
 
-/* 公司分配状态：已分配=成功语义，待分配=醒目但不告警 */
+/* 已分配=成功色，待分配=醒目不告警 */
 .assign-badge {
   display: inline-flex;
   align-items: center;
@@ -777,7 +751,6 @@ onMounted(() => void load())
   }
 }
 
-/* 队伍 → 队长 → 公司 → 产业 → 成员数 的关系链 */
 .relation {
   display: flex;
   align-items: stretch;
@@ -821,7 +794,6 @@ onMounted(() => void load())
   line-height: 1;
 }
 
-/* 成员：紧凑头像 + 名称标签 */
 .members {
   display: flex;
   align-items: center;
@@ -882,7 +854,6 @@ onMounted(() => void load())
   white-space: nowrap;
 }
 
-/* 产业志愿 / 接受调剂 */
 .industry-row {
   display: flex;
   align-items: flex-start;
@@ -904,7 +875,6 @@ onMounted(() => void load())
   min-width: 0;
 }
 
-/* 卡片底部：创建时间 + 操作 */
 .team-card__foot {
   display: flex;
   flex-direction: column;
@@ -933,7 +903,7 @@ onMounted(() => void load())
   margin-left: 0;
 }
 
-/* 概览指标里的待分配：用琥珀描边与顶线提示，不改数字颜色（保证可读性） */
+/* 待分配用琥珀描边提示，不改数字颜色 */
 .metric-card--attention {
   border-color: rgba(var(--color-warning-soft-rgb), 0.55);
 
@@ -946,7 +916,6 @@ onMounted(() => void load())
   padding: 24px;
 }
 
-/* 手机：概览指标两列，避免 4 张大卡把队伍列表挤到首屏之外 */
 @media (max-width: 640px) {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

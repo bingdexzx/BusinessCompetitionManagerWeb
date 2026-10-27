@@ -1,13 +1,6 @@
 """文件上传服务 API（通用上传 / 文件读取 / 地图背景 / 消息图片）。
 
-约定：
-- 文件本体全部落在 MEDIA_ROOT 下（uploads/、map_backgrounds/、messages/），
-  对外 URL 统一为 `/api/files/view/<相对 MEDIA_ROOT 路径>`；
-- 错误响应统一 `{code, message, details}`（message 中文，与 apps.common.errors 口径一致）；
-- 未登录 401 由全局（DRF 认证 + gipfel_exception_handler）处理。
-
-路由由根路由以 `path('api/', include('apps.global_.files.urls'))` 引入。
-"""
+文件都在 MEDIA_ROOT 下，对外 URL 为 ``/api/files/view/<相对路径>``，错误响应统一中文 JSON。"""
 
 import json
 import mimetypes
@@ -26,16 +19,12 @@ from apps.common.authority import can_manage_competition
 from apps.global_.competitions.models import Competition
 from apps.global_.files.models import MapBackground
 
-# 通用上传大小上限（100MB）
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024
-# 消息图片大小上限（5MB）
 MESSAGE_IMAGE_MAX_SIZE = 5 * 1024 * 1024
 
-# 通用上传扩展名白名单
 ALLOWED_UPLOAD_EXTENSIONS = {
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'xlsx', 'csv', 'zip', 'txt', 'md',
 }
-# 图片扩展名白名单（地图背景 / 消息图片）
 IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 # 文件读取白名单：仅允许读取 MEDIA_ROOT 下这些子目录（plugins/、packages/ 等一律拒绝）
@@ -49,11 +38,7 @@ _CONTENT_TYPE_BY_EXT = {
 }
 
 
-# ---------------------------------------------------------------- 工具
-
-
 def _error(code: int, message: str) -> Response:
-    """统一错误响应（与全局错误口径一致：{code, message, details}）。"""
     return Response({'code': code, 'message': message, 'details': ''}, status=code)
 
 
@@ -71,7 +56,6 @@ def _media_root() -> Path:
 
 
 def _view_url(relative_path: str) -> str:
-    """相对 MEDIA_ROOT 的存储路径 → 对外可读取 URL。"""
     return f'/api/files/view/{relative_path}'
 
 
@@ -100,10 +84,7 @@ def _delete_media_file(relative_path: str) -> None:
 
 
 def _parse_transform(raw):
-    """解析 transform（dict 或 JSON 字符串）→ {scale, x, y} 或 null。
-
-    缺省值：scale=1、x=0、y=0；非法输入抛 ValueError。
-    """
+    """解析 transform（dict 或 JSON 字符串）→ {scale, x, y} 或 None；非法输入抛 ValueError。"""
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -133,15 +114,8 @@ def _map_background_data(bg: MapBackground | None) -> dict:
     return {'url': bg.url, 'transform': bg.transform}
 
 
-# ---------------------------------------------------------------- 通用上传
-
-
 class FileUploadView(APIView):
-    """`POST /api/files/upload`：通用文件上传（multipart `file`，登录用户）。
-
-    ≤100MB；扩展名白名单 png/jpg/jpeg/gif/webp/pdf/xlsx/csv/zip/txt/md；
-    落盘 MEDIA_ROOT/uploads/YYYY/MM/<uuid>.<ext>。
-    """
+    """`POST /api/files/upload`：通用文件上传（≤100MB、扩展名白名单，落 uploads/YYYY/MM/）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -166,16 +140,10 @@ class FileUploadView(APIView):
         }, status=201)
 
 
-# ---------------------------------------------------------------- 文件读取
-
-
 class ServeFileView(APIView):
     """`GET /api/files/view/<path:name>`：读取已上传文件（FileResponse + content-type）。
 
-    - 仅登录用户（IsAuthenticated）；
-    - 仅允许读取白名单子目录 uploads/、map_backgrounds/、messages/（plugins/、
-      packages/ 及 MEDIA_ROOT 根下其它路径一律拒绝）；
-    - 路径穿越（规范化后不在 MEDIA_ROOT 下）一律拒绝。
+    只允许白名单子目录（uploads/、map_backgrounds/、messages/），plugins/packages 与路径穿越一律拒绝。
     """
 
     permission_classes = [IsAuthenticated]
@@ -196,18 +164,11 @@ class ServeFileView(APIView):
         )
 
 
-# ---------------------------------------------------------------- 地图背景
-
-
 class MapBackgroundView(APIView):
     """`/api/competitions/{cid}/files/map-background`：地图背景读取与维护。
 
-    - GET：`{url, transform}`（无背景时 url=""、transform=null）；
-    - POST：multipart `file`（图片，可带 form 字段 transform）**或**
-      JSON `{url, transform}` 二选一，服务端持久化；写权限=比赛/系统超管；
-    - PATCH：只更新 transform（JSON body）；
-    - DELETE：清除背景（删记录，磁盘文件尽力删除）→ `{ok: true}`。
-    """
+    GET `{url, transform}`；POST 传图片或 JSON `{url, transform}`（写权限=比赛/系统超管）；
+    PATCH 只更新 transform；DELETE 清背景（删记录 + 尽力删盘上文件）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -227,7 +188,6 @@ class MapBackgroundView(APIView):
         old_file_path = previous.file_path if previous else ''
 
         if upload is not None:
-            # 模式一：上传背景图片（可随 form 字段 transform 提交）
             ext = _extension(upload.name)
             if ext not in IMAGE_EXTENSIONS:
                 return _error(400, '背景图仅支持 png/jpg/jpeg/gif/webp 格式')
@@ -241,7 +201,6 @@ class MapBackgroundView(APIView):
             url = _view_url(relative)
             file_path = relative
         else:
-            # 模式二：JSON {url, transform}（外部图片 URL / data:image/...）
             data = request.data
             if not isinstance(data, dict):
                 return _error(400, '请上传背景图文件或提供图片 URL')
@@ -275,7 +234,7 @@ class MapBackgroundView(APIView):
         if isinstance(data, dict) and 'transform' in data:
             raw = data.get('transform')
         elif isinstance(data, dict) and any(k in data for k in ('scale', 'x', 'y')):
-            raw = data  # 允许直接提交 transform 对象
+            raw = data  # 也允许直接提交 transform 对象
         else:
             return _error(400, '缺少 transform')
         try:
@@ -293,20 +252,13 @@ class MapBackgroundView(APIView):
         bg = MapBackground.objects.filter(competition_id=cid).first()
         if bg is not None:
             if bg.file_path:
-                _delete_media_file(bg.file_path)  # 磁盘文件尽力删除
+                _delete_media_file(bg.file_path)
             bg.delete()
         return Response({'ok': True})
 
 
-# ---------------------------------------------------------------- 消息图片
-
-
 class MessageImageUploadView(APIView):
-    """`POST /api/messages/upload-image`：站内信图片上传（multipart `file`，登录用户）。
-
-    ≤5MB，仅 png/jpg/jpeg/gif/webp；落盘 MEDIA_ROOT/messages/YYYY/MM/<uuid>.<ext>；
-    返回 `{url}`。
-    """
+    """`POST /api/messages/upload-image`：站内信图片上传（≤5MB，落 messages/YYYY/MM/，返回 `{url}`）。"""
 
     permission_classes = [IsAuthenticated]
 

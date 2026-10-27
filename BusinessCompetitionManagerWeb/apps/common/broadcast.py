@@ -1,12 +1,7 @@
 """资源变更广播（2026-10 决策：实时广播 + 断线 seq 重放）。
 
-与旧系统 `resource:changed` 等价语义：
-- 写接口成功后调用 `emit_resource_changed` 落一条 BroadcastEvent（seq 单调递增），
-  并经 PostgreSQL 通道层推送到 `comp_<cid>` 分组（**推送只当信号**，不带业务数据）；
-- 客户端断线重连带 `lastSeq`，`events_since` 补发遗漏事件后自行增量重拉。
-
-失败静默不影响业务写入（广播是增强能力）。
-"""
+写接口成功后落 BroadcastEvent（seq 单调递增）并推送 ``comp_<cid>`` 分组（**推送只当信号**，
+不带业务数据）；断线带 ``lastSeq`` 由 ``events_since`` 补发遗漏后自行增量重拉。失败静默。"""
 
 from __future__ import annotations
 
@@ -14,24 +9,19 @@ import logging
 
 logger = logging.getLogger('gipfel.broadcast')
 
-# 系统级（无比赛上下文）事件分组：所有已登录 WS 连接默认订阅，用于
-# 用户/学校/比赛/插件等全局库资源的实时同步（这类事件的 competition_id 为 None）。
+# 系统级（无比赛上下文）事件分组：所有已登录 WS 连接默认订阅，用于全局库资源实时同步。
 GLOBAL_GROUP = 'global'
 
 
 def group_for(competition_id) -> str:
-    """事件投递分组：有比赛上下文 → ``comp_<cid>``；系统级 → ``global``。"""
     return f'comp_{int(competition_id)}' if competition_id else GLOBAL_GROUP
 
 
 def emit_resource_changed(competition_id, resource: str, action: str, payload: dict | None = None):
     """记录并广播一次资源变更；返回 seq（落库失败返回 None，不抛错）。
 
-    语义：**落库（重放源）优先**——流水写入成功即返回 seq，实时推送尽力而为
-    （推送失败不影响断线重放补发）。
-
-    ``competition_id`` 为空 = 系统级资源（全局库）→ 投递 ``global`` 分组；
-    否则投递 ``comp_<cid>`` 分组（仅该比赛成员订阅）。
+    **落库（重放源）优先**：写完流水即返回 seq，实时推送尽力而为。``competition_id`` 为空 =
+    全局库资源 → 投 ``global`` 分组，否则投 ``comp_<cid>``。
     """
     try:
         from apps.global_.logs.models import BroadcastEvent
@@ -70,10 +60,9 @@ def emit_resource_changed(competition_id, resource: str, action: str, payload: d
 
 
 def events_since(competition_id, last_seq: int, limit: int = 200) -> list:
-    """断线重放：返回匹配作用域内 seq > last_seq 的事件（升序，截断到 limit 条）。
+    """断线重放：返回作用域内 seq > last_seq 的事件（升序，截断到 limit 条）。
 
-    ``competition_id`` 为空 → 只补发**系统级**事件（``competition_id IS NULL``），
-    与 ``global`` 分组的语义一致；否则只补发该比赛的事件（不串台）。
+    ``competition_id`` 为空 → 只补发系统级事件（``competition_id IS NULL``）；否则只补该比赛（不串台）。
     """
     from apps.global_.logs.models import BroadcastEvent
 

@@ -1,4 +1,4 @@
-# Python-generated files
+# Python 生成物
 __pycache__/
 *.py[oc]
 build/
@@ -6,22 +6,21 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# 虚拟环境与本地密钥
 .venv
 .env
 
-# 运行时上传（比赛包 / 插件文件，由导入流程落盘）
+# 运行时上传（比赛库 / 插件文件，由导入流程落盘）
 BusinessCompetitionManagerWeb/media/
 
 # 日志（仅根目录，勿误伤 apps/global_/logs 应用包）
 /logs/
 *.log
 
-# ð��/ѹ����ʱ����
+# 冒烟/压测临时产物
 gipfel_full_*/
 gipfel_m1_*/
 
-
-# pnpm 试用产物（本项目以 npm + package-lock.json 为准；这两个文件是不完整的旧产物）
+# pnpm 试用产物（本项目以 npm + package-lock.json 为准）
 BusinessCompetitionManagerWebFrontend/pnpm-lock.yaml
 BusinessCompetitionManagerWebFrontend/pnpm-workspace.yaml

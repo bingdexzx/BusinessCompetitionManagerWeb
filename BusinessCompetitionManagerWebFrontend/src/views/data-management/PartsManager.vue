@@ -275,7 +275,8 @@ const formRules: FormRules = {
       required: true,
       validator: (_rule: any, _value: any, callback: any) => {
         const has = form.partMaterials.some((pm) => pm.materialId && pm.ratio > 0);
-        has ? callback() : callback(new Error("请至少添加一项原料配比（选择原料且比率>0）"));
+        if (has) callback();
+        else callback(new Error("请至少添加一项原料配比（选择原料且比率>0）"));
       },
       trigger: "change",
     },

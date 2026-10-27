@@ -11,7 +11,6 @@
       <el-button @click="load">刷新</el-button>
     </div>
 
-    <!-- 加载失败：就地提示 + 重试（不整页弹窗） -->
     <el-alert
       v-if="loadError"
       class="dashboard-error"
@@ -23,7 +22,6 @@
       <el-button size="small" @click="load">重新加载</el-button>
     </el-alert>
 
-    <!-- 首屏骨架：布局与公司字段都到位后再渲染，避免「先空一下再跳出来」 -->
     <div v-if="!loaded" class="dash-skeleton">
       <div class="metric-grid">
         <div v-for="n in 4" :key="`sk-metric-${n}`" class="metric-card metric-skeleton">
@@ -47,7 +45,6 @@
       />
 
       <template v-else>
-        <!-- 产业页签：全部 + 有公司的产业（专属布局优先，缺失则退化为通用布局） -->
         <el-tabs v-model="activeTab" class="industry-tabs">
           <el-tab-pane
             v-for="tab in industryTabs"
@@ -64,7 +61,6 @@
           </template>
         </div>
 
-        <!-- 分区：关键数值 → 指标卡（数字滚动 + 实时更新闪烁）；文本/表格 → 内容面板 -->
         <section v-for="section in sections" :key="section.key" class="dash-section">
           <div v-if="section.metrics.length" class="metric-grid anim-stagger">
             <div
@@ -151,13 +147,9 @@ const companies = ref<Company[]>([])
 const tables = ref<Record<number, Record<string, CompanyTable>>>({})
 const loaded = ref(false)
 const activeTab = ref('__all__')
-// 加载失败原因：就地提示 + 重试（ElMessage 同时保留）
 const loadError = ref('')
 
-/**
- * 指标数值：useCountUp 做数字滚动、useFlash 在实时推送更新时闪一下。
- * 仪表盘组件由 dashboard.json 动态给出，需按组件各建实例，故在本文件内定义子组件。
- */
+// dashboard.json 动态给组件，需按组件各建滚动/闪烁实例
 const MetricValue = defineComponent({
   name: 'DashboardMetricValue',
   props: {
@@ -167,15 +159,14 @@ const MetricValue = defineComponent({
   },
   setup(props) {
     const shown = useCountUp(computed(() => props.value), {
-      // 内部统一按 2 位滚动：显示精度由 precisionOf 按语义（金额/计数）再定，
-      // 避免数值在整数与小数之间变化时刻度不一致。
+      // 内部统一 2 位滚动，避免整数/小数切换时刻度不一致
       precision: 2,
     })
     const { flashing, flash } = useFlash(900)
     watch(
       () => props.value,
       (next, prev) => {
-        // 只有两次都是具体数值时才闪：首次填充不算「实时更新」
+        // 首次填充不算实时更新，仅数值变化才闪
         if (typeof next === 'number' && typeof prev === 'number' && next !== prev) flash()
       },
     )
@@ -195,7 +186,6 @@ const MetricValue = defineComponent({
   },
 })
 
-/** 页签：全部 + 我有公司的产业 + 布局里定义的产业（无公司时显示空态） */
 const industryTabs = computed(() => {
   const seen = new Set<string>()
   const tabs: Array<{ key: string; label: string }> = [{ key: '__all__', label: '全部' }]
@@ -218,13 +208,12 @@ const activeTabLabel = computed(
   () => industryTabs.value.find((t) => t.key === activeTab.value)?.label || activeTab.value,
 )
 
-/** 当前页签统计范围：全部=所有可操作公司；产业页签=该产业公司 */
 const scopedCompanies = computed(() => {
   if (activeTab.value === '__all__') return companies.value
   return companies.value.filter((c) => (c.industryKey || '') === activeTab.value)
 })
 
-/** 当前页签组件：产业页签优先用该产业专属布局，否则退化为通用布局（按该产业公司聚合） */
+// 产业页签优先专属布局，缺失退化通用布局
 const components = computed<DashboardComponent[]>(() => {
   const all = layout.value?.components || []
   if (activeTab.value === '__all__') return all
@@ -235,7 +224,6 @@ const components = computed<DashboardComponent[]>(() => {
 const topComponents = computed(() => components.value.filter((c) => (c.zone || 'top') === 'top'))
 const bottomComponents = computed(() => components.value.filter((c) => c.zone === 'bottom'))
 
-/** 按信息类型分区：数值/仪表 → 指标卡；文本/表格 → 内容面板（保持上/下分区的先后顺序） */
 const sections = computed(() => {
   const isMetric = (comp: DashboardComponent): boolean =>
     comp.type === 'number' || comp.type === 'gauge'
@@ -253,14 +241,13 @@ const sections = computed(() => {
   ].filter((section) => section.metrics.length > 0 || section.panels.length > 0)
 })
 
-/** 某字段的最新财年值：财年表取最大数值财年键；实体表（单键或 'null' 键）视为无财年 */
+// 最新财年值：财年表取最大数值键，实体表视为无财年
 function newestValue(field: CompanyField | undefined): number | null {
   if (!field) return null
   const values = field.values || {}
   const keys = Object.keys(values)
   if (!keys.length) return null
 
-  // 实体表（无财年）：单键，或 'null'/'' 键
   if (keys.length === 1) {
     const raw = Number(values[keys[0]!])
     return Number.isFinite(raw) ? raw : null
@@ -270,7 +257,6 @@ function newestValue(field: CompanyField | undefined): number | null {
     return Number.isFinite(raw) ? raw : null
   }
 
-  // 财年表：取最大数值财年键
   let newestKey = -Infinity
   let newestRaw: unknown = null
   for (const key of keys) {
@@ -284,13 +270,11 @@ function newestValue(field: CompanyField | undefined): number | null {
   return Number.isFinite(raw) ? raw : null
 }
 
-/** 单个公司某绑定字段的“当前值”（最新财年口径） */
 function fieldValue(table: CompanyTable | undefined, fieldKey: string): number | null {
   const field = table?.fields.find((f) => f.key === fieldKey)
   return newestValue(field)
 }
 
-/** 按绑定聚合**当前页签范围**（全部/该产业）内公司的值 */
 function aggregate(comp: DashboardComponent): number | null {
   const bind = comp.bind
   if (!bind) return null
@@ -307,12 +291,12 @@ function aggregate(comp: DashboardComponent): number | null {
     case 'average':
       return nums.reduce((a, b) => a + b, 0) / nums.length
     default:
-      // latest = 各公司最新财年值的合计（与 sum/average 同口径）
+      // latest 也按各公司最新值求和
       return nums.reduce((a, b) => a + b, 0)
   }
 }
 
-/** 数值精度：金额（带「元」的 suffix）固定 2 位；计数/百分比整数 0 位，非整数保留 2 位 */
+// 金额 2 位；计数整数 0 位，非整数 2 位
 function precisionOf(comp: DashboardComponent): number {
   const suffix = comp.suffix || ''
   if (/[元¥￥]/.test(suffix)) return 2
@@ -351,7 +335,7 @@ async function load(): Promise<void> {
     ])
     layout.value = layoutData
     companies.value = companyList
-    // 拉取每个可操作公司的两张表（组件绑定的字段可能跨 entity/finance）
+    // 每公司拉 entity+finance，绑定字段可能跨表
     const entries = await Promise.all(
       companyList.map(async (company) => {
         const per: Record<string, CompanyTable> = {}
@@ -359,7 +343,6 @@ async function load(): Promise<void> {
           try {
             per[table] = await api.getCompanyTable(props.cid, company.id, table)
           } catch {
-            // 公司无该表时忽略
           }
         }
         return [company.id, per] as const
@@ -378,20 +361,18 @@ async function load(): Promise<void> {
 watch(
   () => props.cid,
   () => {
-    if (props.cid) subscribeCompetition(props.cid) // 实时广播：字段变更后自动刷新
+    if (props.cid) subscribeCompetition(props.cid)
     activeTab.value = '__all__'
     void load()
   },
   { immediate: true },
 )
 
-// 资源变更广播（400ms 去抖合并）：只关心仪表盘聚合涉及的资源，命中后重拉（保留当前产业页签）
-// packages = 比赛包导入（布局 / 产业字段随之变化）
+// 聚合相关资源变更后 400ms 去抖重拉，保留当前产业页签
 useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regions', 'packages'], load)
 </script>
 
 <style scoped>
-/* 页面内距由 AppLayout 的 .app-content 统一提供，这里只负责区块间距 */
 .dashboard {
   min-width: 0;
 }
@@ -415,7 +396,6 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   margin-bottom: 6px;
 }
 
-/* 刷新按钮在窄屏换行后仍靠右 */
 .page-head > .el-button {
   flex-shrink: 0;
   margin-left: auto;
@@ -437,7 +417,6 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   margin-bottom: 8px;
 }
 
-/* 产业范围提示：中性底色，不抢指标卡的视觉重心 */
 .scope-hint {
   margin-bottom: 16px;
   padding: 8px 12px;
@@ -470,7 +449,7 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   margin-bottom: 0;
 }
 
-/* 指标卡与内容面板：入场动画结束后交还 transform，悬停轻抬才生效 */
+/* 动画结束后交还 transform，保留悬停轻抬 */
 .metric-grid > .metric-card,
 .grid > * {
   animation-fill-mode: backwards;
@@ -485,7 +464,6 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   flex-direction: column;
 }
 
-/* 仪表：数值与表盘同行，窄卡时自动换行，避免把整行卡片撑高 */
 .gauge-body {
   display: flex;
   flex-wrap: wrap;
@@ -503,7 +481,7 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   margin-top: 0;
 }
 
-/* 表盘弧线沿用品牌主色（默认蓝与全局配色不一致） */
+/* 表盘默认蓝与全局品牌色不一致，需覆盖 */
 .metric-gauge :deep(.el-progress-circle__path) {
   stroke: var(--color-primary);
 }
@@ -515,7 +493,6 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   color: var(--color-text-tertiary);
 }
 
-/* 实时更新闪烁落在内联数字上，给一点内距才看得出高亮 */
 .metric-value :deep(.flash-updated) {
   display: inline-block;
   padding: 0 4px;
@@ -537,7 +514,6 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   grid-column: span 2;
 }
 
-/* 说明文字跨两列，长段落更易读 */
 .comp-text {
   grid-column: span 2;
 }
@@ -554,7 +530,6 @@ useResourceRefresh(['contracts', 'companies', 'fiscal-years', 'basedata', 'regio
   line-height: 1.7;
 }
 
-/* 首屏骨架：与真实版式同尺寸，避免加载完成后的跳动 */
 .dash-skeleton {
   display: flex;
   flex-direction: column;

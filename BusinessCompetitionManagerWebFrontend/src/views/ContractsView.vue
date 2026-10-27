@@ -11,7 +11,6 @@ import { errorMessage } from '@/utils/errors'
 const props = defineProps<{ cid: string }>()
 const router = useRouter()
 
-// ---------- 状态展示映射（中文标签 + el-tag 颜色） ----------
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 
 const STATUS_META: Record<string, { label: string; type: TagType }> = {
@@ -31,7 +30,7 @@ function statusMeta(status: string): { label: string; type: TagType } {
   return STATUS_META[status] ?? { label: status, type: 'info' }
 }
 
-/** 状态语义色：只用于列表状态列的视觉分组，状态文案与业务取值原样保留 */
+// 状态色只作视觉分组，文案与业务值原样保留
 type StatusTone = 'neutral' | 'pending' | 'active' | 'done' | 'alert'
 
 const TAG_TONE: Record<TagType, StatusTone> = {
@@ -48,31 +47,26 @@ function statusTone(status: string): StatusTone {
 
 const STATUS_OPTIONS = Object.keys(STATUS_META)
 
-// ---------- 合同列表（服务端分页 + 增量同步） ----------
 const contracts = ref<Contract[]>([])
 const loading = ref(false)
-/** 是否已完成首次加载（决定骨架屏） */
 const loaded = ref(false)
-/** 加载失败的就地提示（不替代原有的 ElMessage） */
 const loadError = ref('')
 const initialLoading = computed(() => !loaded.value)
 const statusFilter = ref('')
 const keyword = ref('')
-/** 服务端分页（2000+ 合同不能整表拉取） */
+// 2000+ 合同走服务端分页，不能整表拉取
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
-/** 增量游标（上次同步的服务端时间） */
+// 增量游标用服务端时间，规避客户端时钟偏差
 const lastSyncAt = ref('1970-01-01T00:00:00Z')
 const syncing = ref(false)
 
-/** 参与方摘要：role:companyName */
 function partiesSummary(row: Contract): string {
   if (!row.parties || row.parties.length === 0) return '—'
   return row.parties.map((p) => `${p.role}:${p.companyName || '—'}`).join('、')
 }
 
-/** 加载指定页（服务端分页 + 状态/关键字过滤，薄字段响应） */
 async function loadPage(nextPage = page.value): Promise<void> {
   loading.value = true
   loadError.value = ''
@@ -96,10 +90,10 @@ async function loadPage(nextPage = page.value): Promise<void> {
   }
 }
 
-/** 增量同步：按 updatedAfter 只拉变更，按 id 幂等合并进当前页（WS 信号/同步按钮触发） */
+// 按 updatedAfter 只拉变更，按 id 幂等合并进当前页
 async function loadContracts(full = false): Promise<void> {
   if (full) {
-    await loadPage(1) // 全量=重拉当前页（服务端分页）
+    await loadPage(1)
     return
   }
   syncing.value = true
@@ -107,15 +101,15 @@ async function loadContracts(full = false): Promise<void> {
     const result = await syncContracts(props.cid, lastSyncAt.value)
     const map = new Map<number, Contract>()
     for (const c of contracts.value) map.set(c.id, c)
-    for (const item of result.items) map.set(item.id, item) // 同 id 取新（幂等）
+    for (const item of result.items) map.set(item.id, item)
     contracts.value = [...map.values()].sort((a, b) =>
       (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
     )
-    lastSyncAt.value = result.serverTime // 服务端时间做游标，规避客户端时钟偏差
-    if (result.hasMore) await loadContracts() // 还有更多变更则续拉
+    lastSyncAt.value = result.serverTime
+    if (result.hasMore) await loadContracts()
   } catch (e) {
     try {
-      await loadPage(page.value) // 增量失败回退当前页重拉
+      await loadPage(page.value)
       lastSyncAt.value = new Date().toISOString()
     } catch {
       ElMessage.error(errorMessage(e, '同步失败'))
@@ -126,7 +120,7 @@ async function loadContracts(full = false): Promise<void> {
   }
 }
 
-/** 过滤条件变化 → 回第 1 页（关键字防抖 300ms） */
+// 筛选变化回第 1 页，关键字防抖 300ms
 let keywordTimer: ReturnType<typeof setTimeout> | null = null
 watch(statusFilter, () => void loadPage(1))
 watch(keyword, () => {
@@ -141,7 +135,6 @@ function onSizeChange(size: number): void {
   void loadPage(1)
 }
 
-/** WebSocket 推送到达时增量同步（合同相关通知才触发） */
 useNotifications((message) => {
   const payload = message.payload || {}
   const isContractEvent = typeof message.kind === 'string' && message.kind.startsWith('CONTRACT')
@@ -150,10 +143,10 @@ useNotifications((message) => {
   }
 })
 
-/** 资源变更广播（400ms 去抖合并）：合同/公司/财年/基础数据/比赛包写操作后自动刷新 */
+// 合同/公司/财年等变更后 400ms 去抖增量刷新
 const REFRESH_RESOURCES = ['contracts', 'companies', 'fiscal-years', 'basedata', 'packages']
 useResourceRefresh(REFRESH_RESOURCES, () => {
-  void loadContracts(false) // 增量同步合并进当前页（不重置分页/过滤）
+  void loadContracts(false)
   void loadBaseData()
 })
 
@@ -161,7 +154,6 @@ function openDetail(row: Contract): void {
   void router.push(`/competitions/${props.cid}/contracts/${row.id}`)
 }
 
-// ---------- 创建合同 ----------
 const showCreate = ref(false)
 const creating = ref(false)
 const contractTypes = ref<ContractType[]>([])
@@ -180,7 +172,7 @@ const selectedType = computed<ContractType | null>(
   () => contractTypes.value.find((t) => t.key === createTypeKey.value) ?? null,
 )
 
-/** 已关闭财年（补录只能选已结束的财年） */
+// 补录只能选已结束财年
 const closedFiscalYears = computed(() => fiscalYears.value.filter((f) => f.status === 'CLOSED'))
 
 function isNumberField(type: string | undefined): boolean {
@@ -208,14 +200,12 @@ async function submitCreate(): Promise<void> {
     ElMessage.error('请选择合同类型')
     return
   }
-  // 必填参与方校验
   for (const p of type.partyRoles) {
     if (!p.optional && !createParties.value[p.role]) {
       ElMessage.error(`请选择「${p.label || p.role}」对应的公司`)
       return
     }
   }
-  // 必填字段校验
   for (const f of type.inputSchema) {
     const empty = isNumberField(f.type)
       ? createNumbers.value[f.key] === undefined
@@ -265,7 +255,6 @@ async function submitCreate(): Promise<void> {
   }
 }
 
-// ---------- 初始化 ----------
 async function loadBaseData(): Promise<void> {
   try {
     const [types, comps, fys] = await Promise.all([
@@ -282,8 +271,10 @@ async function loadBaseData(): Promise<void> {
 }
 
 onMounted(() => {
-  subscribeCompetition(props.cid) // 订阅资源变更广播（重连自动恢复、断线 seq 重放）
-  void loadContracts(true) // 首次全量，此后增量
+  // 订阅资源广播；重连自动恢复，断线按 seq 重放
+  subscribeCompetition(props.cid)
+  // 首次全量，此后增量
+  void loadContracts(true)
   void loadBaseData()
 })
 
@@ -301,7 +292,6 @@ watch(
 
 <template>
   <div class="contracts-page">
-    <!-- 筛选与操作收成一条工具条 -->
     <div class="page-toolbar">
       <h1 class="page-title">合同工作台</h1>
       <div class="page-actions filters-bar">
@@ -330,13 +320,11 @@ watch(
       </div>
     </div>
 
-    <!-- 错误就地提示（原有 ElMessage 保留） -->
     <div v-if="loadError" class="notice notice--danger contracts-error">
       <span>{{ loadError }}</span>
       <el-button link type="primary" @click="loadPage(page)">重试</el-button>
     </div>
 
-    <!-- 首屏骨架 -->
     <div v-if="initialLoading" class="skeleton-table panel" aria-busy="true">
       <div v-for="n in 8" :key="n" class="skeleton skeleton-line skeleton-row" />
     </div>
@@ -404,7 +392,6 @@ watch(
           </el-table-column>
         </el-table>
 
-        <!-- 服务端分页（2000+ 合同只渲染当前页 50 行） -->
         <el-pagination
           class="contracts-pager"
           background
@@ -419,7 +406,6 @@ watch(
       </div>
     </template>
 
-    <!-- 创建合同 -->
     <el-dialog v-model="showCreate" title="创建合同" width="640px" append-to-body>
       <el-form label-position="top">
         <el-form-item label="合同类型" required>
@@ -439,7 +425,6 @@ watch(
           </el-select>
         </el-form-item>
 
-        <!-- 类型结构摘要：编号前缀 / 参与方角色 / 数据字段 -->
         <div v-if="selectedType" class="type-summary">
           <div>
             <b>编号前缀：</b>{{ selectedType.numberPrefix || '—' }}
@@ -548,7 +533,6 @@ watch(
   margin-bottom: 0;
 }
 
-/* 筛选 + 操作：一条工具条，而不是散落的控件 */
 .filters-bar {
   display: flex;
   align-items: center;
@@ -580,7 +564,6 @@ watch(
   justify-content: space-between;
 }
 
-/* 首屏骨架：保持表格行高节奏，避免空白与跳动 */
 .skeleton-table {
   display: flex;
   flex-direction: column;
@@ -597,7 +580,7 @@ watch(
   width: 82%;
 }
 
-/* 表格与分页作为一个整体入场：行内不做位移动画，避免增量同步时整表重放 */
+/* 整表入场，行内不位移，避免增量同步时整表重放 */
 .table-block {
   display: flex;
   flex-direction: column;
@@ -609,7 +592,6 @@ watch(
   cursor: pointer;
 }
 
-/* 行悬停：整行底色（全局）+ 首列品牌色细条，快速定位当前行 */
 .clickable-table :deep(.el-table__body tr > td.el-table__cell) {
   transition: background-color var(--dur-fast) var(--ease-standard),
     box-shadow var(--dur-fast) var(--ease-standard);
@@ -623,7 +605,6 @@ watch(
   color: var(--color-primary);
 }
 
-/* 状态列：色彩语义（圆点 + 底色）+ 简短文案 */
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -722,7 +703,6 @@ watch(
   }
 }
 
-/* 窄屏：工具条控件换行占满，不挤压表格 */
 @media (max-width: 1024px) {
   .filter-search {
     width: 180px;

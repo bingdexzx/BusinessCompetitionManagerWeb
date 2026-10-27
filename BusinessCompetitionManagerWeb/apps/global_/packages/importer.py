@@ -1,12 +1,8 @@
 """比赛包导入编排（§9.2、《比赛包格式规范》§8）。
 
-流程：解压 → manifest/SHA-256 校验 → AST 扫描插件 → 建库即迁移
-     → 产业插件字段迁移 → 合同插件注册 → 合同实例导入 → 导入报告
-     （比赛包只含产业信息与合同信息；基础数据改由系统「数据管理」页维护）
-
-失败策略：任一阶段错误 → 全局库/比赛库写入整体回滚（本次新建的比赛库直接删除），
-并持久化一份 FAILED 的导入报告供排查。
-"""
+流程：解压 → manifest/SHA-256 校验 → AST 扫描插件 → 建库即迁移 → 产业字段迁移 → 合同注册
+→ 合同实例导入 → 导入报告（包只含产业/合同信息，基础数据改由「数据管理」页维护）。
+失败策略：任一阶段出错 → 全局库/比赛库整体回滚（新建的比赛库直接删除），并持久化 FAILED 报告。"""
 
 import json
 import tempfile
@@ -43,9 +39,6 @@ class ImportFailure(Exception):
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
-
-
-# ---------------------------------------------------------------- manifest
 
 
 def _load_manifest(root: Path) -> dict:
@@ -102,8 +95,7 @@ def _validate_manifest(manifest: dict, root: Path, report: dict):
             if entry['sha256'] != sha:
                 errors.append(f'表格哈希不一致：{file_rel}')
 
-    # dashboard.json（或 manifest.dashboard 指定的文件名）是合法声明文件，
-    # 加入 declared 以免被下面的「未声明文件」误报
+    # dashboard.json（或 manifest.dashboard 指定名）是合法声明文件，先入 declared 以免被误报
     declared.add(str(manifest.get('dashboard') or 'dashboard.json'))
 
     for path in root.rglob('*'):
@@ -111,9 +103,6 @@ def _validate_manifest(manifest: dict, root: Path, report: dict):
             rel = str(path.relative_to(root)).replace('\\', '/')
             if rel != 'manifest.yaml' and rel not in declared:
                 warnings.append(f'未在 manifest 声明的文件：{rel}')
-
-
-# ---------------------------------------------------------------- 解压
 
 
 def _extract_package(zip_path, dest: Path):
@@ -128,15 +117,11 @@ def _extract_package(zip_path, dest: Path):
         raise ImportFailure({'errors': [f'压缩包无法读取：{exc}']})
 
 
-# ---------------------------------------------------------------- 主流程
-
-
 _DASHBOARD_TYPES = {'number', 'gauge', 'table', 'text'}
 _DASHBOARD_AGGREGATES = {'sum', 'latest', 'average'}
 
 
 def _validate_dashboard_component(where: str, comp, problems: list):
-    """单个仪表盘组件校验（通用区与产业区共用一套规则）。"""
     if not isinstance(comp, dict):
         problems.append(f'{where} 必须是对象')
         return
@@ -171,16 +156,10 @@ def _validate_dashboard_components(where: str, components, problems: list) -> li
 def _load_dashboard(root: Path, manifest: dict, competition, report: dict):
     """仪表盘样式文件（可选，包根 `dashboard.json`，manifest 可用 `dashboard:` 指定文件名）。
 
-    2026-10 决策：仪表盘**不再是自定义拖拽控件**，而是比赛包里的前端样式文件，
-    组件直接绑定产业字段值，用户有公司（本队/被分配管理）后即渲染。
-
-    布局结构（v2，按产业分屏）：
-    - `components`：通用区，「全部」页签渲染，聚合全部可操作公司；
-    - `industries.<产业key>`：该产业专属页签（`{title?, components}`），
-      **只聚合该产业的公司**，`bind.fieldKey` 即该产业插件 FIELDS 里的字段键。
-
-    格式非法进 errors（阻断导入）；缺失则跳过（report.dashboard.status=SKIPPED）。
-    """
+    2026-10 决策：仪表盘**不再是自定义拖拽控件**，而是比赛包里的前端样式文件，组件直接绑定
+    产业字段值。布局 v2 按产业分屏：``components`` 通用区（聚合全部可操作公司）、
+    ``industries.<产业key>`` 产业专属页签（**只聚合该产业的公司**，``bind.fieldKey`` 即该产业
+    插件 FIELDS 的字段键）。格式非法进 errors 阻断导入，缺失则 SKIPPED。"""
     rel = str(manifest.get('dashboard') or 'dashboard.json')
     path = root / rel
     report['dashboard'] = {'status': 'SKIPPED', 'file': rel, 'components': 0, 'industries': {}}
@@ -228,9 +207,6 @@ def _load_dashboard(root: Path, manifest: dict, competition, report: dict):
     report['dashboard'].update(
         status='OK', components=len(components),
         industries={k: len(v['components']) for k, v in industries.items()})
-
-
-# ---------------------------------------------------------------- 主流程
 
 
 def import_package(*, competition, zip_path, file_name, user):
@@ -296,9 +272,6 @@ def import_package(*, competition, zip_path, file_name, user):
         raise
 
 
-# ---------------------------------------------------------------- 插件加载
-
-
 def _load_plugins(root: Path, manifest: dict, report: dict, user) -> dict:
     """AST 扫描 + 接口校验 + 注册不可变版本（全局库事务）。"""
     plugins = {}
@@ -353,9 +326,6 @@ def _load_plugins(root: Path, manifest: dict, report: dict, user) -> dict:
     return plugins
 
 
-# ---------------------------------------------------------------- 建库
-
-
 def _provision_database(competition, report: dict) -> bool:
     db_name = competition.db_name
     db_existed = provisioning.database_exists(db_name)
@@ -381,9 +351,6 @@ def _drop_database(db_name: str):
         conn.close()
 
 
-# ---------------------------------------------------------------- 数据导入（比赛库事务）
-
-
 def _import_data(competition, root: Path, plugins: dict, report: dict, user):
     alias = provisioning.ensure_competition_db(competition.db_name)
     ctx.set_competition_context(competition.id, alias)
@@ -401,8 +368,7 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user):
             # industries.xlsx 对账（规范 §6）
             _import_industries_sheet(root, industry_modules, report)
 
-            # 基础数据不再由比赛包提供（导入方式变更）：包内如携带旧版数据表格 → 忽略并提示，
-            # 燃料/仓库/载具等 10 类基础数据改由系统「数据管理」页维护。
+            # 基础数据不再由比赛包提供：包内若携带旧版数据表格 → 忽略并提示，改由「数据管理」页维护
             for sheet_key in parsers.BASEDATA_SPECS:
                 if _find_sheet(root, sheet_key) is not None:
                     report['warnings'].append(
@@ -425,24 +391,6 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user):
                     raise ImportFailure(report)
     finally:
         ctx.clear_request_context()
-
-
-# ---------------------------------------------------------------- 工具
-
-
-def _normalize_entry(model, entry: dict) -> dict:
-    """空单元格 → 文本列 '' / JSON 列默认值 / 其余 NULL。"""
-    from django.db import models as dj_models
-
-    for f in model._meta.fields:
-        if f.name not in entry:
-            continue
-        if entry[f.name] is None:
-            if isinstance(f, (dj_models.CharField, dj_models.TextField)):
-                entry[f.name] = ''
-            elif isinstance(f, dj_models.JSONField):
-                del entry[f.name]
-    return entry
 
 
 def _find_sheet(root: Path, sheet_key: str):

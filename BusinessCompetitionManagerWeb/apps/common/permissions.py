@@ -33,23 +33,6 @@ def is_competition_super_admin(user, competition_id=None):
     return bool(m and m.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN)
 
 
-def is_competition_admin(user, competition_id=None):
-    m = get_membership(user, competition_id)
-    return bool(m and m.identity in (
-        CompetitionMembership.Identity.COMP_SUPER_ADMIN,
-        CompetitionMembership.Identity.ADMIN,
-    ))
-
-
-class IsCompetitionSuperAdmin(BasePermission):
-    """比赛超级管理员（由系统超管指派，可多人，决策 D9）。"""
-
-    message = '需要比赛超级管理员权限'
-
-    def has_permission(self, request, view):
-        return is_competition_super_admin(request.user)
-
-
 class IsSystemOrCompetitionSuperAdmin(BasePermission):
     message = '需要系统超管或本比赛超管权限'
 

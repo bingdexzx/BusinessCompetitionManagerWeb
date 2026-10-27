@@ -1,6 +1,5 @@
 <template>
   <div class="maps-manager">
-    <!-- 顶部工具栏 -->
     <div class="mm-toolbar">
       <h2 class="mm-title">{{ canEdit ? "地图管理" : "地图" }}</h2>
       <div class="mm-actions">
@@ -30,7 +29,7 @@
       </div>
     </div>
 
-    <!-- 导入背景弹窗：本地图片上传 或 粘贴图片 URL（统一走服务端地图背景接口） -->
+    <!-- 背景统一走服务端接口：本地上传或图片 URL -->
     <el-dialog append-to-body v-model="bgUrlDialogVisible" title="导入背景" width="480px" @closed="resetBgDialog">
       <el-form label-width="80px">
         <el-form-item label="本地图片">
@@ -63,9 +62,7 @@
       请先在「比赛管理」中选择一个比赛
     </div>
 
-    <!-- 主体三栏布局 -->
     <div class="mm-body">
-      <!-- 左侧节点列表 -->
       <div v-if="canEdit" :class="['mm-left-panel', 'anim-fade-in-up', { 'is-open': leftOpen }]">
         <div class="panel-header">
           <span class="panel-title">节点列表</span>
@@ -101,7 +98,6 @@
         </div>
       </div>
 
-      <!-- 中间 Konva 画布 -->
       <div ref="canvasWrapper" class="mm-canvas-wrapper">
         <v-stage
           ref="stageRef"
@@ -113,8 +109,7 @@
           @contextmenu="handleStageContextMenu"
           @wheel="handleStageWheel"
         >
-          <!-- 背景图层：置于最底层，覆盖节点包围盒；非编辑态 listening=false 不拦截任何交互，
-               编辑态开启 listening 并允许拖拽以调整位置 -->
+          <!-- 背景层置底；非编辑态 listening=false，不拦截画布交互 -->
           <v-layer :listening="bgEditMode">
             <v-image
               v-if="backgroundImage"
@@ -122,7 +117,6 @@
               @dragend="handleBgDragEnd"
             />
           </v-layer>
-          <!-- 边图层 -->
           <v-layer>
             <v-line
               v-for="edge in edges"
@@ -131,7 +125,7 @@
               @click="selectEdge(edge)"
               @contextmenu="handleContextEdgeDelete($event, edge)"
             />
-            <!-- 路径距离标签：仅在填写了距离值时显示，居中于边中点 -->
+            <!-- 仅距离>0 的边显示标签，居中于边中点 -->
             <v-group
               v-for="edge in edgesWithDistance"
               :key="'el-' + edge.id"
@@ -143,7 +137,6 @@
               <v-text :config="getEdgeLabelTextConfig(edge)" />
             </v-group>
           </v-layer>
-          <!-- 节点图层 -->
           <v-layer>
             <v-group
               v-for="node in nodes"
@@ -162,7 +155,6 @@
           </v-layer>
         </v-stage>
 
-        <!-- 背景编辑面板：仅进入「背景编辑」模式且已有背景图时显示 -->
         <div v-if="bgEditMode && backgroundImage" class="bg-edit-panel">
           <div class="bg-edit-title">背景编辑</div>
           <div class="bg-edit-row">
@@ -185,7 +177,7 @@
           </div>
         </div>
 
-        <!-- 图例浮窗：无地图管理（data:map:edit）权限时显示，帮助只读查看者理解地图配色 -->
+        <!-- 无地图管理权限时显示图例，帮助只读用户读图 -->
         <div v-if="!canEdit" class="mm-legend-panel" :class="{ collapsed: legendCollapsed }">
           <div class="legend-header" @click="legendCollapsed = !legendCollapsed">
             <span class="legend-title">图例</span>
@@ -211,7 +203,7 @@
           </div>
         </div>
 
-        <!-- 手机模式：左右面板改为可滑出抽屉，避免遮挡地图；悬浮按钮开关 + 遮罩点击关闭 -->
+        <!-- 手机端左右面板改为抽屉，避免遮挡地图 -->
         <template v-if="isPhone && canEdit">
           <div class="mm-drawer-mask" v-show="leftOpen || rightOpen" @click="closeDrawers"></div>
           <el-button class="mm-fab mm-fab-left" type="primary" size="small" @click="leftOpen = !leftOpen">节点</el-button>
@@ -220,9 +212,7 @@
 
       </div>
 
-      <!-- 右侧属性面板 -->
       <div v-if="canEdit" :class="['mm-right-panel', 'anim-fade-in-up', { 'is-open': rightOpen }]">
-        <!-- 节点属性-->
         <template v-if="selectedNode">
           <div class="panel-header">
             <span class="panel-title">节点属性</span>
@@ -276,7 +266,6 @@
           </el-form>
         </template>
 
-        <!-- 边属性-->
         <template v-else-if="selectedEdge">
           <div class="panel-header">
             <span class="panel-title">路径属性</span>
@@ -325,7 +314,6 @@
           </el-form>
         </template>
 
-        <!-- 未选中 -->
         <div v-else class="panel-empty">
           <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
             <circle cx="24" cy="24" r="22" stroke="#C0C4CC" stroke-width="2" fill="none" />
@@ -346,10 +334,8 @@
       </div>
     </div>
 
-    <!-- 底部 Tab 管理 -->
     <div v-if="canEdit" class="mm-bottom anim-fade-in-up">
       <el-tabs v-model="bottomTab" type="border-card">
-        <!-- 节点类型管理 -->
         <el-tab-pane label="节点类型管理" name="nodeTypes">
           <div class="tab-toolbar">
             <el-button
@@ -415,7 +401,6 @@
           </MobileCards>
         </el-tab-pane>
 
-        <!-- 路径类型管理 -->
         <el-tab-pane label="路径类型管理" name="pathTypes">
           <div class="tab-toolbar">
             <el-button
@@ -481,7 +466,7 @@
           </MobileCards>
         </el-tab-pane>
 
-        <!-- 区域管理（区域在地图管理里维护；区域总览页只做展示与配置） -->
+        <!-- 区域在地图管理维护，区域总览页只做展示/配置 -->
         <el-tab-pane label="区域管理" name="regions">
           <div class="tab-toolbar">
             <el-button v-if="canEdit" type="primary" size="small" @click="openRegionCreate"
@@ -522,7 +507,6 @@
       </el-tabs>
     </div>
 
-    <!-- 右键菜单 -->
     <Teleport to="body">
       <div
         v-if="contextMenu.visible"
@@ -541,7 +525,6 @@
       </div>
     </Teleport>
 
-    <!-- 新建节点对话框 -->
     <el-dialog append-to-body
       v-model="createDialogVisible"
       title="新建节点"
@@ -581,7 +564,6 @@
       </template>
     </el-dialog>
 
-    <!-- 节点类型编辑对话框 -->
     <el-dialog append-to-body
       v-model="nodeTypeDialogVisible"
       :title="nodeTypeIsEdit ? '编辑节点类型' : '新建节点类型'"
@@ -621,7 +603,6 @@
       </template>
     </el-dialog>
 
-    <!-- 路径类型编辑对话框 -->
     <el-dialog append-to-body
       v-model="pathTypeDialogVisible"
       :title="pathTypeIsEdit ? '编辑路径类型' : '新建路径类型'"
@@ -661,7 +642,6 @@
       </template>
     </el-dialog>
 
-    <!-- 节点类型详情对话框 -->
     <el-dialog append-to-body v-model="nodeTypeDetailVisible" title="节点类型详情" width="500px">
       <el-descriptions v-if="nodeTypeDetailData" :column="1" border>
         <el-descriptions-item label="名称">{{ nodeTypeDetailData.name }}</el-descriptions-item>
@@ -681,7 +661,6 @@
       </el-descriptions>
     </el-dialog>
 
-    <!-- 路径类型详情对话框 -->
     <el-dialog append-to-body v-model="pathTypeDetailVisible" title="路径类型详情" width="500px">
       <el-descriptions v-if="pathTypeDetailData" :column="1" border>
         <el-descriptions-item label="名称">{{ pathTypeDetailData.name }}</el-descriptions-item>
@@ -701,7 +680,6 @@
       </el-descriptions>
     </el-dialog>
 
-    <!-- 区域新建对话框 -->
     <el-dialog
       append-to-body
       v-model="regionDialogVisible"
@@ -725,7 +703,6 @@
       </template>
     </el-dialog>
 
-    <!-- 连线创建对话框 -->
     <el-dialog append-to-body v-model="edgeCreateDialogVisible" title="创建路径" width="400px">
       <el-form
         ref="edgeCreateFormRef"
@@ -798,34 +775,29 @@ import {
 } from "vue-konva";
 
 const NODE_RADIUS = 28;
-// 枢纽页以路由 prop 传入当前比赛 id（useCompetitionStore().competitionId 的替代）
 const props = defineProps<{ cid: string }>();
 const authStore = useAuthStore();
-// 手机断点（≤640px，与旧 useBreakpoint().isPhone 一致）；页面内联实现，不新增共享文件
+// 手机断点 ≤640px，与旧 useBreakpoint().isPhone 对齐
 const isPhone = ref(false);
 let phoneMq: MediaQueryList | null = null;
 function onPhoneChange() {
   isPhone.value = phoneMq?.matches ?? false;
 }
-// 写权限（对应旧 data:map:edit）：系统超管 或 本比赛 COMP_SUPER_ADMIN
+// 写权限：系统超管或本比赛 COMP_SUPER_ADMIN
 const canEdit = computed(
   () =>
     authStore.isSuperuser ||
     authStore.memberships.some((m) => String(m.id) === props.cid && m.identity === "COMP_SUPER_ADMIN"),
 );
-// 图例浮窗（仅无管理权限时显示）的折叠状态
 const legendCollapsed = ref(false);
 
-// ===================== 数据 =====================
-// 行类型来自 @/api/mapTypes（MapNode/MapEdge/MapNodeType/PathType 的 camelCase 字段）
 const nodes = ref<MapNode[]>([]);
 const edges = ref<MapEdge[]>([]);
 const nodeTypes = ref<NodeType[]>([]);
 const pathTypes = ref<PathType[]>([]);
-// 区域候选（节点「区域」下拉用）：地图节点所属区域去重 ∪ 区域实体中还没有节点的区域
-// （与旧系统一致：区域在地图管理里新建，节点上填区域名，两边合并成候选列表）
+// 区域候选 = 节点所属区域 ∪ 无节点区域实体（区域在地图页新建，节点只存名称）
 const regions = ref<string[]>([]);
-// 区域名 -> Region 实体 id（由地图节点定义、尚未建实体的区域为 null）
+// 区域名 -> Region 实体 id；节点自定义区域为 null
 const regionIdMap = ref<Map<string, number | null>>(new Map());
 const loading = ref(false);
 
@@ -841,8 +813,7 @@ const mapPathTypeColumns = [
 ];
 const mapRegionColumns = [{ prop: "name", label: "名称" }];
 
-// ===================== 区域管理 =====================
-// 区域在地图管理里维护（旧系统口径）：区域总览页不再提供新建/重命名/删除。
+// 区域只在地图管理维护，区域总览页不再新建/重命名/删除
 const regionDialogVisible = ref(false);
 const newRegionName = ref("");
 const regionFormRef = ref();
@@ -851,7 +822,6 @@ const regionsList = computed(() =>
   regions.value.map((r) => ({ name: r, id: regionIdMap.value.get(r) ?? null })),
 );
 
-/** 从后端加载区域列表（地图节点所属区域 ∪ 区域实体无节点区域），并维护 regionIdMap。 */
 async function loadRegionsFromServer() {
   if (!props.cid) {
     regions.value = [];
@@ -929,7 +899,6 @@ async function removeRegion(name: string) {
   }
 }
 
-// ===================== 画布 =====================
 const canvasWrapper = ref<HTMLElement>();
 const stageRef = ref<any>(null);
 const stageSize = ref({ width: 800, height: 500 });
@@ -947,7 +916,6 @@ let isPanning = false;
 let lastPointer = { x: 0, y: 0 };
 let stageOnMove = false;
 
-// ===================== 连线模式 =====================
 const connectMode = ref(false);
 const connectFrom = ref<MapNode | null>(null);
 let pendingFrom: MapNode | null = null;
@@ -988,11 +956,9 @@ async function confirmCreateEdge() {
   }
 }
 
-// ===================== 选中状态 =====================
 const selectedNode = ref<MapNode | null>(null);
 const selectedEdge = ref<MapEdge | null>(null);
 const nodeSearch = ref("");
-// 手机模式(≤640)：左右面板改为抽屉，用状态控制开合（仅手机生效，桌面/平板仍是三栏布局）
 const leftOpen = ref(false);
 const rightOpen = ref(false);
 function closeDrawers() {
@@ -1008,7 +974,6 @@ const filteredNodes = computed(() => {
   );
 });
 
-// ===================== 节点属性表单 =====================
 const nodeForm = reactive({ name: "", region: "", nodeTypeId: null as number | null, x: 0, y: 0 });
 const savingNode = ref(false);
 
@@ -1022,7 +987,6 @@ watch(selectedNode, (n) => {
   }
 });
 
-// ===================== 边属性表单 =====================
 const edgeForm = reactive({ distance: 0, pathTypeId: null as number | null });
 const savingEdge = ref(false);
 
@@ -1033,12 +997,10 @@ watch(selectedEdge, (e) => {
   }
 });
 
-// 手机模式：选中节点/边时自动展开右侧属性抽屉，便于查看/编辑（桌面/平板下右侧栏本就常驻，无影响）
 watch([selectedNode, selectedEdge], ([n, e]) => {
   if (isPhone.value && (n || e)) rightOpen.value = true;
 });
 
-// ===================== 新建节点对话框 =====================
 const createDialogVisible = ref(false);
 const creatingNode = ref(false);
 const pendingCreatePos = ref({ x: 200, y: 200 });
@@ -1050,7 +1012,6 @@ const createRules = {
   nodeTypeId: [{ required: true, message: "请选择类型", trigger: "change" }],
 };
 
-// ===================== 右键菜单 =====================
 const contextMenu = reactive({
   visible: false,
   x: 0,
@@ -1059,10 +1020,8 @@ const contextMenu = reactive({
   data: null as any,
 });
 
-// ===================== 底部 Tab =====================
 const bottomTab = ref("nodeTypes");
 
-// ===================== 节点类型对话框 =====================
 const nodeTypeDialogVisible = ref(false);
 const nodeTypeIsEdit = ref(false);
 const nodeTypeEditingId = ref<number | null>(null);
@@ -1073,7 +1032,6 @@ const typeRules = {
   name: [{ required: true, message: "请输入名称", trigger: "blur" }],
 };
 
-// ===================== 路径类型对话框 =====================
 const pathTypeDialogVisible = ref(false);
 const pathTypeIsEdit = ref(false);
 const pathTypeEditingId = ref<number | null>(null);
@@ -1088,7 +1046,6 @@ const pathTypeDetailData = ref<PathType | null>(null);
 
 const presetColors = ["#F56C6C", "#409EFF", "#67C23A", "#E6A23C", "#9C27B0", "#909399"];
 
-// ===================== 工具函数 =====================
 function getNodeById(id: number): MapNode | undefined {
   return nodes.value.find((n) => n.id === id);
 }
@@ -1182,12 +1139,10 @@ function getEdgeConfig(edge: MapEdge) {
   };
 }
 
-// 仅在有距离值的边上显示距离标签，避免未填写的 0 距离污染画布
 const edgesWithDistance = computed(() =>
   edges.value.filter((e) => typeof e.distance === "number" && e.distance > 0),
 );
 
-// 距离标签整体定位在边的中点（节点拖拽时随 from/to 坐标实时移动）
 function getEdgeLabelGroupConfig(edge: MapEdge) {
   const from = getNodeById(edge.nodeAId);
   const to = getNodeById(edge.nodeBId);
@@ -1242,13 +1197,7 @@ function getEdgeLabelTextConfig(edge: MapEdge) {
   };
 }
 
-// ===================== 删除影响确认 =====================
-/**
- * 删除前影响确认：拉取 impact 接口（{removable, refs:[{kind,label,count}]}），
- * 将 refs 转成 confirmDeleteWithImpact 的级联子数据形态；
- * - removable === false（存在阻断性引用）→ 提示并中止删除；
- * - 用户取消确认 → 返回 false；impact 拉取失败不阻塞删除，按普通删除确认处理。
- */
+// 删除前拉 impact：不可删除则中止；拉取失败按普通删除确认处理
 async function confirmWithImpact(
   fetchImpact: () => Promise<MapImpact>,
   name: string,
@@ -1280,7 +1229,6 @@ async function confirmWithImpact(
   }
 }
 
-// ===================== 数据加载 =====================
 async function loadData() {
   loading.value = true;
   try {
@@ -1293,7 +1241,7 @@ async function loadData() {
       regionIdMap.value = new Map();
       return;
     }
-    // 四张地图表一次性拉取（地图数据量小，取全量渲染画布）
+    // 地图数据量小，四张表一次拉全量渲染
     const [typeRes, pathRes, nodeRes, edgeRes] = await Promise.all([
       mapNodeTypeApi.list(props.cid, { pageSize: 500 }),
       pathTypeApi.list(props.cid, { pageSize: 500 }),
@@ -1304,9 +1252,8 @@ async function loadData() {
     pathTypes.value = pathRes.items || [];
     nodes.value = nodeRes.items || [];
     edges.value = edgeRes.items || [];
-    // 区域候选 = 节点所属区域 ∪ 区域实体（新建立的、还没归入节点的区域也要能选到）
     await loadRegionsFromServer();
-    // 节点已确定：auto 模式立即锚定背景覆盖框（与背景图加载时机解耦，避免重新进入界面时背景错位）
+    // 节点就绪即锚定背景框，与图片加载解耦，避免重进界面错位
     recomputeBBoxIfAuto();
   } catch (err) {
     ElMessage.error(errorMessage(err, "操作失败"));
@@ -1315,7 +1262,6 @@ async function loadData() {
   }
 }
 
-// ===================== 画布事件 =====================
 function getCanvasPos(_e: any) {
   const stage = stageRef.value?.getStage();
   if (!stage) return { x: 0, y: 0 };
@@ -1324,7 +1270,6 @@ function getCanvasPos(_e: any) {
 }
 
 function handleStageMouseDown(e: any) {
-  // 点击空白区域开始平移
   if (e.target === e.target.getStage()) {
     isPanning = true;
     lastPointer = getCanvasPos(e);
@@ -1356,7 +1301,6 @@ function handleStageMouseUp() {
 }
 
 function handleStageDblClick(e: any) {
-  // 双击空白区域新建节点（仅编辑权限）
   if (!canEdit.value) return;
   if (e.target !== e.target.getStage()) return;
   const pos = getCanvasPos(e);
@@ -1400,10 +1344,8 @@ function handleStageWheel(e: any) {
 
 function handleStageContextMenu(e: any) {
   e.evt.preventDefault();
-  // 查看权限不展示右键菜单
   if (!canEdit.value) return;
   const pos = { x: e.evt.clientX, y: e.evt.clientY };
-  // 如果点在空白区域
   if (e.target === e.target.getStage()) {
     const canvasPos = getCanvasPos(e);
     contextMenu.visible = true;
@@ -1414,11 +1356,9 @@ function handleStageContextMenu(e: any) {
   }
 }
 
-// ===================== 节点操作 =====================
 function selectNode(node: MapNode) {
   if (stageOnMove) return;
 
-  // 连线模式
   if (connectMode.value) {
     if (!connectFrom.value) {
       connectFrom.value = node;
@@ -1429,7 +1369,6 @@ function selectNode(node: MapNode) {
       ElMessage.warning("不能连接自身");
       return;
     }
-    // 弹出连线编辑对话框
     pendingFrom = connectFrom.value;
     pendingTo = node;
     edgeCreateForm.pathTypeId = null;
@@ -1461,8 +1400,7 @@ function handleNodeDragStart(node: MapNode) {
   selectNode(node);
 }
 
-// 拖拽过程中实时同步位置：避免 Vue 响应式重渲染把节点拉回原位，
-// 同时让相连的地图边实时跟随移动。
+// 拖拽实时写回坐标：防止响应式重渲染拉回节点，并让相连的边跟随
 function handleNodeDragMove(node: MapNode) {
   const grp = stageRef.value?.getStage()?.findOne(`#node-${node.id}`);
   if (!grp) return;
@@ -1483,7 +1421,6 @@ async function handleNodeDragEnd(node: MapNode) {
     node.x = x;
     node.y = y;
   } catch (err) {
-    // revert
     grp.x(node.x);
     grp.y(node.y);
     ElMessage.error(errorMessage(err, "操作失败"));
@@ -1492,7 +1429,6 @@ async function handleNodeDragEnd(node: MapNode) {
 
 function handleContextNodeMenu(e: any, node: MapNode) {
   e.evt.preventDefault();
-  // 查看权限不展示右键菜单
   if (!canEdit.value) return;
   selectNode(node);
   contextMenu.visible = true;
@@ -1504,7 +1440,6 @@ function handleContextNodeMenu(e: any, node: MapNode) {
 
 function contextNodeEdit() {
   contextMenu.visible = false;
-  // 已选中，无需额外操作
 }
 
 function contextNodeDelete() {
@@ -1551,7 +1486,6 @@ async function saveNode() {
   }
 }
 
-// ===================== 边操作 =====================
 function selectEdge(edge: MapEdge) {
   if (stageOnMove) return;
   selectedNode.value = null;
@@ -1600,7 +1534,6 @@ async function saveEdge() {
   }
 }
 
-// ===================== 新建节点 =====================
 function openCreateDialog() {
   if (!props.cid) {
     ElMessage.warning("请先在「比赛管理」中选择一个比赛");
@@ -1652,7 +1585,6 @@ async function handleCreateNode() {
   });
 }
 
-// ===================== 画布适应 =====================
 function fitCanvas() {
   const stage = stageRef.value?.getStage();
   if (!stage) return;
@@ -1660,7 +1592,6 @@ function fitCanvas() {
   stage.y(0);
   stageScale.value = 1;
 
-  // 自动调整到节点范围
   if (nodes.value.length > 0) {
     let minX = Infinity,
       minY = Infinity,
@@ -1690,7 +1621,6 @@ function fitCanvas() {
   }
 }
 
-// ===================== 节点类型 CRUD =====================
 function openNodeTypeCreate() {
   if (!props.cid) {
     ElMessage.warning("请先在「比赛管理」中选择一个比赛");
@@ -1760,7 +1690,6 @@ async function deleteNodeType(row: NodeType) {
   }
 }
 
-// ===================== 路径类型 CRUD =====================
 function openPathTypeCreate() {
   if (!props.cid) {
     ElMessage.warning("请先在「比赛管理」中选择一个比赛");
@@ -1840,32 +1769,26 @@ function showPathTypeDetail(row: PathType) {
   pathTypeDetailVisible.value = true;
 }
 
-// ===================== 全局关闭右键菜单 =====================
 function closeContextMenu() {
   contextMenu.visible = false;
 }
 
-// ===================== 地图背景 =====================
-// 背景图（URL + 变换）持久化在服务端（/api/competitions/{cid}/files/map-background，按 cid 隔离）；
-// 画布上的背景显示/拖拽/缩放/背景编辑能力与旧页面一致。
+// 背景 URL + 变换持久化在服务端（按 cid 隔离），支持显示/拖拽/缩放
 const backgroundMeta = ref<BackgroundMeta | null>(null);
 const backgroundImage = ref<HTMLImageElement | null>(null);
 // 背景覆盖框（节点包围盒 + 留白），在加载时冻结，避免节点拖拽时背景抖动。
 const bgBBox = ref<{ x: number; y: number; w: number; h: number } | null>(null);
-// 「导入背景」弹窗状态：本地图片文件 或 粘贴图片 URL（保存走服务端接口）
 const bgUrlDialogVisible = ref(false);
 const bgUrlInput = ref("");
 const uploadingBg = ref(false);
 const bgFile = ref<File | null>(null);
 const bgFileName = ref("");
 const bgFileInput = ref<HTMLInputElement | null>(null);
-// 背景编辑模式：开启后可拖拽背景图移动位置、用滑块调整缩放；关闭则背景不可交互。
 const bgEditMode = ref(false);
-// 背景变换（世界坐标）：由服务端持久化；null 表示按节点包围盒自动适配。
+// transform 为 null 时按节点包围盒自动适配
 const bgTransform = ref<{ x: number; y: number; scale: number } | null>(null);
-const BG_PADDING = 160; // 背景超出节点包围盒的留白，避免边缘节点压在图边
+const BG_PADDING = 160; // 留白，避免边缘节点压图边
 
-/** 由当前节点集合计算背景覆盖框（包围盒 + 留白）；无节点时返回 null（回退为图片原始尺寸置于原点）。 */
 function computeBBox(): { x: number; y: number; w: number; h: number } | null {
   if (!nodes.value.length) return null;
   let minX = Infinity,
@@ -1886,13 +1809,7 @@ function computeBBox(): { x: number; y: number; w: number; h: number } | null {
   };
 }
 
-/**
- * 自动适配模式下背景图的显示矩形（等比 cover 铺满节点包围盒，保持图片原始比例、不变形、居中）。
- * - 以图片原始像素尺寸为基准，按 cover 比例缩放使其覆盖节点包围盒，再居中放置。
- * - auto 模式不依赖用户变换，仅作「未对齐时的占位底图」。
- * 该函数被 backgroundConfig（auto 分支）与「进入编辑态 / 重置」初始化 transform 时复用，
- * 保证从 auto 无缝切换到手动编辑时图片尺寸不跳变。
- */
+// auto 显示矩形：等比 cover 铺满包围盒并居中；编辑态/重置复用它，切换时不跳尺寸
 function getAutoRect(): { x: number; y: number; w: number; h: number } {
   const img = backgroundImage.value;
   const iw = img?.naturalWidth || 800;
@@ -1909,17 +1826,9 @@ function getAutoRect(): { x: number; y: number; w: number; h: number } {
   };
 }
 
-/**
- * 重新锚定背景覆盖框（仅 auto 模式）：
- * - 手动模式（bgTransform 已设置）：保持用户调整后的背景变换，不跟随节点。
- * - auto 模式：覆盖框始终等于「最新节点集合的包围盒 + 留白」，因此节点坐标变化
- *   （loadData 重拉 / map-nodes 实时事件 / 拖拽保存后重拉）时背景自动跟随，永不错位。
- * 覆盖框只依赖节点集合，不依赖背景图加载时机——这样「重新进入界面」（tab 切换导致组件
- * 卸载重挂载）时，节点一就绪即正确锚定，无需等待图片加载，避免背景相对节点偏移。
- * 节点拖拽只改元素属性、不替换数组（下方 watch deep:false 不触发），故拖拽过程不抖动。
- */
+// 仅 auto 模式重锚：手动变换保持用户设置，auto 始终跟随节点包围盒
 function recomputeBBoxIfAuto() {
-  if (bgTransform.value) return; // 手动调整模式：保持用户设置
+  if (bgTransform.value) return;
   if (!nodes.value.length) {
     bgBBox.value = null;
     return;
@@ -1927,8 +1836,7 @@ function recomputeBBoxIfAuto() {
   bgBBox.value = computeBBox();
 }
 
-// 节点集合被整体替换（loadData / map-nodes 实时事件）时重新锚定覆盖框。
-// deep:false：拖拽节点只改元素属性、不替换数组，不会触发，故拖拽不抖动。
+// 节点数组整体替换时重锚；deep:false 下拖拽不触发，故不抖动
 watch(
   nodes,
   () => {
@@ -1937,7 +1845,6 @@ watch(
   { deep: false },
 );
 
-/** 应用背景元信息：预加载图片；meta 为空则清空。 */
 function applyBackgroundMeta(meta: BackgroundMeta | null) {
   backgroundMeta.value = meta || null;
   if (!meta || !meta.url) {
@@ -1947,15 +1854,11 @@ function applyBackgroundMeta(meta: BackgroundMeta | null) {
     bgEditMode.value = false;
     return;
   }
-  // 同步已持久化的变换（无则回退自动适配）。
   bgTransform.value = meta.transform ? { ...meta.transform } : null;
   const img = new Image();
-  // 不设置 crossOrigin：背景仅作显示纹理，无需像素读取；跨源显示仍正常，
-  // 仅 stage.toDataURL 导出时会因 canvas 污染失败（非核心路径）。
+  // 不设 crossOrigin：跨源仅影响 toDataURL 导出（非核心路径）
   img.onload = () => {
     backgroundImage.value = img;
-    // auto 模式：节点集合此刻已就绪（onMounted 先加载数据再加载背景），重新锚定覆盖框。
-    // 节点未就绪（极少见：图片快于首拉）也不影响——loadData 成功时已锚定过一次。
     recomputeBBoxIfAuto();
   };
   img.onerror = () => {
@@ -1963,11 +1866,9 @@ function applyBackgroundMeta(meta: BackgroundMeta | null) {
     bgBBox.value = null;
     ElMessage.error("背景图加载失败");
   };
-  // 服务端文件为 /api/files/view/...（相对路径同源加载）；外链 / data:image/... 原样使用
   img.src = meta.url;
 }
 
-/** 拉取当前比赛的地图背景（服务端持久化的 URL + 变换，按 cid 请求）。 */
 async function loadBackground() {
   if (!props.cid) {
     applyBackgroundMeta(null);
@@ -1982,7 +1883,6 @@ async function loadBackground() {
   }
 }
 
-/** 「导入背景」按钮：打开导入弹窗（本地图片上传 / 粘贴图片 URL）。 */
 function openBgUrlDialog() {
   if (!props.cid) {
     ElMessage.warning("请先在「比赛管理」中选择一个比赛");
@@ -1998,14 +1898,12 @@ function openBgUrlDialog() {
   bgUrlDialogVisible.value = true;
 }
 
-/** 弹窗关闭时清空待选文件。 */
 function resetBgDialog() {
   bgFile.value = null;
   bgFileName.value = "";
   if (bgFileInput.value) bgFileInput.value.value = "";
 }
 
-/** 选择本地背景图片（仅暂存，点「确定」才上传保存）。 */
 function pickBgFile() {
   bgFileInput.value?.click();
 }
@@ -2018,10 +1916,6 @@ function onBgFileSelected(e: Event) {
   if (file) bgUrlInput.value = "";
 }
 
-/**
- * 确认导入背景（本地图片或图片 URL 二选一）：走服务端保存并应用。
- * 位置/缩放回到自动适配，可在「背景编辑」中再调整。
- */
 async function confirmBackground() {
   if (!props.cid) return;
   const file = bgFile.value;
@@ -2047,7 +1941,6 @@ async function confirmBackground() {
   }
 }
 
-/** 清除地图背景图（二次确认，服务端删除记录与文件）。 */
 async function clearBackground() {
   if (!props.cid) return;
   try {
@@ -2066,17 +1959,13 @@ async function clearBackground() {
   }
 }
 
-/** 背景图 Konva 配置：置于节点包围盒下方、可随画布平移缩放。
- *  - 非编辑态：listening=false 不拦截交互，按节点包围盒自动适配（transform 为空）。
- *  - 编辑态：listening/draggable 开启，应用 bgTransform 的位置与缩放，可拖拽调整。 */
+// 非编辑态 listening=false 不拦截事件；编辑态可拖拽缩放
 const backgroundConfig = computed(() => {
   if (!backgroundImage.value) return undefined;
   const img = backgroundImage.value;
   const t = bgTransform.value;
   if (t) {
-    // 手动对齐模式：以图片「原始像素尺寸 × scale」显示（保持原始宽高比，不被拉伸），
-    // 位置 = 用户保存的世界坐标。尺寸只取决于图片本身与 scale，与节点集合无关，
-    // 因此重新进入界面时背景图位置/大小完全复现，不再随节点包围盒变化而偏移。
+    // 手动模式按图片原始尺寸 × scale 显示，与节点无关，重进界面可完全复现
     const scale = t.scale ?? 1;
     return {
       image: img,
@@ -2089,7 +1978,6 @@ const backgroundConfig = computed(() => {
       opacity: 0.85,
     };
   }
-  // 自动适配模式：等比 cover 铺满节点包围盒（保持图片原始比例，不变形），居中放置。
   const r = getAutoRect();
   return {
     image: img,
@@ -2103,12 +1991,10 @@ const backgroundConfig = computed(() => {
   };
 });
 
-/** 缩放滑块的双向绑定：读取/写入 bgTransform.scale（进入编辑态时 transform 必已初始化）。 */
 const bgScale = computed({
   get: () => bgTransform.value?.scale ?? 1,
   set: (v: number) => {
     if (!bgTransform.value) {
-      // 防御性初始化：以当前 auto 显示状态为基底，避免尺寸跳变。
       const r = getAutoRect();
       bgTransform.value = { x: r.x, y: r.y, scale: v };
     } else {
@@ -2117,12 +2003,10 @@ const bgScale = computed({
   },
 });
 
-/** 进入/退出背景编辑模式。进入时若尚无变换，以当前自动适配位置初始化，便于拖拽/缩放。 */
 function toggleBgEditMode() {
   if (!backgroundImage.value) return;
   const entering = !bgEditMode.value;
   if (entering && !bgTransform.value) {
-    // 以当前 auto 显示状态初始化，保证进入编辑态时图片尺寸不跳变，用户在原位置上微调。
     const r = getAutoRect();
     const iw = backgroundImage.value?.naturalWidth || 800;
     const cover = r.w / iw;
@@ -2135,14 +2019,12 @@ function toggleBgEditMode() {
   bgEditMode.value = !bgEditMode.value;
 }
 
-/** 拖拽背景图结束时，把新的世界坐标写入变换并持久化。 */
 function handleBgDragEnd(e: any) {
   const node = e?.target;
   if (!node) return;
   const x = node.x();
   const y = node.y();
   if (!bgTransform.value) {
-    // 防御路径：以 cover 比例初始化（与进入编辑态/重置保持一致），避免图片突然缩到原始像素尺寸而错位。
     const r = getAutoRect();
     const iw = backgroundImage.value?.naturalWidth || 800;
     const cover = r.w / iw;
@@ -2153,9 +2035,7 @@ function handleBgDragEnd(e: any) {
   persistTransform();
 }
 
-/** 重置为自动适配（位置=节点包围盒左上、缩放=1）。 */
 function resetBgTransform() {
-  // 重置为自动适配显示状态（等比 cover 铺满节点包围盒），而非固定 1 倍，避免尺寸跳变。
   const r = getAutoRect();
   const iw = backgroundImage.value?.naturalWidth || 800;
   const cover = r.w / iw;
@@ -2163,7 +2043,6 @@ function resetBgTransform() {
   persistTransform();
 }
 
-/** 持久化当前背景变换（服务端 PATCH transform；失败提示并保持本地显示）。 */
 async function persistTransform() {
   const t = bgTransform.value;
   const meta = backgroundMeta.value;
@@ -2177,12 +2056,10 @@ async function persistTransform() {
   }
 }
 
-// ===================== 初始化 =====================
 let resizeObserver: ResizeObserver | null = null;
 
 function updateStageSize() {
   if (canvasWrapper.value) {
-    // 留一点余量避免滚动条
     stageSize.value = {
       width: canvasWrapper.value.clientWidth - 2,
       height: canvasWrapper.value.clientHeight - 2,
@@ -2201,7 +2078,6 @@ onMounted(async () => {
   await loadBackground();
 
   updateStageSize();
-  // 手机模式默认折叠图例浮窗，避免遮挡只读视图下的地图区域
   if (isPhone.value) legendCollapsed.value = true;
 
   resizeObserver = new ResizeObserver(() => {
@@ -2213,7 +2089,6 @@ onMounted(async () => {
 
   document.addEventListener("click", closeContextMenu);
 
-  // 手机断点监听（≤640px 抽屉模式）
   phoneMq = window.matchMedia("(max-width: 640px)");
   onPhoneChange();
   if (phoneMq.addEventListener) {
@@ -2256,14 +2131,13 @@ onBeforeUnmount(() => {
 .maps-manager {
   display: flex;
   flex-direction: column;
-  /* 挂在数据管理枢纽内（顶部有数据域菜单条），高度按外壳扣除给足画布 */
-  height: calc(100vh - 210px); /* 回退 */
+  /* 高度按数据管理外壳扣除，给画布留足空间 */
+  height: calc(100vh - 210px);
   height: calc(100dvh - 210px);
   min-height: 480px;
   background: #f5f7fa;
 }
 
-/* 工具栏 */
 .mm-toolbar {
   display: flex;
   align-items: center;
@@ -2282,7 +2156,6 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-/* 主体 */
 .mm-body {
   flex: 1;
   display: flex;
@@ -2295,7 +2168,6 @@ onBeforeUnmount(() => {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
-/* 左侧面板 */
 .mm-left-panel {
   width: 240px;
   min-width: 200px;
@@ -2344,14 +2216,13 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 8px 16px;
   cursor: pointer;
-  /* 悬停/选中过渡统一走全局动效刻度（背景 + 颜色），不做位移以免长列表抖动 */
+  /* 只过渡背景/颜色，不做位移以免长列表抖动 */
   transition:
     background var(--dur-fast) var(--ease-standard),
     color var(--dur-fast) var(--ease-standard),
     box-shadow var(--dur-fast) var(--ease-standard);
   font-size: 13px;
   color: #c8cdd5;
-  /* 选中项左侧品牌色竖条：有选中态时一眼可辨 */
   box-shadow: inset 2px 0 0 transparent;
 }
 .node-item:hover {
@@ -2385,7 +2256,6 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-/* 画布区域 */
 .mm-canvas-wrapper {
   flex: 1;
   overflow: hidden;
@@ -2393,7 +2263,6 @@ onBeforeUnmount(() => {
   position: relative;
 }
 
-/* 背景编辑浮动面板 */
 .bg-edit-panel {
   position: absolute;
   left: 16px;
@@ -2442,7 +2311,6 @@ onBeforeUnmount(() => {
   color: #909399;
 }
 
-/* 导入背景弹窗：已选文件名 */
 .bg-file-name {
   margin-left: 10px;
   font-size: 12px;
@@ -2453,7 +2321,6 @@ onBeforeUnmount(() => {
   max-width: 220px;
 }
 
-/* 图例浮窗（无地图管理权限时显示，悬浮在画布右上角） */
 .mm-legend-panel {
   position: absolute;
   right: 16px;
@@ -2534,7 +2401,6 @@ onBeforeUnmount(() => {
   color: #c0c4cc;
 }
 
-/* 右侧面板 */
 .mm-right-panel {
   width: 280px;
   min-width: 260px;
@@ -2588,7 +2454,6 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-/* 底部 */
 .mm-bottom {
   flex-shrink: 0;
   margin-top: 12px;
@@ -2612,7 +2477,6 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-/* 颜色选择 */
 .color-picker-row {
   display: flex;
   align-items: center;
@@ -2646,7 +2510,6 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-/* 右键菜单 */
 .context-menu {
   position: fixed;
   z-index: 3000;
@@ -2668,7 +2531,6 @@ onBeforeUnmount(() => {
   background: #f0f2f5;
 }
 
-/* Empty */
 .node-list :deep(.el-empty__description) {
   color: rgba(255, 255, 255, 0.35);
 }
@@ -2683,7 +2545,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-/* 手机模式(≤640)：左右信息面板改为可滑出抽屉，避免遮挡中央地图显示区域 */
+/* 手机端抽屉，避免遮挡地图 */
 @media (max-width: 640px) {
   .mm-body {
     position: relative;
@@ -2717,14 +2579,12 @@ onBeforeUnmount(() => {
   .mm-canvas-wrapper {
     min-width: 0;
   }
-  /* 抽屉遮罩：点击空白关闭 */
   .mm-drawer-mask {
     position: absolute;
     inset: 0;
     z-index: 39;
     background: rgba(0, 0, 0, 0.25);
   }
-  /* 悬浮开关按钮 */
   .mm-fab {
     position: absolute;
     top: 12px;
@@ -2736,7 +2596,7 @@ onBeforeUnmount(() => {
   .mm-fab-right {
     right: 12px;
   }
-  /* 背景编辑面板与图例在窄屏避免超出视口 */
+  /* 窄屏避免超出视口 */
   .bg-edit-panel {
     width: auto;
     max-width: calc(100vw - 32px);

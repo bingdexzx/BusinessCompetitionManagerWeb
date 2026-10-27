@@ -1,9 +1,8 @@
 <script setup lang="ts">
-// 股票行情看板：市场概览 + 股票表（50/页）+ 选中股 K 线按需加载（echarts 蜡烛图）
-// 数据全部走 useStockSync（快照+增量合并），WS stock-updated 信号只做去抖增量触发，不轮询。
+// 行情看板：数据走 useStockSync 快照+增量，WS 信号只触发去抖增量，不轮询。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-// echarts 按需引入（tree-shaking）：只装蜡烛图 + MA 线 + 成交量柱，避免全量打包
+// echarts 按需注册，避免全量打包
 import * as echarts from 'echarts/core'
 import { BarChart, CandlestickChart, LineChart } from 'echarts/charts'
 import {
@@ -36,12 +35,11 @@ echarts.use([
 const props = defineProps<{ cid: string }>()
 
 const auth = useAuthStore()
-/** 推进轮次仅比赛超管 / 系统超管（与后端权限口径一致） */
+// 推进轮次仅系统超管/本比赛超管
 const canManage = computed(
   () => auth.isSuperuser || auth.currentMembership?.identity === 'COMP_SUPER_ADMIN',
 )
 
-// ---------- 同步通道（快照+增量，WS 信号去抖合并） ----------
 const {
   stocks,
   round,
@@ -55,15 +53,13 @@ const {
   stop,
 } = useStockSync(() => props.cid)
 
-/** WS 推送信号只当触发器：合并成一次去抖增量同步（防请求风暴） */
+// WS 信号只当触发器，去抖合并成一次增量同步
 useNotifications((message) => {
-  // 信号契约 §4.3：{type:'stock-updated', round, serverTime}（不带数据）
   if (message.payload?.type === 'stock-updated' || message.type === 'stock-updated') {
     scheduleSync()
   }
 })
 
-// ---------- 市场概览（轻量心跳接口） ----------
 const market = ref<StockMarketOverview | null>(null)
 
 async function loadMarket(): Promise<void> {
@@ -74,15 +70,13 @@ async function loadMarket(): Promise<void> {
   }
 }
 
-// 资源变更实时刷新：股票/公司数据被其他端写入后自动重拉概览（股票表由 useStockSync 信号驱动）
+// 股票/公司变更后重拉概览；股票表由同步信号驱动
 useResourceRefresh(['stock', 'companies'], loadMarket)
 
-// 同步响应里的轮次最新，概览轮次跟随同步实时刷新
 watch(round, (value) => {
   if (market.value && value > 0) market.value = { ...market.value, round: value }
 })
 
-// ---------- 股票表（50/页，行点击选中） ----------
 const PAGE_SIZE = 50
 const page = ref(1)
 const keyword = ref('')
@@ -95,7 +89,7 @@ const filteredStocks = computed<Stock[]>(() => {
   )
 })
 
-/** 只把当前页 50 行交给 el-table 渲染，绝不一次性渲染全量行 */
+// 只渲染当前页 50 行，不全量渲染
 const pagedStocks = computed<Stock[]>(() =>
   filteredStocks.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE),
 )
@@ -114,30 +108,26 @@ watch(
 
 const loadingStocks = computed(() => syncing.value && stocks.value.length === 0)
 
-// ---------- 选中股 + K 线（按需加载，缓存按轮次 keyset 增量） ----------
 const selectedCode = ref('')
 const selectedStock = computed<Stock | null>(
   () => stocks.value.find((s) => s.code === selectedCode.value) ?? null,
 )
 
-// ---------- 数值动效（克制：只在数值变化时轻微提示） ----------
 const { flashing: quoteFlashing, flash: flashQuote } = useFlash()
 
-/** 概览轮次：同步结果优先，回退概览接口（0 视为未知，仍显示 —） */
 const overviewRound = computed(() => round.value || market.value?.round || 0)
 const roundShown = useCountUp(overviewRound, { precision: 0 })
 const stockCount = computed(() => market.value?.stockCount ?? stocks.value.length)
 const stockCountShown = useCountUp(stockCount, { precision: 0 })
 
-/** 选中股现价：2 位小数滚动，变化时闪一下（不改变任何价格取值） */
 const selectedPrice = computed(() => num(selectedStock.value?.currentPrice))
 const selectedPriceShown = useCountUp(selectedPrice, { precision: 2 })
 watch(selectedPrice, () => flashQuote())
 
-/** K 线缓存：code -> (round -> candle)，增量合并去重 */
+// K 线缓存：code -> (round -> candle)，按轮次增量去重
 const candleCache = new Map<string, Map<number, StockCandle>>()
 const loadingCandles = ref(false)
-/** 竞态保护：只认当前正在加载的股票 */
+// 竞态保护：只认当前正在加载的股票
 let loadingCode = ''
 
 function selectStock(row: Stock): void {
@@ -146,12 +136,11 @@ function selectStock(row: Stock): void {
   void loadCandles(row.code)
 }
 
-/** 选中行高亮（el-table row-class-name） */
 function rowClassName({ row }: { row: Stock }): string {
   return row.code === selectedCode.value ? 'is-selected' : ''
 }
 
-/** Decimal 出站可能是字符串，画图/计算前统一转数字 */
+// Decimal 出站可能是字符串，统一转数字
 function num(v: number | string | null | undefined): number {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
@@ -170,7 +159,7 @@ function normalizeCandle(c: StockCandle): StockCandle | null {
   }
 }
 
-/** 按需加载 K 线：首次全量（limit 截断），之后只拉 fromRound 之后的新增轮次 */
+// 首次拉全量，之后只拉 fromRound 后的新增轮次
 async function loadCandles(code: string): Promise<void> {
   const cache = candleCache.get(code) ?? new Map<number, StockCandle>()
   candleCache.set(code, cache)
@@ -186,7 +175,7 @@ async function loadCandles(code: string): Promise<void> {
     )
     for (const item of list) {
       const candle = normalizeCandle(item)
-      if (candle) cache.set(candle.round, candle) // 按轮次幂等覆盖
+      if (candle) cache.set(candle.round, candle)
     }
     if (selectedCode.value === code) {
       await nextTick()
@@ -199,12 +188,11 @@ async function loadCandles(code: string): Promise<void> {
   }
 }
 
-/** 同步命中新增 K 线后，只补拉选中股的新增轮次（keyset 增量，不拉全量） */
+// 同步后只补拉选中股的新增轮次
 watch(lastSyncAt, () => {
   if (selectedCode.value) void loadCandles(selectedCode.value)
 })
 
-// ---------- echarts 蜡烛图（红涨绿跌 + MA5/10/20 + 成交量） ----------
 const chartRef = ref<HTMLElement | null>(null)
 type EChartsInstance = ReturnType<typeof echarts.init>
 let chart: EChartsInstance | null = null
@@ -454,7 +442,7 @@ function onResize(): void {
   chart?.resize()
 }
 
-// 取消选中（如切换比赛）时销毁图表实例，避免挂在已移除的 DOM 上
+// 取消选中时销毁图表，避免挂在已移除的 DOM 上
 watch(selectedStock, (value) => {
   if (!value && chart) {
     chart.dispose()
@@ -462,7 +450,6 @@ watch(selectedStock, (value) => {
   }
 })
 
-// ---------- 手动同步 / 推进轮次 ----------
 async function manualSync(): Promise<void> {
   try {
     await syncNow(false)
@@ -488,7 +475,7 @@ async function onAdvanceRound(): Promise<void> {
     await advanceStockRound(props.cid)
     ElMessage.success('轮次已推进')
     await loadMarket()
-    await syncNow(false) // 推进后立即增量同步校正（不拉全量）
+    await syncNow(false)
   } catch (e) {
     ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
@@ -496,12 +483,11 @@ async function onAdvanceRound(): Promise<void> {
   }
 }
 
-// ---------- 初始化 ----------
 onMounted(() => {
   start()
   window.addEventListener('resize', onResize)
   void loadMarket()
-  // 首次进入（无游标）自动快照起步；已有游标则一次增量
+  // 无游标走快照起步，有游标走增量
   void syncNow(false).catch((e) => {
     ElMessage.error(errorMessage(e, '操作失败'))
   })
@@ -530,7 +516,6 @@ watch(
 
 <template>
   <div class="stock-market-page">
-    <!-- 比赛不存在/已删除（旧页面残留） -->
     <el-alert
       v-if="missing"
       type="warning"
@@ -547,7 +532,7 @@ watch(
       </template>
     </el-alert>
 
-    <!-- 同步失败：就地提示（后台信号同步不弹 toast，避免提示风暴） -->
+    <!-- 同步失败就地提示，不弹 toast，避免提示风暴 -->
     <el-alert
       v-if="lastError && !missing"
       type="error"
@@ -557,7 +542,6 @@ watch(
       class="sync-error"
     />
 
-    <!-- 工具栏 -->
     <div class="mm-toolbar">
       <h2 class="mm-title">股票行情</h2>
       <div class="mm-actions">
@@ -578,7 +562,6 @@ watch(
       </div>
     </div>
 
-    <!-- 市场概览（轮次 / 股票数 / 更新时间 / 同步状态）：实时数值 → 指标卡 -->
     <div class="metric-grid overview-grid anim-fade-in-up">
       <div class="metric-card">
         <span class="metric-label">当前轮次</span>
@@ -602,7 +585,6 @@ watch(
       </div>
     </div>
 
-    <!-- 股票表：50/页，行点击选中后按需加载 K 线 -->
     <el-card shadow="never" class="block-card anim-fade-in-up">
       <template #header>
         <div class="card-head">
@@ -616,7 +598,6 @@ watch(
         </div>
       </template>
 
-      <!-- 首屏加载：骨架代替空表，避免「暂无数据」误判与布局跳动 -->
       <div v-if="loadingStocks" class="table-skeleton">
         <div v-for="i in 6" :key="i" class="skeleton skeleton-line" />
       </div>
@@ -654,7 +635,6 @@ watch(
         </el-table-column>
       </el-table>
 
-      <!-- 分页：每页 50 行，绝不一次性渲染全量 -->
       <div class="pager">
         <el-pagination
           v-model:current-page="page"
@@ -666,7 +646,6 @@ watch(
       </div>
     </el-card>
 
-    <!-- 选中股 K 线（按需加载） -->
     <el-card shadow="never" class="block-card chart-card anim-fade-in-up" :body-style="{ padding: '0' }">
       <template #header>
         <div class="chart-header">
@@ -718,14 +697,12 @@ watch(
   flex-wrap: wrap;
 }
 
-/* ===== 市场概览（指标卡：标签弱、数值强） ===== */
 .overview-grid {
   margin-bottom: 16px;
 }
 .sync-error {
   margin-bottom: 16px;
 }
-/* 时间/状态不是「大数字」，压低字号，保持一排指标卡的阅读节奏 */
 .ov-time {
   font-size: 15px;
   font-weight: 600;
@@ -763,7 +740,7 @@ watch(
   color: var(--color-text-primary);
 }
 
-/* 红涨绿跌（中国股票惯例）：统一走语义色 token */
+/* 红涨绿跌（中国股票惯例） */
 .up {
   color: var(--color-danger);
   font-weight: 600;
@@ -776,7 +753,6 @@ watch(
   font-weight: 600;
 }
 
-/* 首屏骨架行：高度贴近真实行，减少加载完成后的跳动 */
 .table-skeleton {
   display: flex;
   flex-direction: column;
@@ -797,7 +773,6 @@ watch(
   margin-top: 14px;
 }
 
-/* ===== K 线卡片 ===== */
 .chart-card {
   margin-top: 16px;
   overflow: hidden;
@@ -877,7 +852,6 @@ watch(
   font-size: 14px;
 }
 
-/* ===== 响应式 ===== */
 @media (max-width: 640px) {
   .stock-search {
     width: 100%;

@@ -10,7 +10,6 @@ export const MEMBER_IDENTITY_LABELS: Record<MemberIdentity, string> = {
   PLAYER: '参赛代表',
 }
 
-/** 生命周期状态链 */
 export const COMPETITION_STATUS_CHAIN = [
   'CREATED',
   'PACKAGE_IMPORTED',
@@ -20,14 +19,11 @@ export const COMPETITION_STATUS_CHAIN = [
   'CLOSED',
 ] as const
 
-/** 统一错误响应：{ code, message, details } */
 export interface ApiErrorBody {
   code: number
   message: string
   details: unknown
 }
-
-// ---------- 认证 / 账号 ----------
 
 export interface Membership {
   id: number
@@ -85,8 +81,6 @@ export interface MyDevice {
   firstLoginAt: string
   lastLoginAt: string
 }
-
-// ---------- 学校 / 比赛 ----------
 
 export interface School {
   id: number
@@ -149,8 +143,6 @@ export interface UpdateMemberPayload {
   isActive?: boolean
 }
 
-// ---------- 组队 / 激活码 ----------
-
 export interface TeamMemberInfo {
   userId: number
   username: string
@@ -168,7 +160,6 @@ export interface Team {
   industryAdjustAccepted: string[]
   industryFinal: string
   companyId: number | null
-  /** 已分配公司名称（未分配时为空串） */
   companyName?: string
   members: TeamMemberInfo[]
   createdAt: string
@@ -215,8 +206,6 @@ export interface InviteRedeemResult {
   identityLabel: string
 }
 
-// ---------- 比赛包 / 合同类型 / 插件 ----------
-
 export interface ImportReport {
   status: string
   startedAt: string
@@ -227,7 +216,7 @@ export interface ImportReport {
   fieldMigrations: Array<{ industryKey: string; added: number; updated: number; total: number }>
   basedataRows: Record<string, number>
   contractsCreated: number
-  /** 重导入去重：已存在（同类型+名称+参与方+输入）而跳过的合同数 */
+  /** 重导入去重：同类型 + 名称 + 参与方 + 输入 已存在则跳过 */
   contractsSkipped?: number
   errors: string[]
   warnings: string[]
@@ -254,7 +243,6 @@ export interface ContractType {
   errors?: string[]
 }
 
-/** 本比赛已导入的产业插件选项（GET /competitions/{cid}/industries） */
 export interface IndustryOption {
   key: string
   name: string
@@ -277,8 +265,6 @@ export interface PluginRecord {
   auditTrail: Array<{ event: string; actor: string; detail: Record<string, unknown> }>
   createdAt: string
 }
-
-// ---------- 合同 ----------
 
 export type ContractStatus =
   | 'BACKFILL_REVIEW'
@@ -331,11 +317,10 @@ export interface Contract {
   createdBy: number
   createdAt: string
   timeline?: TimelineNode[]
-  /** 检查记录（§7.3 四检查点落库；修改后按轮次回放当时的检查内容） */
+  /** §7.3 四检查点落库；修改后按轮次回放当时的检查内容 */
   checks?: ContractCheck[]
 }
 
-/** 检查记录条目（roundStatus：ACTIVE=当前生效轮次；HISTORY=历史轮次） */
 export interface ContractCheck {
   id: number
   roundNo: number
@@ -346,9 +331,7 @@ export interface ContractCheck {
   checkedBy: string
   checkedAt: string
   roundStatus: 'ACTIVE' | 'HISTORY'
-  /** 检查依据快照（当时的字段值）：{"buyer": {"cash": 1000}} */
   basis?: Record<string, Record<string, unknown>>
-  /** 依据重演值（账本链重算，上游合同修改后自动同步）：{"buyer": {"cash": 900}} */
   replayBasis?: Record<string, Record<string, unknown>>
 }
 
@@ -362,15 +345,14 @@ export interface ContractEffect {
   after: unknown
   roundNo: number
   createdAt: string
-  /** ACTIVE=当前生效轮次；ROLLED_BACK=已回滚（合同修改后旧轮效果成为审计历史） */
+  /** ACTIVE=当前生效轮次；ROLLED_BACK=已回滚（旧轮效果转为审计历史） */
   roundStatus: 'ACTIVE' | 'ROLLED_BACK'
   isCurrent: boolean
-  /** 重演值（按当前内容重算的链条值；与当时值不一致说明上游被修改过） */
   replayBefore?: unknown
   replayAfter?: unknown
 }
 
-/** 资金账本链节点（当时值=审计；重演值=按当前内容重算，自动同步） */
+/** 当时值=审计；重演值=按当前内容重算（上游合同修改后自动同步） */
 export interface LedgerNode {
   effectId: number
   contractId: number
@@ -407,7 +389,7 @@ export interface ContractListPage {
 
 export interface ContractSyncPage {
   items: Contract[]
-  /** 服务端时间（下次增量游标，避免客户端时钟偏差） */
+  /** 下次增量游标（服务端时间，避免客户端时钟偏差） */
   serverTime: string
   hasMore: boolean
   mode: 'delta'
@@ -422,8 +404,6 @@ export interface CreateContractPayload {
   isBackfill?: boolean
   fiscalYearId?: number
 }
-
-// ---------- 公司 / 字段 ----------
 
 export interface Company {
   id: number
@@ -449,8 +429,6 @@ export interface CompanyTable {
   fields: CompanyField[]
 }
 
-// ---------- 财年 ----------
-
 export interface FiscalYear {
   id: number
   year: number
@@ -469,9 +447,6 @@ export interface FiscalYearBackup {
   createdAt: string
 }
 
-// ---------- 结算 / 获奖 / 奖牌 ----------
-// 2026-10 需求变更：结算只算分与名次；奖项由超管人工定义（个人奖 / 集体奖）并人工发放。
-
 export interface ScoringCriterion {
   id: number
   name: string
@@ -482,10 +457,9 @@ export interface ScoringCriterion {
   enabled: boolean
 }
 
-/** 奖项类型：个人奖（发放给 1 人）/ 集体奖（发放给所选公司队伍全员） */
+/** 个人奖=1 人；集体奖=所选公司队伍全员 */
 export type AwardKind = 'INDIVIDUAL' | 'COLLECTIVE'
 
-/** 奖项定义（人工维护；medalLevel 可选，关联电子奖牌样式） */
 export interface AwardDefinition {
   id: number
   name: string
@@ -500,7 +474,6 @@ export interface ScoringConfig {
   awards: AwardDefinition[]
 }
 
-/** 结算结果条目：只有得分与名次（获奖等级改为人工发放，不再自动评级） */
 export interface SettlementEntry {
   companyId: number
   companyName: string
@@ -514,7 +487,7 @@ export interface SettlementResult {
   entries: SettlementEntry[]
 }
 
-/** 结算配置新增请求体（kind 为配置项判别符，awardKind 才是奖项类型） */
+/** kind 为配置项判别符；awardKind 才是奖项类型 */
 export type SettlementConfigPayload =
   | {
       kind: 'criterion'
@@ -532,7 +505,6 @@ export type SettlementConfigPayload =
       medalLevel?: string
     }
 
-/** 个人奖候选人（本比赛全部成员，可按关键字搜索） */
 export interface AwardCandidate {
   userId: number
   username: string
@@ -541,7 +513,6 @@ export interface AwardCandidate {
   companyName: string
 }
 
-/** 奖项发放记录（个人奖 = 1 人；集体奖 = 所选公司队伍全员） */
 export interface AwardGrant {
   id: number
   awardId: number
@@ -559,7 +530,6 @@ export interface AwardGrant {
   grantedAt: string
 }
 
-/** 发放请求体：个人奖给 userId；集体奖给 companyId 与可选备注 */
 export type AwardGrantPayload =
   | { awardId: number; userId: number }
   | { awardId: number; companyId: number; note?: string }
@@ -578,7 +548,7 @@ export interface AwardInfo {
   awardLevel: string
 }
 
-/** 个人档案获奖记录（人工发放写入；集体奖对每个受益成员各记一条） */
+/** 集体奖对每个受益成员各记一条 */
 export interface AwardRecord {
   id: number
   competitionId: number
@@ -602,8 +572,6 @@ export interface MedalAsset {
   displayAsset: string
   meta: Record<string, unknown>
 }
-
-// ---------- 日志 / 消息 / 审计 ----------
 
 export interface NetworkLogItem {
   id: number
@@ -695,8 +663,6 @@ export interface FieldLogQuery {
   offset?: number
 }
 
-// ---------- 站内信（系统级，独立于比赛） ----------
-
 export type InmailKind = 'PERSONAL' | 'ANNOUNCE' | 'SYSTEM'
 
 export interface InmailMessage {
@@ -743,9 +709,7 @@ export interface AuditLogItem {
   occurredAt: string
 }
 
-// ---------- 股票（行情 / 交易 / 增量同步，契约 docs/股票模块与同步优化.md §2/§4） ----------
-
-/** 股票（列表/增量只带薄字段；单股详情含指标全字段）。Decimal 出站可能是数字字符串，数值运算前用 Number() 归一 */
+/** 列表/增量只带薄字段；Decimal 出站可能是数字字符串，运算前用 Number() 归一 */
 export interface Stock {
   id: number
   code: string
@@ -753,12 +717,9 @@ export interface Stock {
   currentPrice: number
   initPrice: number
   round: number
-  /** 涨跌幅（%） */
   changePct: number
-  /** 涨跌额（薄字段可选） */
   changePrice?: number
   updatedAt: string
-  // ---- 单股详情（GET /stock/stocks/{code}）指标全字段 ----
   totalShares?: number
   initNetProfit?: number
   industryPE?: number
@@ -767,7 +728,6 @@ export interface Stock {
   happiness?: number
 }
 
-/** K 线（每轮每股票一根，unique(stock, round)） */
 export interface StockCandle {
   id?: number
   stockCode: string
@@ -784,12 +744,11 @@ export interface StockCandle {
 export type StockOrderSide = 'BUY' | 'SELL'
 export type StockOrderStatus = 'PENDING' | 'FILLED' | 'CANCELLED'
 
-/** 委托（订单） */
 export interface StockOrder {
   id: number
   stockId: number
   stockCode: string
-  /** 股票名称（后端薄序列化可能不含，视图用代码兜底） */
+  /** 后端薄序列化可能不含名称，视图用代码兜底 */
   stockName?: string
   fundsAccountId: number
   side: StockOrderSide
@@ -802,23 +761,19 @@ export interface StockOrder {
   updatedAt: string
 }
 
-/** 持仓 */
 export interface StockHolding {
   id: number
   fundsAccountId: number
   stockId: number
   stockCode: string
   stockName: string
-  /** 现价（后端序列化时可能带上） */
   currentPrice?: number | null
   shares: number
   costPrice: number
-  /** 市值（后端序列化时可能带上） */
   marketValue?: number | null
   updatedAt: string
 }
 
-/** 资金账户 */
 export interface StockFundsAccount {
   id: number
   name: string
@@ -827,25 +782,23 @@ export interface StockFundsAccount {
   userId: number | null
   cashBalance: number
   bindFieldId: number | null
-  /** 绑定产业字段时的实时现金（展示优先级高于 cashBalance） */
+  /** 绑定产业字段时的实时现金（优先于 cashBalance） */
   fieldBalance?: number | null
   updatedAt: string
 }
 
-/** 市场概览（轻量心跳） */
 export interface StockMarketOverview {
   round: number
   stockCount: number
   updatedAt: string
 }
 
-/** 我的持仓 + 资金账户（owner 匹配 user 或所辖公司） */
+/** owner 匹配 user 或所辖公司 */
 export interface StockBook {
   accounts: StockFundsAccount[]
   holdings: StockHolding[]
 }
 
-/** 下单载荷 */
 export interface PlaceStockOrderPayload {
   code: string
   side: StockOrderSide
@@ -853,28 +806,24 @@ export interface PlaceStockOrderPayload {
   quantity: number | string
 }
 
-/** 股票分页列表（?page&pageSize） */
 export interface StockPage {
   total: number
   items: Stock[]
 }
 
-/** 我的委托分页（?status&page&pageSize） */
 export interface StockOrderPage {
   total: number
   items: StockOrder[]
 }
 
-/** 推进轮次结果（撮合+定价+K线，单事务；具体诊断字段由引擎返回） */
 export interface StockRoundAdvanceResult {
   round?: number
   [key: string]: unknown
 }
 
-/** 股票同步响应：since 为空 = snapshot（快照起步），带 since = delta（增量游标合并） */
+/** since 空 = snapshot（快照起步）；带 since = delta（游标合并） */
 export interface StockSyncPage {
   mode: 'snapshot' | 'delta'
-  /** 下次游标（服务端时间，规避客户端时钟偏差） */
   serverTime: string
   round: number
   hasMore: boolean
@@ -885,31 +834,25 @@ export interface StockSyncPage {
   accounts: StockFundsAccount[]
 }
 
-// ---------- 股票管理（超管 CRUD：股票 / 资金账户） ----------
-
-/** 股票管理端全字段（POST/PATCH 入参与写回同名 camelCase；GET 详情的行业 PE 用 industryPE 口径） */
+/** POST/PATCH 与写回同名 camelCase；行业 PE 管理端为 industryPe、详情为 industryPE */
 export interface StockAdmin {
   id?: number
   code: string
   name: string
   totalShares?: number | string | null
   initNetProfit?: number | string | null
-  /** 管理端写回的行业 PE */
   industryPe?: number | string | null
-  /** 单股详情（GET /stock/stocks/{code}）的行业 PE */
   industryPE?: number | string | null
   currentCarbon?: number | null
   industryAvgCarbon?: number | null
   happiness?: number | null
   initPrice?: number | string | null
-  /** 缺省 = initPrice */
   currentPrice?: number | string | null
   round?: number
   companyId?: number | null
-  /** PE 关联公司（与 pbFieldId 同填为联动模式，均空为随机模式） */
+  /** 与 pbFieldId 同填为联动模式，均空为随机模式 */
   pbCompanyId?: number | null
   pbFieldId?: number | null
-  /** 随机 PE（0-20） */
   pbRandom?: number | null
   carbonFieldRef?: string | null
   happinessFieldRef?: string | null
@@ -918,7 +861,6 @@ export interface StockAdmin {
 
 export type StockAccountOwnerType = 'USER' | 'COMPANY'
 
-/** 资金账户（管理端） */
 export interface StockAccount {
   id?: number
   name: string
@@ -929,9 +871,6 @@ export interface StockAccount {
   bindFieldId?: number | null
 }
 
-// ---------- 基础数据管理（数据管理页，契约 §6.1；effect/inputs 等 JSON 列后台维护） ----------
-
-/** 基础数据表：10 类比赛级基础数据 */
 export type BasedataTable =
   | 'fuels'
   | 'warehouses'
@@ -944,7 +883,6 @@ export type BasedataTable =
   | 'tech_trees'
   | 'production_lines'
 
-/** 基础数据行：id + 各表可选字段（camelCase），其余列以索引签名兜底 */
 export interface BasedataRow {
   id: number
   code?: string
@@ -974,7 +912,6 @@ export interface BasedataRow {
   [key: string]: unknown
 }
 
-/** 基础数据分页（?q&page&pageSize） */
 export interface BasedataPage {
   items: BasedataRow[]
   total: number

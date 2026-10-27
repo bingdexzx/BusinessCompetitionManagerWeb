@@ -1,12 +1,6 @@
-"""结算服务（§11；2026-10 需求变更）。
-
-- **结算 = 只算分**：按各公司每财年财务报表字段 + 评分准则（聚合/方向/权重）
-  min-max 归一求总分 → 名次（并列同名次、跳号）。**不再自动评奖、不再自动写档案**。
-- **奖项人工发放**：
-  - 个人奖 → 指定一个人，其个人档案记一条获奖记录；
-  - 集体奖 → 指定一家公司，该公司**对应队伍的全员**各记一条获奖记录；
-  - 发放落库为 ``AwardGrant``（比赛库），并按 ``grant_id`` 写入全局库 ``AwardRecord``，
-    因此撤销可按发放记录精确回收（不影响其他奖项）。
+"""结算服务（§11；2026-10 需求变更）：结算只算分——各公司每财年财务报表字段 + 评分准则
+（聚合/方向/权重）min-max 归一求总分 → 名次（并列同名次、跳号），不再自动评奖/写档案；奖项改人工
+发放（个人奖记一人、集体奖记队伍全员），落 AwardGrant + 按 grant_id 写全局 AwardRecord 以便精确回收。
 """
 
 from django.db.models import Q
@@ -24,9 +18,6 @@ CANDIDATE_LIMIT = 300
 
 class AwardError(Exception):
     """奖项发放/撤销的业务错误（视图映射为 400）。"""
-
-
-# ================================================================ 结算（只算分）
 
 
 def _company_metric(company: Company, field_key: str, aggregation: str):
@@ -61,13 +52,12 @@ def run_settlement(*, competition, user=None) -> SettlementRun:
     criteria = [c for c in ScoringCriterion.objects.all() if c.enabled]
     companies = list(Company.objects.filter(status=Company.Status.ACTIVE))
 
-    raw = {}   # companyId -> {criterionId: value}
+    raw = {}
     for company in companies:
         raw[company.id] = {
             c.id: _company_metric(company, c.field_key, c.aggregation) for c in criteria
         }
 
-    # min-max 归一 → 加权总分
     scored = []
     for company in companies:
         total, detail = 0.0, {}
@@ -118,14 +108,9 @@ def run_settlement(*, competition, user=None) -> SettlementRun:
     return run
 
 
-# ================================================================ 奖项发放
-
-
 def company_recipient_ids(company: Company | None) -> list:
-    """公司对应队伍的**全员**用户 ID（集体奖受益范围）。
-
-    公司由队伍映射而来（``Company.team_id``）：取该队伍全部成员。
-    无队伍映射/队伍无成员时返回空列表（发放会被拒绝，避免"发了但没人"）。
+    """公司对应队伍的全员用户 ID（集体奖受益范围）：取 Company.team_id 全部成员。
+    无队伍映射/无成员时返回空列表（发放会被拒绝，避免「发了但没人」）。
     """
     if company is None or not company.team_id:
         return []
@@ -180,7 +165,6 @@ def list_candidates(competition_id: int, keyword: str = '') -> list:
 
 
 def _medal_for(award: AwardDefinition):
-    """奖项配置了奖牌等级时，取/建对应电子奖牌；未配置返回 None。"""
     if not award.medal_level:
         return None
     from apps.global_.profiles.models import MedalAsset
@@ -196,7 +180,6 @@ def _medal_for(award: AwardDefinition):
 
 
 def _write_profile_records(*, grant, award, competition, medal, recipients) -> int:
-    """把一次发放写入各受益人的个人档案；返回写入条数。"""
     from apps.global_.profiles.models import AwardRecord
 
     written = 0
@@ -218,7 +201,6 @@ def _write_profile_records(*, grant, award, competition, medal, recipients) -> i
 
 def grant_award(*, competition, award: AwardDefinition, granted_by=None,
                 target_user=None, company: Company | None = None, note: str = '') -> AwardGrant:
-    """发放一次奖项（个人奖给一个人；集体奖给一家公司的队伍全员）。"""
     from django.contrib.auth import get_user_model
 
     note = (note or '').strip()
@@ -260,7 +242,6 @@ def grant_award(*, competition, award: AwardDefinition, granted_by=None,
 
 
 def _delete_profile_records(competition_id: int, grant_ids: list) -> int:
-    """按发放记录回收个人档案里的获奖记录；返回删除条数。"""
     from apps.global_.profiles.models import AwardRecord
 
     if not grant_ids:
@@ -285,9 +266,6 @@ def revoke_award_definition(*, award: AwardDefinition, competition_id: int) -> i
     return removed
 
 
-# ================================================================ 电子奖牌样式
-
-
 _MEDAL_COLORS = {
     '一等奖': ('#f6c445', '#d99e2b'),
     '二等奖': ('#cfd6e4', '#9aa7bd'),
@@ -296,7 +274,6 @@ _MEDAL_COLORS = {
 
 
 def _default_medal_svg(award_level: str) -> str:
-    """默认电子奖牌样式（仅在线展示）。"""
     fill, stroke = _MEDAL_COLORS.get(award_level, ('#8ecae6', '#219ebc'))
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">'

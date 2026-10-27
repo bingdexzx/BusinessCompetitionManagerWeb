@@ -1,27 +1,10 @@
-"""股票 API（契约 §4：行情与交易 + 快照/增量同步协议）。
+"""股票 API（契约 §4：行情与交易 + 快照/增量同步协议）。路由见 urls.py；
+错误响应统一 ``{'code', 'message', 'details'}``。
 
-路由（挂在 /api/ 前缀，见 urls.py）：
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | /stock/stocks | 股票列表（薄字段，?page&pageSize 分页） |
-| GET | /stock/stocks/{code} | 单股详情（含指标全字段） |
-| GET | /stock/stocks/{code}/candles | K 线（?fromRound&limit keyset 分页） |
-| GET | /stock/book | 我的持仓 + 资金账户 |
-| POST | /stock/orders | 下单 {code, side, price, quantity}（校验现金/持仓） |
-| DELETE | /stock/orders/{id} | 撤单（仅 PENDING 且本人） |
-| GET | /stock/orders | 我的委托（?status，分页） |
-| POST | /stock/round/advance | 推进轮次（超管） |
-| GET | /stock/market | 市场概览（轻量心跳） |
-| GET | /stock/sync | 快照+增量同步（§4.2） |
-
-权限（契约 §4 / 任务口径；2026-10 决策：队员只读、操作仅队长）：
-- 查看行情（含 sync/book/orders/holdings 读）= 任何比赛成员；本公司数据队长与队员都能看；
-- 下单/撤单 = **可操作**本公司者（COMPANY 账户 can_act_for_company —— 分配公司后仅队长；
-  USER 账户=本人）；
+权限（契约 §4；2026-10 决策：队员只读、操作仅队长）：
+- 读行情/持仓/委托/资金 = 任何比赛成员（本公司数据队长与队员都能看）；
+- 下单/撤单 = 可操作本公司者（COMPANY 账户 can_act_for_company，分配公司后仅队长；USER=本人）；
 - advance = 超管（apps.common.authority.can_manage_competition）。
-
-错误响应统一 ``{'code', 'message', 'details'}``（参考 contracts/views._error）。
 """
 
 from decimal import Decimal, InvalidOperation
@@ -34,8 +17,7 @@ from rest_framework.views import APIView
 from apps.common.authority import (
     can_act_for_company,
     can_manage_competition,
-    user_company_ids,
-    user_membership,
+    can_read_competition,
     user_operable_company_ids,
 )
 from apps.competition.audit import services as audit_services
@@ -73,19 +55,8 @@ def _error(message, code=400, details=''):
     return Response({'code': code, 'message': message, 'details': details}, status=code)
 
 
-# ---------------------------------------------------------------- 权限
-
-
-def _require_member(user, cid):
-    """查看行情权限：任何比赛成员（§4 任务口径）；系统超管恒通过。"""
-    if user is not None and user.is_authenticated:
-        if user.is_superuser:
-            return True
-        if user_membership(user, cid) is not None:
-            return True
-        if user_company_ids(user, cid):
-            return True
-    return False
+# 读权限统一走 apps.common.authority.can_read_competition（原四处复制的同名判断）
+_require_member = can_read_competition
 
 
 def _pagination(request, default_size=50, max_size=500):
@@ -121,12 +92,8 @@ def _parse_decimal(raw, field, *, min_value=None):
     return value
 
 
-# ---------------------------------------------------------------- 行情
-
-
 class StockListView(APIView):
-    """GET /stock/stocks —— 股票列表（薄字段：code/name/currentPrice/initPrice/
-    round/updatedAt/涨跌幅，§4.1）；``?page&pageSize`` 分页。"""
+    """GET /stock/stocks —— 股票列表（薄字段，``?page&pageSize`` 分页，§4.1）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -162,8 +129,7 @@ class StockListView(APIView):
 
 
 class StockDetailView(APIView):
-    """GET /stock/stocks/{code} —— 单股详情（含指标全字段，§4.1）；
-    PATCH/DELETE —— 股票维护（超管；有挂单/持仓拒绝删除，旧系统语义）。"""
+    """GET /stock/stocks/{code} —— 详情（含指标全字段）；PATCH/DELETE —— 维护（超管）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -211,9 +177,7 @@ class StockDetailView(APIView):
 
 
 class StockCandlesView(APIView):
-    """GET /stock/stocks/{code}/candles —— K 线（``?fromRound&limit`` keyset 分页，
-    按需加载，§4.1）。keyset 语义：只取 round > fromRound 的升序前 limit 条，
-    不用 OFFSET（§1 大表查询）。"""
+    """GET K 线（``?fromRound&limit`` keyset 分页）：只取 round > fromRound 的升序前 limit 条，不用 OFFSET（§1）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -262,9 +226,6 @@ class MarketView(APIView):
         })
 
 
-# ---------------------------------------------------------------- 我的账户与持仓
-
-
 def _visible_accounts_q(user, cid):
     owner_q, _ = owner_account_q(user, cid)
     return owner_q
@@ -304,16 +265,9 @@ class BookView(APIView):
         return Response({'accounts': account_data, 'holdings': holding_data})
 
 
-# ---------------------------------------------------------------- 委托
-
-
 def _resolve_order_account(user, cid, stock, explicit_id):
-    """解析下单资金账户（契约 §4.1 下单体只有 {code, side, price, quantity}）。
-
-    1. 显式 fundsAccountId → 直接用（仍校验归属）；
-    2. 否则优先股票所属公司的 COMPANY 账户（can_act_for_company「可操作」时 ——
-       分配公司后仅队长可操作，队员下单会落到自己的 USER 账户）；
-    3. 否则本人 USER 账户。
+    """解析下单资金账户（§4.1 下单体只有 {code, side, price, quantity}）：显式 fundsAccountId
+    （仍校验归属）→ 公司的 COMPANY 账户（仅 can_act_for_company，队员落到自己的 USER 账户）→ 本人 USER。
     """
     if explicit_id is not None:
         account = StockFundsAccount.objects.filter(pk=explicit_id).first()
@@ -339,8 +293,7 @@ def _resolve_order_account(user, cid, stock, explicit_id):
 
 
 class OrderListCreateView(APIView):
-    """GET /stock/orders —— 我的委托（?status，分页，§4.1）；
-    POST /stock/orders —— 下单 {code, side, price, quantity}（校验现金/持仓）。"""
+    """GET /stock/orders —— 我的委托（?status 分页）；POST —— 下单（校验现金/持仓）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -405,12 +358,8 @@ class OrderListCreateView(APIView):
 
 
 def _create_order(user, cid, stock, account, side, price, quantity):
-    """下单事务（旧 OrderCollectionView.post 语义）：
-
-    - 委托价限制：不得超过当前价 ±10%（Decimal 域）；
-    - select_for_update 锁账户行防并发超买超卖；
-    - 已挂未成交占用：买占用现金、卖占用持仓（同一账户多笔挂单合计校验）；
-    - 单事务创建 PENDING 委托（契约 §1 并发写：撮合/落账单事务 + 行锁）。
+    """下单事务（旧 OrderCollectionView.post 语义）：价格限 ±10%，锁账户行防超买超卖，
+    未成交挂单合计占用（买占现金、卖占持仓）。
     """
     from .engine import comp_atomic
 
@@ -479,14 +428,13 @@ class OrderItemView(APIView):
         from .engine import comp_atomic
 
         with comp_atomic():
-            # P0-#1: select_for_update 锁定订单行，防止撤单与撮合引擎并发竞态
+            # select_for_update 锁订单行，防止撤单与撮合引擎并发竞态
             order = StockOrder.objects.select_for_update().filter(pk=pk).first()
             if order is None:
                 return _error('订单不存在', 404)
             account = StockFundsAccount.objects.filter(pk=order.funds_account_id).first()
             if account is None:
                 return _error('资金账户不存在', 404)
-            # 撤单 = 操作：同上，COMPANY 账户要求「可操作」本公司
             if not account_owned_by_user(
                 account, request.user, user_operable_company_ids(request.user, cid),
             ):
@@ -501,14 +449,9 @@ class OrderItemView(APIView):
         return Response({'id': order.id, 'status': order.status})
 
 
-# ---------------------------------------------------------------- 推进轮次（§4.1）
-
-
 class AdvanceRoundView(APIView):
-    """POST /stock/round/advance —— 推进轮次（超管，can_manage_competition，§4.1）。
-
-    撮合 + 定价 + K 线 + 做市商报价，单事务（engine.advance_round，§3）；
-    成功后由 engine 广播 stock-updated 推送信号（§4.3）。
+    """POST /stock/round/advance —— 推进轮次（超管）：单事务撮合+定价+K线+做市商（§3），
+    成功后由 engine 广播 stock-updated 信号（§4.3）。
     """
 
     permission_classes = [IsAuthenticated]
@@ -537,19 +480,11 @@ class AdvanceRoundView(APIView):
         return Response(result)
 
 
-# ---------------------------------------------------------------- 同步协议（§4.2）
-
-
 class SyncView(APIView):
     """GET /stock/sync —— 快照 + 增量同步（契约 §4.2，核心性能项）。
 
-    - ``?since=<ISO时间|空>&limit=<默认500>``：since 空 → snapshot（全量薄字段，
-      仍分页 limit）；带 since → delta（各集合 updated_at > since，
-      ORDER BY updated_at, id keyset，limit 截断置 hasMore）；
-    - 响应：{mode, serverTime, round, hasMore, stocks, candles, orders, holdings, accounts}；
-      游标永远用上一响应的 serverTime（规避客户端时钟偏差）；
-    - 可见性裁剪：orders/holdings/accounts 只返回我的（user 或所辖公司）；
-      stocks/candles 全员可见。
+    since 空 → snapshot（全量薄字段，仍按 limit 分页）；带 since → delta（keyset，limit 截断置 hasMore）。
+    游标永远用上一响应的 serverTime（规避客户端时钟偏差）；orders/holdings/accounts 只返回我的。
     """
 
     permission_classes = [IsAuthenticated]
@@ -566,8 +501,7 @@ class SyncView(APIView):
         return Response(payload)
 
 
-# ================================================================ 管理端（新增·编辑·删除）
-# 旧系统「新增股票 / 新增资金账户」能力移植：行情/交易页只读，维护入口在这里（超管）。
+# 管理端（超管）：旧系统「新增股票 / 新增资金账户」能力移植——行情/交易页只读。
 
 
 _STOCK_DECIMAL_FIELDS = {

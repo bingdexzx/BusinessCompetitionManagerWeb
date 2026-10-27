@@ -3,10 +3,8 @@
     class="app-layout"
     :class="{ 'app-layout--drawer': isCompact, 'app-layout--nav-open': mobileNavOpen }"
   >
-    <!-- 顶部品牌渐变细条（旧产品同款视觉） -->
     <div class="app-accent"></div>
     <Sidebar :drawer="isCompact" :open="mobileNavOpen" />
-    <!-- 抽屉模式下的遮罩：点击关闭侧栏；仅在平板/手机且抽屉打开时出现 -->
     <div
       v-show="isCompact && mobileNavOpen"
       class="sidebar-backdrop"
@@ -16,7 +14,6 @@
       <TopBar :show-menu-toggle="isCompact" @toggle="mobileNavOpen = !mobileNavOpen" />
       <div ref="contentRef" class="app-content">
         <div class="route-wrap">
-          <!-- 其他视图的页面内容统一渲染在此处 -->
           <slot />
         </div>
       </div>
@@ -39,7 +36,6 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const auth = useAuthStore()
 
-// 平板/手机下侧栏为抽屉模式，默认收起；由顶栏汉堡按钮或路由切换控制开关。
 const mobileNavOpen = ref(false)
 
 // 响应式断点（≤1024px 抽屉模式），与 variables.scss 的断点保持一致
@@ -60,7 +56,6 @@ onBeforeUnmount(() => {
   mql?.removeEventListener('change', onMediaChange)
 })
 
-// 切换路由（含点击菜单项）后自动收起抽屉，避免遮挡新页面
 watch(
   () => route.fullPath,
   () => {
@@ -68,9 +63,7 @@ watch(
   },
 )
 
-// 切换页面后滚动回顶部：内容滚动容器是 .app-content（不是 window），
-// 否则从长列表进入下一页会停在半空，像是「信息断了一截」。
-// 用瞬时归零（不做平滑滚动）：跨页长距离动画会让人失去位置感。
+// 切换页面后滚动回顶部：内容滚动容器是 .app-content（不是 window）；用瞬时归零，跨页长距离平滑滚动会失去位置感
 const contentRef = ref<HTMLElement | null>(null)
 watch(
   () => route.path,
@@ -80,7 +73,6 @@ watch(
     if (el) el.scrollTop = 0
   },
 )
-// 放大回桌面尺寸时强制收起，恢复固定侧栏布局
 watch(isCompact, (compact) => {
   if (!compact) mobileNavOpen.value = false
 })
@@ -88,13 +80,11 @@ watch(isCompact, (compact) => {
 // 系统级资源变更订阅（全局库）：登录后常驻，任何页面都能收到全局广播
 subscribeGlobal()
 
-// 进入 /competitions/:cid/... 页面时同步当前比赛上下文（API 请求头 X-Competition-Id 依赖它），
-// 并**集中订阅该比赛的资源变更广播**——这样每个比赛页面都无需各自订阅即可实时同步。
+// 进入比赛页时同步比赛上下文（X-Competition-Id 依赖它），并集中订阅该比赛广播，各比赛页面无需自行订阅
 let subscribedCid = ''
 watch(
   () => route.params.cid,
   (cid) => {
-    // 只接受纯数字 id：拦截 undefined/null/非法值污染上下文（曾致 /competitions/undefined 请求）
     if (typeof cid !== 'string' || !/^\d+$/.test(cid)) return
     auth.selectCompetition(cid)
     if (subscribedCid && subscribedCid !== cid) unsubscribeCompetition(subscribedCid)
@@ -134,7 +124,6 @@ onBeforeUnmount(() => {
   background: var(--color-bg);
   position: relative;
 }
-/* 抽屉遮罩：覆盖主区与顶栏，置于抽屉之下、内容之上。仅抽屉模式启用过渡。 */
 .sidebar-backdrop {
   position: fixed;
   inset: 0;
@@ -148,11 +137,9 @@ onBeforeUnmount(() => {
 .app-layout--nav-open .sidebar-backdrop {
   opacity: 1;
 }
-/* 抽屉模式下，打开时锁定 body 滚动（与抽屉滑入同步） */
 .app-layout--drawer.app-layout--nav-open {
   overflow: hidden;
 }
-/* 主区角落的品牌光晕（旧产品同款氛围装饰） */
 .app-main::before {
   content: "";
   position: absolute;

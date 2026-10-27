@@ -271,7 +271,8 @@ const formRules: FormRules = {
       required: true,
       validator: (_rule: any, _value: any, callback: any) => {
         const has = form.productParts.some((pp) => pp.partId && pp.ratio > 0);
-        has ? callback() : callback(new Error("请至少添加一项零件配比（选择零件且比率>0）"));
+        if (has) callback();
+        else callback(new Error("请至少添加一项零件配比（选择零件且比率>0）"));
       },
       trigger: "change",
     },

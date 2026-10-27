@@ -4,21 +4,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authority import can_manage_competition, user_company_ids, user_membership
+from apps.common.authority import can_manage_competition, can_read_competition
 from apps.competition.fiscal import services as fiscal_services
 from apps.competition.fiscal.models import FiscalYear, FiscalYearBackup
 
 
 def _require_member(user, cid) -> bool:
-    """读权限：本比赛成员（系统超管恒通过；对齐 basedata.views._require_member）。"""
-    if user is not None and user.is_authenticated:
-        if user.is_superuser:
-            return True
-        if user_membership(user, cid) is not None:
-            return True
-        if user_company_ids(user, cid):
-            return True
-    return False
+    """读权限：本比赛成员（系统超管恒通过）——实现在 apps.common.authority。"""
+    return can_read_competition(user, cid)
 
 
 class FiscalYearListView(APIView):

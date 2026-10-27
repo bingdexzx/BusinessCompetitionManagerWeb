@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// 比赛详情页：基本信息 / 生命周期推进 / 比赛包导入 / 成员管理 / 激活码 / 快捷入口
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -31,8 +30,7 @@ const competition = ref<Competition | null>(null)
 const loading = ref(false)
 const activeTab = ref('package')
 
-// ---------- 权限 ----------
-/** 系统超管或本比赛超管：可编辑信息 / 推进生命周期 / 激活码 */
+// 可编辑信息/推进生命周期/激活码：系统超管或本比赛超管
 const canManage = computed(() => {
   if (auth.isSuperuser) return true
   return auth.memberships.some(
@@ -41,7 +39,6 @@ const canManage = computed(() => {
 })
 const isSystemAdmin = computed(() => auth.isSuperuser)
 
-// ---------- 生命周期 ----------
 const STATUS_LABELS: Record<string, string> = {
   CREATED: '已创建',
   PACKAGE_IMPORTED: '比赛包已导入',
@@ -54,7 +51,6 @@ const statusChain = COMPETITION_STATUS_CHAIN
 const statusIndex = computed(() =>
   (statusChain as readonly string[]).indexOf(competition.value?.status ?? ''),
 )
-/** 当前处于状态链的第几步（从 1 开始，用于卡片头部的进度说明） */
 const statusStep = computed(() => {
   const index = statusIndex.value
   if (index < 0) return 1
@@ -63,7 +59,6 @@ const statusStep = computed(() => {
 function statusText(status: string): string {
   return STATUS_LABELS[status] ?? status
 }
-/** 状态标签配色 */
 function statusTagType(status: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
   switch (status) {
     case 'ENROLLING':
@@ -79,7 +74,6 @@ function statusTagType(status: string): 'primary' | 'success' | 'warning' | 'inf
   }
 }
 
-/** 各状态下一步的推进动作 */
 interface NextAction {
   target: string
   label: string
@@ -130,7 +124,6 @@ async function doTransition(action: NextAction): Promise<void> {
   }
 }
 
-// ---------- 编辑比赛信息 ----------
 const showEdit = ref(false)
 const editing = ref(false)
 const editRef = ref<FormInstance>()
@@ -160,7 +153,6 @@ async function openEdit(): Promise<void> {
     staffingInfo: comp.staffingInfo,
   }
   showEdit.value = true
-  // 加载学校下拉选项
   schoolsLoading.value = true
   try {
     schools.value = await api.getSchools()
@@ -196,7 +188,6 @@ async function submitEdit(): Promise<void> {
   }
 }
 
-// ---------- 比赛包导入 ----------
 const uploadFile = ref<File | null>(null)
 const importing = ref(false)
 const activeReport = ref<ImportReport | null>(null)
@@ -213,7 +204,7 @@ function handleFileChange(file: UploadFile): void {
   uploadFile.value = raw
 }
 
-/** limit=1 时再选文件触发的是 on-exceed（不是 on-change）：这里直接替换为新文件 */
+// limit=1 时再次选文件走 on-exceed，直接替换为新文件
 function handleFileExceed(files: File[]): void {
   const raw = files[0] ?? null
   if (raw && !raw.name.toLowerCase().endsWith('.zip')) {
@@ -240,7 +231,6 @@ async function doImport(): Promise<void> {
     activeReport.value = record.report
     if (record.status === 'SUCCESS') {
       ElMessage.success('比赛包导入成功')
-      // 导入成功后比赛库就绪，刷新状态
       await Promise.all([loadCompetition(), loadPackages()])
     } else {
       ElMessage.error('比赛包导入失败，请查看导入报告')
@@ -265,7 +255,6 @@ async function loadPackages(): Promise<void> {
   }
 }
 
-/** 基础数据行数（key -> 行数）转表格数据 */
 const basedataEntries = computed(() => {
   const rows = activeReport.value?.basedataRows ?? {}
   return Object.entries(rows).map(([key, count]) => ({ key, count }))
@@ -275,11 +264,9 @@ function shortSha(sha: string | null | undefined): string {
   return sha ? sha.slice(0, 12) : '—'
 }
 
-// ---------- 成员管理（系统超管） ----------
 const members = ref<CompetitionMember[]>([])
 const membersLoading = ref(false)
 
-// 指派成员弹窗
 const showAssign = ref(false)
 const assigning = ref(false)
 const assignForm = ref({
@@ -288,7 +275,6 @@ const assignForm = ref({
   managedCompanies: '',
 })
 
-// 编辑成员弹窗
 const showEditMember = ref(false)
 const editingMember = ref(false)
 const editMemberTarget = ref<CompetitionMember | null>(null)
@@ -298,7 +284,6 @@ const editMemberForm = ref({
   isActive: true,
 })
 
-/** "1, 2, 3" -> [1, 2, 3] */
 function parseCompanies(text: string): number[] {
   return text
     .split(/[,，\s]+/)
@@ -370,7 +355,6 @@ async function submitEditMember(): Promise<void> {
   }
 }
 
-// ---------- 激活码 ----------
 const invites = ref<InviteCode[]>([])
 const invitesLoading = ref(false)
 
@@ -413,7 +397,6 @@ async function submitCreateInvite(): Promise<void> {
   }
 }
 
-/** 复制文本到剪贴板 */
 async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
@@ -423,14 +406,12 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-// ---------- 快捷入口 ----------
 function quickLink(path: string): void {
   void router.push(`/competitions/${props.cid}${path}`)
 }
 
-// ---------- 数据加载 ----------
 const missing = ref(false)
-// 加载失败原因：就地提示 + 重试（ElMessage 同时保留）
+// 加载失败就地提示并支持重试（ElMessage 同时保留）
 const loadError = ref('')
 
 async function loadCompetition(): Promise<void> {
@@ -441,7 +422,7 @@ async function loadCompetition(): Promise<void> {
     loadError.value = ''
     auth.selectCompetition(props.cid)
   } catch (err) {
-    // 404 = 比赛不存在/已删除（旧链接/被清理）：友好状态而非错误弹窗
+    // 404 视为比赛已删除，展示友好状态
     if (err instanceof ApiError && err.status === 404) {
       missing.value = true
       competition.value = null
@@ -466,8 +447,7 @@ watch(
   },
 )
 
-// 资源变更广播（400ms 去抖合并）：比赛/成员/队伍/用户写操作后自动重拉本页数据
-// （与 onMounted 的加载集合一致：比赛信息 + 比赛包列表 + 成员/激活码按权限重拉）
+// 比赛/成员/队伍/用户变更后 400ms 去抖重拉，按权限决定加载范围
 useResourceRefresh(['competitions', 'members', 'teams', 'users'], () => {
   void loadCompetition()
   void loadPackages()
@@ -484,7 +464,6 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- 比赛不存在/已删除（旧链接残留） -->
   <el-alert
     v-if="missing"
     type="warning"
@@ -500,7 +479,6 @@ onMounted(() => {
     </template>
   </el-alert>
 
-  <!-- 加载失败：就地提示 + 重试（不整页弹窗） -->
   <el-alert
     v-else-if="loadError"
     type="error"
@@ -513,7 +491,6 @@ onMounted(() => {
   </el-alert>
 
   <div v-if="competition" class="detail-page">
-    <!-- ===== 顶部：标题 + 基本信息 ===== -->
     <div class="page-toolbar">
       <h2 class="page-title">{{ competition.name }}</h2>
       <div class="page-actions">
@@ -545,7 +522,6 @@ onMounted(() => {
       </el-descriptions>
     </el-card>
 
-    <!-- ===== 生命周期推进 ===== -->
     <el-card class="lifecycle-card anim-fade-in-up" style="--anim-delay: 60ms" shadow="never">
       <template #header>
         <div class="lifecycle-head">
@@ -589,7 +565,6 @@ onMounted(() => {
       </div>
     </el-card>
 
-    <!-- ===== 快捷入口 ===== -->
     <div class="quick-links anim-fade-in-up" style="--anim-delay: 100ms">
       <el-button @click="quickLink('/teams')">
         <el-icon><User /></el-icon><span>组队管理</span>
@@ -608,9 +583,7 @@ onMounted(() => {
       </el-button>
     </div>
 
-    <!-- ===== 功能分区 ===== -->
     <el-tabs v-model="activeTab" class="detail-tabs anim-fade-in-up" style="--anim-delay: 140ms">
-      <!-- a) 比赛包导入 -->
       <el-tab-pane label="比赛包导入" name="package">
         <el-card shadow="never">
           <el-upload
@@ -642,7 +615,6 @@ onMounted(() => {
           </div>
         </el-card>
 
-        <!-- 导入报告可视化 -->
         <el-card v-if="activeReport" shadow="never" class="report-card anim-fade-in-up">
           <template #header>
             <div class="report-head">
@@ -672,7 +644,6 @@ onMounted(() => {
             </div>
           </template>
 
-          <!-- 校验结果：错误/警告单独成区，长报告不再一坨堆在顶部 -->
           <section
             v-if="activeReport.errors?.length || activeReport.warnings?.length"
             class="report-section"
@@ -761,7 +732,6 @@ onMounted(() => {
           </section>
         </el-card>
 
-        <!-- 导入历史 -->
         <el-card shadow="never" class="history-card">
           <template #header>导入历史</template>
           <el-table
@@ -799,7 +769,6 @@ onMounted(() => {
         </el-card>
       </el-tab-pane>
 
-      <!-- b) 成员管理（系统超管） -->
       <el-tab-pane v-if="isSystemAdmin" label="成员管理" name="members">
         <el-card shadow="never">
           <div class="tab-toolbar">
@@ -849,7 +818,6 @@ onMounted(() => {
         </el-card>
       </el-tab-pane>
 
-      <!-- c) 激活码 -->
       <el-tab-pane v-if="canManage" label="激活码" name="invites">
         <el-card shadow="never">
           <div class="tab-toolbar">
@@ -894,7 +862,6 @@ onMounted(() => {
       </el-tab-pane>
     </el-tabs>
 
-    <!-- ===== 编辑比赛信息弹窗 ===== -->
     <el-dialog v-model="showEdit" title="编辑比赛信息" width="560px" destroy-on-close>
       <el-form ref="editRef" :model="editForm" :rules="editRules" label-width="96px" @submit.prevent>
         <el-form-item label="比赛名称" prop="name">
@@ -931,7 +898,6 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ===== 指派成员弹窗 ===== -->
     <el-dialog v-model="showAssign" title="指派成员" width="460px" destroy-on-close>
       <el-form :model="assignForm" label-width="96px" @submit.prevent>
         <el-form-item label="用户名">
@@ -960,7 +926,6 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ===== 编辑成员弹窗 ===== -->
     <el-dialog v-model="showEditMember" title="编辑成员" width="460px" destroy-on-close>
       <el-form :model="editMemberForm" label-width="96px" @submit.prevent>
         <el-form-item label="身份">
@@ -989,7 +954,6 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- ===== 生成激活码弹窗 ===== -->
     <el-dialog v-model="showCreateInvite" title="生成激活码" width="460px" destroy-on-close>
       <el-form :model="inviteForm" label-width="96px" @submit.prevent>
         <el-form-item label="身份">
@@ -1021,7 +985,6 @@ onMounted(() => {
     </el-dialog>
   </div>
 
-  <!-- 首屏骨架：与真实版式同尺寸，避免加载完成后的跳动 -->
   <div v-else-if="loading" class="detail-skeleton">
     <div class="panel detail-skeleton-panel">
       <div class="skeleton skeleton-line detail-skeleton-title"></div>
@@ -1046,7 +1009,6 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 
-/* 比赛名较长：标题占满剩余宽度并可换行，操作按钮在窄屏换到下一行 */
 .page-toolbar > .page-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -1067,7 +1029,7 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
-/* 入场动画结束后交还 transform：el-card 的悬停轻抬仍然生效 */
+/* 动画结束后交还 transform，保留 card hover */
 .detail-page .anim-fade-in-up {
   animation-fill-mode: backwards;
 }
@@ -1086,7 +1048,6 @@ onMounted(() => {
   font-size: var(--font-sm);
 }
 
-/* ===== 生命周期：当前步醒目、已完成步收敛 ===== */
 .lifecycle-head {
   display: flex;
   align-items: center;
@@ -1104,7 +1065,7 @@ onMounted(() => {
   margin: 4px 0 0;
 }
 
-/* 窄屏：6 步链条保持单行，横向可滚，避免标签折行挤在一起 */
+/* 窄屏链条单行横滚，避免标签折行 */
 .lifecycle-steps-scroll {
   overflow: hidden;
 }
@@ -1114,7 +1075,6 @@ onMounted(() => {
   transition: color var(--dur-base) var(--ease-standard);
 }
 
-/* 已完成/未开始：收敛为弱化文字，不抢当前步 */
 .lifecycle-steps :deep(.el-step__title.is-success),
 .lifecycle-steps :deep(.el-step__title.is-wait) {
   color: var(--color-text-tertiary);
@@ -1137,7 +1097,6 @@ onMounted(() => {
   border-color: var(--color-border-strong);
 }
 
-/* 当前步：品牌渐变圆点 + 外环，一眼看出当前位置 */
 .lifecycle-steps :deep(.el-step__head.is-process .el-step__icon) {
   background: var(--gradient-brand);
   border-color: transparent;
@@ -1180,7 +1139,6 @@ onMounted(() => {
   font-size: 13px;
 }
 
-/* ===== 导入报告：标题/元信息分行，正文按分区归组 ===== */
 .report-head {
   display: flex;
   align-items: center;
@@ -1249,7 +1207,6 @@ onMounted(() => {
   margin-left: 8px;
 }
 
-/* ===== 首屏骨架 ===== */
 .detail-skeleton {
   display: flex;
   flex-direction: column;

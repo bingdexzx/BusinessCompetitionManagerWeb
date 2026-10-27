@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// 交易管理：资金账户 + 持仓表（分页）+ 委托列表（分页/状态筛选/撤单）+ 下单表单
-// 数据全部走 useStockSync（快照+增量合并）；下单/撤单做本地乐观更新，随后增量校正，不拉全量。
+// 交易管理：数据走 useStockSync 快照+增量；下单/撤单先本地乐观更新，再由增量校正。
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { cancelStockOrder, placeStockOrder } from '@/api'
@@ -13,7 +12,6 @@ import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 
-// ---------- 同步通道（快照+增量，WS 信号去抖合并） ----------
 const {
   stocks,
   orders,
@@ -32,16 +30,14 @@ const {
   removeLocalOrder,
 } = useStockSync(() => props.cid)
 
-/** WS 推送信号只当触发器：合并成一次去抖增量同步（防请求风暴） */
+// WS 信号只当触发器，去抖合并成一次增量同步，防请求风暴
 useNotifications((message) => {
-  // 信号契约 §4.3：{type:'stock-updated', round, serverTime}（不带数据）
   if (message.payload?.type === 'stock-updated' || message.type === 'stock-updated') {
     scheduleSync()
   }
 })
 
-// ---------- 展示小工具 ----------
-/** Decimal 出站可能是字符串，计算/展示前统一转数字 */
+// Decimal 出站可能是字符串，统一转数字
 function num(v: number | string | null | undefined): number {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
@@ -51,7 +47,6 @@ function fmtMoney(v: number | string | null | undefined): string {
   return num(v).toFixed(2)
 }
 
-/** 现价索引（按 code，持仓市值/盈亏、下单默认价使用） */
 const priceByCode = computed<Map<string, number>>(() => {
   const map = new Map<string, number>()
   for (const s of stocks.value) map.set(String(s.code), num(s.currentPrice))
@@ -73,7 +68,6 @@ function statusMeta(status: string): { label: string; type: 'success' | 'warning
   return STATUS_META[status as StockOrderStatus] ?? { label: status || '—', type: 'info' }
 }
 
-// ---------- 我的资金账户（信息卡：账户数少，不做大表） ----------
 interface AccountView {
   id: number
   name: string
@@ -92,7 +86,7 @@ const accountViews = computed<AccountView[]>(() =>
         marketValue += num(h.shares) * (priceByCode.value.get(String(h.stockCode)) ?? 0)
       }
     }
-    // 绑定产业字段的账户以实时字段现金为准（fieldBalance）
+    // 绑定产业字段的账户以 fieldBalance 为准
     const cashBalance = num(a.fieldBalance ?? a.cashBalance)
     return {
       id: a.id,
@@ -106,7 +100,7 @@ const accountViews = computed<AccountView[]>(() =>
   }),
 )
 
-// ---------- 账户合计（一排指标卡：只是展示聚合，不参与下单/校验） ----------
+// 账户合计只作展示，不参与下单/校验
 const accountTotals = computed(() => {
   let cash = 0
   let marketValue = 0
@@ -123,13 +117,11 @@ const marketShown = useCountUp(computed(() => accountTotals.value.marketValue), 
 })
 const totalShown = useCountUp(computed(() => accountTotals.value.total), { precision: 2 })
 
-/** 首屏：还没有同步游标、也没有失败记录 → 骨架屏（同步完成或失败后立即让位给真实空态） */
+// 无游标且无失败记录时显示骨架屏
 const initialLoading = computed(() => !lastSyncAt.value && !lastError.value)
 
-/** 首次同步且还没有任何账户：骨架屏代替「暂无资金账户」 */
 const accountsInitialLoading = computed(() => initialLoading.value && accounts.value.length === 0)
 
-// ---------- 持仓表（50/页） ----------
 const PAGE_SIZE = 50
 const holdingPage = ref(1)
 
@@ -176,7 +168,6 @@ watch(
   },
 )
 
-// ---------- 委托列表（50/页 + 状态筛选 + PENDING 撤单） ----------
 const orderPage = ref(1)
 const statusFilter = ref('')
 
@@ -201,7 +192,6 @@ watch(
   },
 )
 
-// ---------- 下单表单（股票选择 / 方向 / 价格 / 数量） ----------
 const form = reactive({
   code: '',
   side: 'BUY' as StockOrderSide,
@@ -209,7 +199,7 @@ const form = reactive({
   quantity: 100,
 })
 
-/** 大列表下拉用虚拟滚动的 el-select-v2，避免上千股票一次性渲染卡顿 */
+// 上千股票用虚拟滚动下拉，避免一次性渲染卡顿
 const stockOptions = computed(() =>
   stocks.value.map((s) => ({ label: `${s.code}  ${s.name}`, value: String(s.code) })),
 )
@@ -222,10 +212,9 @@ watch(
   },
 )
 
-/** 预计金额（仅预览；实际以服务端精确撮合为准） */
+// 仅预览，实际以服务端撮合为准
 const estAmount = computed(() => num(form.price) * num(form.quantity))
 
-/** 卖出可用电量（选中股票的持仓股数） */
 const sellableShares = computed(() => {
   if (!form.code) return 0
   return holdings.value
@@ -258,7 +247,7 @@ async function submitOrder(): Promise<void> {
   const now = new Date().toISOString()
   const tempId = -Date.now()
 
-  // 本地乐观更新：先占位挂单行（下单后立即可见），不拉全量
+  // 先插乐观占位行，下单后立即可见
   applyLocalOrder({
     id: tempId,
     stockId: stock?.id ?? 0,
@@ -283,31 +272,29 @@ async function submitOrder(): Promise<void> {
       price: form.price,
       quantity: form.quantity,
     })
-    // 用服务端返回替换乐观占位行；后续增量同步负责校正（持仓/资金/订单），不拉全量
+    // 用服务端返回替换占位行，后续增量校正
     removeLocalOrder(tempId)
     if (created && typeof created.id === 'number') applyLocalOrder(created)
     ElMessage.success('委托已提交，将在下一轮撮合')
     scheduleSync()
   } catch (e) {
-    removeLocalOrder(tempId) // 失败回滚乐观行
+    removeLocalOrder(tempId)
     ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     placing.value = false
   }
 }
 
-// ---------- 撤单（PENDING 可撤，乐观置已撤 + 增量校正） ----------
 const cancellingId = ref(0)
 
 async function onCancelOrder(row: StockOrder): Promise<void> {
   if (!row || row.status !== 'PENDING') return
   const previous: StockOrder = { ...row }
-  // 本地乐观更新：先置为已撤
   applyLocalOrder({ ...row, status: 'CANCELLED', updatedAt: new Date().toISOString() })
   cancellingId.value = row.id
   try {
     const updated = await cancelStockOrder(props.cid, row.id)
-    // 后端只回 { id, status }：把权威状态并入现有行（随后增量同步校正），不拉全量
+    // 后端只回 id/status，并入现有行后由增量校正
     if (updated && typeof updated.id === 'number') {
       applyLocalOrder({
         ...row,
@@ -316,16 +303,15 @@ async function onCancelOrder(row: StockOrder): Promise<void> {
       })
     }
     ElMessage.success('已撤单')
-    scheduleSync() // 增量校正，不拉全量
+    scheduleSync()
   } catch (e) {
-    applyLocalOrder(previous) // 失败回滚
+    applyLocalOrder(previous)
     ElMessage.error(errorMessage(e, '操作失败'))
   } finally {
     cancellingId.value = 0
   }
 }
 
-// ---------- 手动同步 ----------
 async function manualSync(): Promise<void> {
   try {
     await syncNow(false)
@@ -334,13 +320,12 @@ async function manualSync(): Promise<void> {
   }
 }
 
-// 资源变更实时刷新：股票数据被其他端写入后自动增量重拉（保留分页/筛选）
+// 股票变更后增量重拉，保留分页/筛选
 useResourceRefresh(['stock'], manualSync)
 
-// ---------- 初始化 ----------
 onMounted(() => {
   start()
-  // 首次进入（无游标）自动快照起步；已有游标则一次增量
+  // 无游标走快照起步，有游标走增量
   void syncNow(false).catch((e) => {
     ElMessage.error(errorMessage(e, '操作失败'))
   })
@@ -366,7 +351,6 @@ watch(
 
 <template>
   <div class="stock-manage-page">
-    <!-- 比赛不存在/已删除（旧页面残留） -->
     <el-alert
       v-if="missing"
       type="warning"
@@ -383,7 +367,7 @@ watch(
       </template>
     </el-alert>
 
-    <!-- 同步失败：就地提示（后台信号同步不弹 toast，避免提示风暴） -->
+    <!-- 同步失败就地提示，不弹 toast，避免提示风暴 -->
     <el-alert
       v-if="lastError && !missing"
       type="error"
@@ -393,7 +377,6 @@ watch(
       class="sync-error"
     />
 
-    <!-- 工具栏 -->
     <div class="mm-toolbar">
       <h2 class="mm-title">交易管理</h2>
       <div class="mm-actions">
@@ -408,7 +391,6 @@ watch(
       </div>
     </div>
 
-    <!-- 我的资金账户（账户数少，信息卡展示；持仓大表走下方分页） -->
     <el-card shadow="never" class="block-card anim-fade-in-up">
       <template #header>
         <div class="card-head">
@@ -416,7 +398,6 @@ watch(
           <span class="card-sub">现金 + 持仓市值 = 总资产</span>
         </div>
       </template>
-      <!-- 汇总：一排指标卡（现金 / 持仓市值 / 总资产），读数优先 -->
       <div v-if="accountViews.length" class="metric-grid account-summary">
         <div class="metric-card">
           <span class="metric-label">现金余额合计</span>
@@ -468,7 +449,6 @@ watch(
     </el-card>
 
     <div class="manage-grid">
-      <!-- 下单表单 -->
       <el-card shadow="never" class="block-card order-card anim-fade-in-up">
         <template #header>
           <span class="card-title">下单</span>
@@ -534,7 +514,6 @@ watch(
         </el-form>
       </el-card>
 
-      <!-- 我的持仓（分页） -->
       <el-card shadow="never" class="block-card anim-fade-in-up">
         <template #header>
           <div class="card-head">
@@ -591,7 +570,6 @@ watch(
       </el-card>
     </div>
 
-    <!-- 我的委托（分页 + 状态筛选 + 撤单） -->
     <el-card shadow="never" class="block-card anim-fade-in-up">
       <template #header>
         <div class="card-head">
@@ -727,8 +705,6 @@ watch(
   margin-bottom: 16px;
 }
 
-/* ===== 资金账户 ===== */
-/* 汇总指标卡：一排读数优先，明细账户卡在下 */
 .account-summary {
   margin-bottom: 16px;
 }
@@ -778,14 +754,13 @@ watch(
   color: var(--color-primary);
 }
 
-/* ===== 下单 + 持仓 两栏布局 ===== */
 .manage-grid {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
-/* 下单区吸附：滚动看持仓时下单入口始终在同一位置，不随滚动上下乱跳 */
+/* 下单区吸附，滚动看持仓时入口不跳 */
 @media (min-width: 1101px) {
   .order-card {
     position: sticky;
@@ -815,7 +790,7 @@ watch(
   line-height: 1.6;
 }
 
-/* 红涨绿跌（中国股票惯例）：统一走语义色 token */
+/* 红涨绿跌（中国股票惯例） */
 .up {
   color: var(--color-danger);
   font-weight: 600;
@@ -834,7 +809,6 @@ watch(
   margin-top: 14px;
 }
 
-/* 首屏骨架行：高度贴近真实行，减少加载完成后的跳动 */
 .table-skeleton {
   display: flex;
   flex-direction: column;
@@ -849,7 +823,6 @@ watch(
   width: 100%;
 }
 
-/* 买卖按钮：红买绿卖 */
 .el-button.trade-submit.is-buy {
   background-color: #ec0000 !important;
   border-color: #ec0000 !important;
@@ -873,7 +846,6 @@ watch(
   opacity: 0.5;
 }
 
-/* ===== 响应式 ===== */
 @media (max-width: 1100px) {
   .manage-grid {
     grid-template-columns: minmax(0, 1fr);

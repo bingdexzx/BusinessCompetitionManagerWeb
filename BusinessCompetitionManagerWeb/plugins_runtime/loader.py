@@ -27,10 +27,6 @@ def sha256_file(path) -> str:
     return h.hexdigest()
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def load_plugin(path):
     """加载插件文件，返回 (module, problems)；problems 非空表示拒收。"""
     path = Path(path)

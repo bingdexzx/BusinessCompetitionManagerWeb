@@ -1,14 +1,7 @@
 """系统设置 — 流量限制配置 API（仅系统超级管理员）。
 
-错误响应统一 ``{'code': 400|403|404, 'message': '中文提示', 'details': ''}``
-（风格见 apps.common.errors 与 apps.global_.useradmin.views）。
-
-- ``GET  /api/system/rate-limit``          → ``{"config": {...}, "stats": {...}}``
-- ``PUT  /api/system/rate-limit``          → body 为 config 整体（严格校验）→ 返回保存后的 config
-- ``POST /api/system/rate-limit/reset``    → 恢复默认配置 → 返回默认配置
-- ``DELETE /api/system/rate-limit/records`` → 清空限流计数（RequestThrottle + LoginThrottle）
-                                              → ``{"ok": true, "cleared": int}``
-"""
+路由：GET/PUT ``/api/system/rate-limit``、POST ``.../reset``、DELETE ``.../records``；错误响应
+统一 {code, message, details}（风格见 apps.common.errors）。"""
 
 from django.utils import timezone
 from rest_framework.response import Response
@@ -24,7 +17,6 @@ from apps.global_.sysconfig.service import (
 
 
 def _error(message, code=400, details=''):
-    """统一错误响应 {code, message, details}（message 一律中文）。"""
     return Response({'code': code, 'message': message, 'details': details}, status=code)
 
 
@@ -36,11 +28,10 @@ class RateLimitConfigView(APIView):
     def get(self, request):
         now = timezone.now()
         stats = {
-            # 当前计数记录数（API 每分钟计数 + 登录失败计数）
+            # 计数记录数（API 每分钟计数 + 登录失败计数）
             'throttleRecords': (
                 RequestThrottle.objects.count() + LoginThrottle.objects.count()
             ),
-            # 生效中的锁（API 窗口锁 + 登录锁定）
             'activeLocks': (
                 RequestThrottle.objects.filter(locked_until__gt=now).count()
                 + LoginThrottle.objects.filter(locked_until__gt=now).count()

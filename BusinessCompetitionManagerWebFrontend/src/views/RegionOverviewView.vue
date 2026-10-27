@@ -13,7 +13,6 @@
     </div>
 
     <el-empty v-if="regions.length === 0 && !loading" description="地图中暂无区域，请在地图管理中为节点设置所属区域" />
-    <!-- 首屏加载：骨架占位，避免整块空白；文案保留 -->
     <div v-else-if="regions.length === 0 && loading" class="ro-loading">
       <div class="ro-skeleton">
         <div v-for="i in 2" :key="i" class="skeleton ro-skeleton-band" />
@@ -29,7 +28,6 @@
           </div>
         </div>
 
-        <!-- 上半部分：消费者需求 + 上半区数据框 -->
         <div class="band-section">
           <div class="section-head">
             <span class="section-title">消费者需求</span>
@@ -73,7 +71,6 @@
           </div>
         </div>
 
-        <!-- 下半部分：区域数据（数据框，下方） -->
         <div class="band-section">
           <div class="section-head">
             <span class="section-title">区域数据</span>
@@ -101,7 +98,6 @@
       </div>
     </div>
 
-    <!-- 添加 / 编辑数据框 -->
     <el-dialog append-to-body v-model="showFrame" :title="editingCard ? '编辑数据框' : '添加数据框'" width="480px">
       <el-form label-width="92px">
         <el-form-item label="数据来源公司" required>
@@ -147,7 +143,6 @@
       </template>
     </el-dialog>
 
-    <!-- 添加 / 编辑消费者需求 -->
     <el-dialog append-to-body v-model="showDemand" :title="editingDemand ? '编辑需求' : '添加需求'" width="480px">
       <el-form label-width="92px">
         <el-form-item label="产品" required>
@@ -181,8 +176,7 @@
 </template>
 
 <script setup lang="ts">
-// 区域总览（与旧项目同版式）：每个区域一张白色卡片 = 上半段「消费者需求」+ 下半段「区域数据」。
-// 区域本身由「地图管理」的节点 region 字段决定，本页不再新建/重命名/删除区域。
+// 区域来自地图节点 region；本页只展示/配置消费者需求与数据框，不增删区域。
 import { ref, computed, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Edit, Close, Refresh } from "@element-plus/icons-vue";
@@ -210,7 +204,7 @@ import { errorMessage } from "@/utils/errors";
 const props = defineProps<{ cid: string }>();
 const auth = useAuthStore();
 
-/** 权限口径：系统超管 / 本比赛超管（与结算页一致） */
+// 权限：系统超管 / 本比赛超管
 const canEdit = computed(
   () =>
     auth.isSuperuser ||
@@ -221,14 +215,12 @@ const regions = ref<RegionMapOverview[]>([]);
 const demands = ref<ConsumerDemandItem[]>([]);
 const loading = ref(false);
 
-// 产品下拉选项（来自产品库，关联真实产品）
 const productOptions = ref<{ id: number; name: string }[]>([]);
 
 function demandsOf(region: RegionMapOverview): ConsumerDemandItem[] {
   return (demands.value || []).filter((d) => (d.regionName || "") === region.region);
 }
 
-// ===== 数据框编辑对话框 =====
 const showFrame = ref(false);
 const frameZone = ref<"top" | "bottom">("bottom");
 const saving = ref(false);
@@ -240,7 +232,6 @@ const frameCompanyId = ref<number | null>(null);
 const frameFieldId = ref<number | null>(null);
 const frameDisplayName = ref("");
 
-// ===== 消费者需求编辑对话框 =====
 const showDemand = ref(false);
 const savingDemand = ref(false);
 const editingDemand = ref<ConsumerDemandItem | null>(null);
@@ -250,7 +241,7 @@ const demandForm = ref<{ productId: number | null; quantity: string | number; no
   note: "",
 });
 
-/** 产业字段类型标签（兼容旧值 STRING/BOOLEAN/DICTIONARY/LIST 与新值 TEXT/BOOL/REF/DATE） */
+// 兼容旧/新产业字段类型值
 const fieldTypeLabel = (t: string) =>
   ({
     NUMBER: "数值",
@@ -300,7 +291,7 @@ async function loadProducts() {
   }
   try {
     const res = await getBasedata(props.cid, "products", { page: 1, pageSize: 200 });
-    // 后端列表接口返回分页对象 {items,total,...} 或直接数组，做兼容
+    // 列表接口可能返回分页对象或数组
     const list = Array.isArray(res) ? res : res?.items || [];
     productOptions.value = list
       .map((p) => ({ id: p.id, name: p.name ?? "" }))
@@ -311,7 +302,6 @@ async function loadProducts() {
   }
 }
 
-// ===== 数据框 =====
 function topCards(region: RegionMapOverview): RegionOverviewCard[] {
   return (region.cards || []).filter((c) => c.zone === "top");
 }
@@ -319,7 +309,7 @@ function bottomCards(region: RegionMapOverview): RegionOverviewCard[] {
   return (region.cards || []).filter((c) => c.zone !== "top");
 }
 
-/** 写回卡片：只提交契约字段（卡片的值由服务端按公司/字段实时计算） */
+// 只提交契约字段，值由服务端实时计算
 function toCardPayload(card: RegionOverviewCard): RegionOverviewCard {
   return {
     id: String(card.id),
@@ -339,7 +329,6 @@ function openAddFrame(region: RegionMapOverview, zone: "top" | "bottom" = "botto
   frameFieldId.value = null;
   frameDisplayName.value = "";
   companyFields.value = [];
-  // 本区「当地公司」直接来自地图区域总览返回，无需额外请求
   regionCompanies.value = region.companies || [];
   showFrame.value = true;
 }
@@ -401,7 +390,7 @@ async function saveFrame() {
       next = [...cards.map((c) => toCardPayload(c)), newCard];
     }
     await saveRegionCardsByName(props.cid, activeRegion.value.region, next);
-    // 重新拉取区域总览（实时值需服务端重算）
+    // 实时值需服务端重算，保存后重拉
     await loadRegions();
     ElMessage.success("已保存");
     showFrame.value = false;
@@ -416,7 +405,7 @@ async function removeFrame(region: RegionMapOverview, card: RegionOverviewCard) 
   try {
     await ElMessageBox.confirm(`移除数据框「${card.displayName}」？`, { type: "warning" });
   } catch {
-    return; // 用户取消
+    return;
   }
   try {
     const next = (region.cards || [])
@@ -430,7 +419,6 @@ async function removeFrame(region: RegionMapOverview, card: RegionOverviewCard) 
   }
 }
 
-// ===== 消费者需求 =====
 function openAddDemand(region: RegionMapOverview) {
   if (!props.cid) return;
   activeRegion.value = region;
@@ -461,11 +449,9 @@ async function saveDemand() {
     const payload = {
       region: activeRegion.value.region,
       productId: demandForm.value.productId as number,
-      // BigNumberInput 回传数字字符串（大数不丢精度）；清空时按 0 处理，
-      // 否则空字符串会被后端判为非法整数。
+      // BigNumberInput 回传字符串以保精度；空串按 0，否则后端判非法整数
       quantity: demandForm.value.quantity === "" ? 0 : demandForm.value.quantity ?? 0,
-      // 始终携带 note 字段：清空备注时传空字符串而非 undefined，
-      // 否则请求体里会丢字段，导致后端 update 不清除备注（备注无法删除）。
+      // 始终携带 note：传空串而非 undefined，否则后端无法清空备注
       note: (demandForm.value.note ?? "").trim(),
     };
     if (editingDemand.value) {
@@ -489,7 +475,7 @@ async function removeDemand(_region: RegionMapOverview, d: ConsumerDemandItem) {
       type: "warning",
     });
   } catch {
-    return; // 用户取消
+    return;
   }
   try {
     await deleteConsumerDemand(props.cid, d.id);
@@ -518,7 +504,6 @@ function formatValue(card: RegionOverviewCard) {
   return String(v);
 }
 
-// 重拉本页全部数据（区域带 + 消费者需求 + 产品下拉）
 async function reloadAll() {
   if (!props.cid) {
     regions.value = [];
@@ -529,13 +514,12 @@ async function reloadAll() {
   await Promise.all([loadRegions(), loadDemands(), loadProducts()]);
 }
 
-// 手动刷新所有数据
 async function refreshAll() {
   await reloadAll();
   ElMessage.success("数据已刷新");
 }
 
-// 切换比赛时重新拉取：先清空本地数据，等网络确认后再渲染，避免停留在上一个比赛的旧数据（错误内容）。
+// 切比赛先清空，避免残留上一场数据
 watch(
   () => props.cid,
   (newId, oldId) => {
@@ -556,7 +540,7 @@ watch(
   { immediate: true },
 );
 
-// 资源变更广播（400ms 去抖合并）：区域/需求/公司/合同/基础数据/地图节点任一变更后自动重拉
+// 区域/需求/公司等变更后 400ms 去抖重拉
 useResourceRefresh(
   ["regions", "consumer-demands", "companies", "contracts", "basedata", "map_nodes"],
   () => {
@@ -591,7 +575,6 @@ useResourceRefresh(
   font-size: 13px;
 }
 
-/* 区域条：条与条之间统一留白，入场错峰 */
 .region-list {
   display: flex;
   flex-direction: column;
@@ -612,7 +595,6 @@ useResourceRefresh(
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-sm);
 }
-/* 区域标题独立成一条：与下方内容之间有明确分隔 */
 .band-header {
   display: flex;
   align-items: center;
@@ -633,12 +615,10 @@ useResourceRefresh(
   letter-spacing: -0.01em;
 }
 
-/* 大框内的两个分区：上=消费者需求，下=区域数据 */
 .band-section {
   padding: 12px 0;
   border-top: 1px dashed var(--color-border);
 }
-/* 紧跟区域标题的第一段不再重复画分隔线 */
 .band-header + .band-section {
   border-top: none;
   padding-top: 4px;
@@ -672,7 +652,7 @@ useResourceRefresh(
   border-radius: 2px;
   margin-right: 7px;
 }
-/* 「消费者需求」用绿色语义、「区域数据」用蓝色语义，与下方卡片配色呼应 */
+/* 绿=消费者需求，蓝=区域数据，与卡片配色一致 */
 .band-header + .band-section .section-title::before {
   background: var(--color-success);
 }
@@ -711,7 +691,6 @@ useResourceRefresh(
   gap: 12px;
 }
 
-/* 区域数据框（蓝） */
 .frame {
   min-width: 180px;
   flex: 0 0 auto;
@@ -728,7 +707,7 @@ useResourceRefresh(
   background: #fafafa;
   border-color: #e4e7ed;
 }
-/* 悬停时保留蓝色/绿色语义边（hover-lift 默认会把边框改成灰色） */
+/* 保留语义边框（hover-lift 默认会改灰） */
 .frame.hover-lift:hover {
   border-color: #d6e2ff;
 }
@@ -736,7 +715,6 @@ useResourceRefresh(
   border-color: #e4e7ed;
 }
 
-/* 消费者需求框（绿，与数据框区分） */
 .demand-frame {
   background: linear-gradient(180deg, #f0faf5 0%, #e6f7ef 100%);
   border-color: #c8ecd9;
@@ -795,7 +773,6 @@ useResourceRefresh(
   color: var(--color-danger);
   background: rgba(var(--color-danger-soft-rgb), 0.14);
 }
-/* 数值是这块卡的主角：更大、等宽数字 */
 .frame-value {
   font-size: 26px;
   font-weight: 700;

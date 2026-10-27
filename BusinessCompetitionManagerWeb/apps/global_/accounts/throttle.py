@@ -1,12 +1,8 @@
 """登录失败限流（旧系统等价能力）。
 
-策略（默认，可由 settings 覆盖）：**同一 用户名|IP 在 5 分钟窗口内失败 10 次 → 锁 15 分钟**；
-登录成功即清零。计数落库（多进程 worker 共享，进程内计数会被 worker 数摊薄）。
-
-阈值优先读「系统设置 — 流量限制」的 login 段（apps.global_.sysconfig.models.RateLimitConfig，
-带 5 秒缓存）；**取不到配置**（从未保存过 / 配置非法 / 读取失败）时回退 settings 默认值
-（LOGIN_FAIL_LIMIT / LOGIN_FAIL_WINDOW_SECONDS / LOGIN_LOCK_SECONDS）。
-"""
+同一 用户名|IP 在 5 分钟窗口内失败 10 次 → 锁 15 分钟，登录成功即清零。计数落库（多进程共享，
+进程内计数会被 worker 数摊薄）。阈值优先读「系统设置—流量限制」login 段（5 秒缓存），取不到
+（未保存/非法/读取失败）回退 settings 的 LOGIN_FAIL_LIMIT / LOGIN_LOCK_SECONDS 等默认值。"""
 
 from __future__ import annotations
 
@@ -21,10 +17,7 @@ from apps.global_.accounts.models import LoginThrottle
 
 
 def login_throttle_params() -> tuple[int, int, int]:
-    """登录限流三参数 ``(failLimit, windowSeconds, lockSeconds)``。
-
-    优先读流量限制配置的 login 段（5 秒缓存），取不到配置回退 settings 默认值。
-    """
+    """登录限流三参数 ``(failLimit, windowSeconds, lockSeconds)``；取不到配置回退 settings 默认值。"""
     try:
         from apps.global_.sysconfig.service import load_saved_login_params
 
@@ -63,9 +56,8 @@ def locked_until(key: str):
 def record_failure(key: str) -> None:
     """记一次失败；窗口内达到上限则锁定。
 
-    原子性：整段在事务 + ``SELECT ... FOR UPDATE`` 行锁内完成。多进程/多 worker
-    并发登录失败时，计数与窗口判定都基于行锁保护的**已提交值**，不会像旧的
-    ``F() + refresh_from_db`` 那样读到过期计数而漏锁（严格「窗口内 N 次 → 锁定」）。
+    事务 + ``SELECT ... FOR UPDATE`` 行锁内完成：并发下计数基于已提交值，不会像旧实现用
+    ``F() + refresh_from_db`` 那样读到过期计数而漏锁。
     """
     limit, window, lock_seconds = login_throttle_params()
     now = timezone.now()
@@ -74,7 +66,7 @@ def record_failure(key: str) -> None:
         row, created = LoginThrottle.objects.get_or_create(
             key=key, defaults={'window_start': now, 'fail_count': 1})
         if created:
-            return  # 窗口首条失败：计数 1，未达上限
+            return
         # 先拿行锁再读，保证并发下 window_start / fail_count 是已提交的稳定值
         row = LoginThrottle.objects.select_for_update().get(key=key)
         if row.window_start is None or now - row.window_start > timedelta(seconds=window):

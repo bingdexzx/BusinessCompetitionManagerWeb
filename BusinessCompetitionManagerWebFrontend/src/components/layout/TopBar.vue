@@ -16,7 +16,6 @@
     </div>
 
     <div class="topbar-right">
-      <!-- 当前比赛选择器 -->
       <el-select
         class="competition-select"
         :model-value="auth.selectedCompetitionId"
@@ -29,7 +28,6 @@
         <el-option v-for="item in competitionOptions" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
 
-      <!-- 实时消息通知（WebSocket 推送，点击进入消息中心） -->
       <el-badge
         :value="unreadCount"
         :hidden="unreadCount === 0"
@@ -41,7 +39,6 @@
         </el-button>
       </el-badge>
 
-      <!-- 用户下拉：个人档案 / 退出登录 -->
       <el-dropdown trigger="click" @command="onUserCommand">
         <span class="user-info">
           <span class="user-name">{{ displayName }}</span>
@@ -100,11 +97,9 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-// ---------- 当前比赛选择器 ----------
 const competitionsLoading = ref(false)
 const superCompetitions = ref<Array<{ id: number; name: string }>>([])
 
-// 系统超管可以切换到任意比赛
 watch(
   () => auth.isSuperuser,
   async (su) => {
@@ -147,7 +142,6 @@ async function onCompetitionChange(value: number | string | null): Promise<void>
   }
 }
 
-// ---------- 用户下拉 ----------
 const displayName = computed(
   () => auth.user?.displayName || auth.user?.username || '用户',
 )
@@ -174,7 +168,6 @@ function onUserCommand(command: string | number | object): void {
   }
 }
 
-// ---------- 面包屑当前页标题 ----------
 const PAGE_TITLES: Record<string, string> = {
   '/competitions': '比赛列表',
   '/messages': '消息中心',
@@ -264,7 +257,6 @@ const currentPageTitle = computed(() => {
 .menu-toggle {
   margin-right: 6px;
   color: var(--color-text-secondary);
-  /* 左上角汉堡按钮：正方形、图标居中、带边框浅底 */
   width: 36px !important;
   height: 36px !important;
   padding: 0 !important;
@@ -280,13 +272,11 @@ const currentPageTitle = computed(() => {
   border-color: var(--color-primary, #409eff) !important;
   background: var(--el-fill-color-light, #f5f7fa) !important;
 }
-/* 手机/平板(抽屉)模式：汉堡按钮贴近屏幕左缘 */
 @media (max-width: 1024px) {
   .menu-toggle {
     margin-left: -12px !important;
   }
 }
-/* 当前比赛选择器 */
 .competition-select {
   width: 200px;
 }
@@ -305,7 +295,6 @@ const currentPageTitle = computed(() => {
   cursor: pointer;
   outline: none;
 }
-/* 显示名称：过长时省略，避免与角色标签挤爆顶栏 */
 .user-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -324,7 +313,6 @@ const currentPageTitle = computed(() => {
   color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
-/* 手机(≤640px)：隐藏面包屑 */
 @media (max-width: 640px) {
   .topbar-left .el-breadcrumb {
     display: none;

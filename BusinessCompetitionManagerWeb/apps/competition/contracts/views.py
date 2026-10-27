@@ -1,7 +1,4 @@
-"""合同 API（§12 合同分组、§14.6 合同详情确认时间线）。
-
-状态机操作全部委托给 ``apps.competition.contracts.engine``（§3 转移表 T1–T10）。
-"""
+"""合同 API（§12 合同分组、§14.6 确认时间线）；状态机操作全部委托 contracts.engine（§3 T1–T10）。"""
 
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -24,9 +21,6 @@ from apps.competition.fieldlogs.models import FieldLog
 
 def _error(message, code=400):
     return Response({'code': code, 'message': message, 'details': ''}, status=code)
-
-
-# ---------------------------------------------------------------- 序列化
 
 
 def _company_map_for(contracts) -> dict:
@@ -93,8 +87,7 @@ def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
 
 
 def _checks_data(contract: Contract) -> list:
-    """检查记录（§7.3 四检查点落库）：含依据快照（basis）与**依据重演**（replayBasis）——
-    上游合同修改后，检查依据数字按账本链重算值展示（查账同步）。"""
+    """检查记录（§7.3 四检查点）：含依据快照与重演值（replayBasis，上游修改后按账本链重算）。"""
     from apps.competition.contracts import ledger
 
     return ledger.annotate_checks(contract)
@@ -152,7 +145,7 @@ def _timeline(contract: Contract) -> list:
     for log in FieldLog.objects.filter(contract=contract, event=FieldLog.Event.VALUE_CHANGE)[:200]:
         nodes.append({
             'type': 'FIELD', 'at': log.occurred_at.isoformat(),
-            'title': f'字段 {log.field_key} {op_label(log.op)}',  # 操作类型中文显示
+            'title': f'字段 {log.field_key} {op_label(log.op)}',
             'actor': log.operator_username,
             'detail': f'{log.before_raw} → {log.after_raw}（{log.get_source_display()}）',
             'traceId': log.trace_id,
@@ -162,9 +155,8 @@ def _timeline(contract: Contract) -> list:
 
 
 def _visible_contracts(request):
-    """可见性过滤（DB 侧 JSONB containment + GIN 索引 idx_contract_parties_gin）。
-
-    原实现把全表拉回 Python 过滤（2000+ 合同每请求全量读取），是「后期卡死」主因之一。
+    """可见性过滤（DB 侧 JSONB containment + GIN 索引）：不要全表拉回 Python 过滤
+    （原实现每请求读 2000+ 合同，是「后期卡死」主因之一）。
     """
     from django.db.models import Q
 
@@ -181,20 +173,13 @@ def _visible_contracts(request):
 
 
 def _visible_contract_or_none(request, pk):
-    """按可见性取单个合同（不可见或已删除 → None）。
-
-    详情/效果/账本这些**读**接口原先直接按 pk 取，任何登录用户都能读到别人的合同；
-    调用方拿到 None 一律按 404 返回（不泄露「存在但无权看」）。
-    """
+    """按可见性取单个合同（不可见/已删除 → None）：读接口不能裸按 pk 取，调用方按 404 返回。"""
     return _visible_contracts(request).filter(pk=pk).first()
 
 
 def _is_party_actor(user, contract) -> bool:
     """是否为该合同某参与方的**可操作**者（分配公司后即队长；超管/所辖管理员亦可）。"""
     return any(can_act_for_company(user, p.get('companyId')) for p in contract.parties)
-
-
-# ---------------------------------------------------------------- 合同实例
 
 
 class ContractListCreateView(APIView):
@@ -290,11 +275,9 @@ class ContractDetailView(APIView):
                                        company_map=_company_map_for([contract])))
 
     def delete(self, request, cid, pk):
-        """软删除合同（决策：仅回滚当前生效轮次 + 置 deleted_at，保留效果/冻结/检查/确认）。
+        """软删除合同：仅回滚当前生效轮次 + 置 deleted_at（保留效果/冻结/检查/确认）。
 
-        - 仅 DRAFT / EXEC_FAILED / EXECUTED / POSTED 可删；其余状态（含流程中态）拒绝；
-        - 回滚当前生效轮次（round_no == contract.round_no）恢复字段值后软删；
-        - 仅超级管理员；写审计。
+        仅 DRAFT/EXEC_FAILED/EXECUTED/POSTED 可删（流程中态拒绝）；仅超管；写审计。
         """
         if not can_manage_competition(request.user, cid):
             return Response({'code': 403, 'message': '仅超级管理员可删除合同', 'details': ''},
@@ -337,8 +320,6 @@ class ContractDetailView(APIView):
 
 
 class ContractSubmitView(APIView):
-    """T2：提交草稿（运行 check，保证创建即能执行）。"""
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request, cid, pk):
@@ -377,8 +358,6 @@ class ContractConfirmView(APIView):
 
 
 class ContractRetryExecuteView(APIView):
-    """EXEC_FAILED → 重试执行（不重新生成统一编号，重跑 execute_and_post）。"""
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request, cid, pk):
@@ -397,8 +376,7 @@ class ContractRetryExecuteView(APIView):
 
 
 class ContractEffectsView(APIView):
-    """效果审计（§7.2）：每行标注轮次状态 + **重演值**（replayBefore/replayAfter）——
-    修改上游合同后，下游合同的重演值自动重算（当时值保留为不可变审计，查账链条自洽）。"""
+    """效果审计（§7.2）：每行带轮次状态与重演值（replayBefore/replayAfter，上游修改后重算）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -413,8 +391,7 @@ class ContractEffectsView(APIView):
 
 
 class ContractLedgerView(APIView):
-    """资金账本链（查账）：该合同触及的 (公司, 字段) 全链——
-    初始值 → 各合同节点（当时值 + 重演值 + 检查依据重演）→ 当前值。"""
+    """资金账本链（查账）：(公司, 字段) 全链——初始值 → 各合同节点（当时值+重演值）→ 当前值。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -426,9 +403,6 @@ class ContractLedgerView(APIView):
             return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
                             status=status.HTTP_404_NOT_FOUND)
         return Response(ledger.contract_ledger(contract))
-
-
-# ---------------------------------------------------------------- 修改流程（T6–T10）
 
 
 class ContractRequestModifyView(APIView):
@@ -473,8 +447,6 @@ class ContractModifyReviewView(APIView):
 
 
 class ContractModifyOtherPartyView(APIView):
-    """T8/T8'：所有其他方逐一通过（任一方驳回 → 回到落账态）。"""
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request, cid, pk):
@@ -494,8 +466,6 @@ class ContractModifyOtherPartyView(APIView):
 
 
 class ContractModifySubmitView(APIView):
-    """T9/T10：修改定稿 → 回滚旧落账 → 重新检查 → 自动执行 → 根据新的内容修改落账。"""
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request, cid, pk):
@@ -516,8 +486,6 @@ class ContractModifySubmitView(APIView):
 
 
 class ContractBackfillReviewView(APIView):
-    """补录合同超管审核（§3.4：补录需超级管理员审核）。"""
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request, cid, pk):

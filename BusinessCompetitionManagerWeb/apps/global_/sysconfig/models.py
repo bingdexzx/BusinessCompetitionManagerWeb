@@ -1,9 +1,7 @@
 """流量限制配置与请求计数（全局库）。
 
-- ``RateLimitConfig``：全局单例（id=1）的 JSON 配置——登录限流 + API 每分钟限流；
-- ``RequestThrottle``：API 请求按**分钟窗口**计数（多进程 worker 共享，进程内计数
-  会被 worker 数摊薄，故计数落库）；键形如 ``api:<userId|ip>:<role>``。
-"""
+``RateLimitConfig``：全局单例（id=1）JSON 配置。``RequestThrottle``：API 请求按分钟窗口计数
+——必须落库，进程内计数会被 worker 数摊薄；键 ``api:<userId|ip>:<role>``。"""
 
 from django.db import models
 
@@ -11,17 +9,8 @@ from django.db import models
 class RateLimitConfig(models.Model):
     """流量限制配置（全局单例 id=1）。
 
-    config 结构::
-
-        {
-          "login": {"failLimit": 10, "windowSeconds": 300, "lockSeconds": 900},
-          "api": {"enabled": true,
-                  "perMinute": {"superuser": 600, "compSuperAdmin": 300,
-                                "admin": 200, "player": 120, "anonymous": 120}}
-        }
-
-    ``anonymous`` 按**客户端 IP** 计数：同一台机器的多个标签页、或同一 NAT 出口
-    （学校机房 / 办公室）共享该额度，因此不能设得过低。
+    config 形如 {"login": {...}, "api": {"enabled": true, "perMinute": {role: 次数}}}；
+    ``anonymous`` 按**客户端 IP** 计数：同机多标签页 / 同一 NAT 出口共享额度，不能设得过低。
     """
 
     config = models.JSONField('配置')
@@ -46,18 +35,14 @@ class RateLimitConfig(models.Model):
 
     @classmethod
     def save_config(cls, config):
-        """整体保存配置（单例 upsert），返回保存后的配置。"""
         row, _created = cls.objects.update_or_create(pk=1, defaults={'config': config})
         return row.config
 
 
 class RequestThrottle(models.Model):
-    """API 请求限流计数（按分钟窗口）。
+    """API 请求限流计数（按分钟窗口），键 ``api:<userId|ip>:<role>``。
 
-    键 = ``api:<userId|ip>:<role>``（登录用户用 userId、匿名用客户端 IP，
-    role ∈ superuser/compSuperAdmin/admin/player/anonymous）；
-    ``locked_until`` 非空且未到期表示窗口内超限被锁（等窗口结束自动恢复）。
-    """
+    ``locked_until`` 非空且未到期 = 窗口内超限被锁。"""
 
     key = models.CharField('限流键（api:用户|IP:角色）', max_length=220, unique=True)
     window_start = models.DateTimeField('窗口起点')

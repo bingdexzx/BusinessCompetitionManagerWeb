@@ -1,6 +1,5 @@
 <template>
   <div class="dm-hub">
-    <!-- 枢纽头部：一句话说明 + 记录总数（只读统计，不改变任何接口契约） -->
     <header class="dm-hub-head anim-fade-in-up">
       <div class="dm-hub-copy">
         <h1 class="page-title dm-hub-title">数据管理</h1>
@@ -17,7 +16,6 @@
       </div>
     </header>
 
-    <!-- 数据域入口：图标 + 名称 + 一句话说明 + 记录数（仍走 ?type= 查询参数路由） -->
     <nav class="dm-grid anim-stagger" aria-label="数据域">
       <button
         v-for="item in navItems"
@@ -54,9 +52,7 @@
 </template>
 
 <script setup lang="ts">
-// 数据管理入口枢纽：按类型切换到各管理器组件（照旧项目的切换方式：
-// MANAGER_COMPONENTS 一次性创建异步组件引用 + <component :is> 渲染，
-// 避免 computed 里每次调用 defineAsyncComponent 工厂导致组件反复卸载重挂载）。
+// 一次性创建异步组件引用，避免 computed 每次生成新组件类型导致卸载重挂载/loading 死循环
 import { computed, defineAsyncComponent, onMounted, ref, type Component } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
@@ -93,7 +89,7 @@ const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 
-/** 系统超管或本比赛超管：可新建/编辑/删除（其余只读） */
+// 可增删改：系统超管或本比赛超管
 const canManage = computed(
   () =>
     authStore.isSuperuser ||
@@ -102,14 +98,11 @@ const canManage = computed(
     ),
 );
 
-/** 数据域入口（顺序/图标/文案照旧项目侧栏「数据管理」子菜单，另加一句话说明） */
 interface NavItem {
   type: string;
   label: string;
   icon: Component;
-  /** 入口卡片上的一句话说明（只加信息量，不改任何业务文案） */
   desc: string;
-  /** 地图项不在本页渲染，跳转地图页 */
   external?: boolean;
 }
 
@@ -131,7 +124,6 @@ const NAV_ITEMS: NavItem[] = [
   { type: "production-lines", label: "生产线", icon: Cpu, desc: "加工能力、劳动力与年加工上限" },
 ];
 
-// 拥有管理权限时标题保留「管理」二字，否则去掉（照旧侧栏文案规则）
 const navItems = computed(() =>
   NAV_ITEMS.map((item) => ({
     ...item,
@@ -148,8 +140,6 @@ const title = computed(
   () => navItems.value.find((i) => i.type === type.value)?.label || "数据管理",
 );
 
-// 一次性创建所有异步组件引用，避免 computed 里每次调用 defineAsyncComponent 工厂
-// 导致每次渲染返回新引用，Vue 反复判定组件类型变化、卸载重挂载、陷入 loading 死循环。
 const MANAGER_COMPONENTS: Record<string, Component> = {
   parts: defineAsyncComponent(() => import("./PartsManager.vue")),
   products: defineAsyncComponent(() => import("./ProductsManager.vue")),
@@ -164,7 +154,7 @@ const MANAGER_COMPONENTS: Record<string, Component> = {
     import("./InfrastructureManager.vue"),
   ),
   fuels: defineAsyncComponent(() => import("./FuelManager.vue")),
-  // 地图管理挂回枢纽页内切换（保持顶部数据域菜单常驻；不再跳独立页）
+  // 地图管理在枢纽内切换，保持顶部菜单常驻
   maps: defineAsyncComponent(() => import("./MapsManager.vue")),
 };
 
@@ -181,10 +171,7 @@ function selectType(item: NavItem): void {
   void router.push({ path: route.path, query: { ...route.query, type: item.type } });
 }
 
-/**
- * 各数据域的记录数（入口卡片的信息量）。
- * 只读统计：沿用各表既有的 list 接口，pageSize=1 仅取 total，不新增/不改动任何接口契约。
- */
+// 只读统计：沿用 list 接口 pageSize=1 取 total，不改接口契约
 function totalOf(res: BasedataListResult | undefined): number {
   if (typeof res?.total === "number" && Number.isFinite(res.total)) return res.total;
   return Array.isArray(res?.items) ? res.items.length : 0;
@@ -239,7 +226,7 @@ const counts = ref<Record<string, number | null>>({});
 const countsReady = ref(false);
 let countsPending = false;
 
-/** 拉取记录数：失败的数据域保留「—」，不打断页面（不带 toast） */
+// 统计失败保留「—」，不打断页面也不弹 toast
 async function loadCounts(): Promise<void> {
   if (countsPending) return;
   if (!props.cid) {
@@ -264,8 +251,7 @@ async function loadCounts(): Promise<void> {
 
 onMounted(loadCounts);
 
-// 基础数据变更后刷新记录数（沿用全局 400ms 去抖合并，不额外造刷新风暴）。
-// 注意：枢纽与其下方管理器是**同一页**同时可见，所以不能按「是否在管理器里」跳过统计。
+// 枢纽与管理器同页可见，不能在管理器里跳过统计；沿用 400ms 去抖。
 useResourceRefresh(["basedata"], loadCounts);
 
 function countOf(t: string): number | null {
@@ -276,7 +262,6 @@ function countText(t: string): string {
   return n === null ? "—" : n.toLocaleString("zh-CN");
 }
 
-/** 记录总数：数字滚动到目标值（尊重系统「减少动态效果」偏好） */
 const totalCount = computed(() =>
   Object.values(counts.value).reduce<number>((sum, n) => sum + (n ?? 0), 0),
 );
@@ -290,14 +275,13 @@ const totalShown = useCountUp(totalCount);
   gap: 16px;
 }
 
-/* ---------- 枢纽头部：标题 + 说明 + 记录总数 ---------- */
 .dm-hub-head {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
 }
-/* 提高特异性压过全局 .app-content .page-title（H1 略大于管理器标题，形成层级） */
+/* 提高特异性压过全局 .page-title，形成层级 */
 .dm-hub .dm-hub-title {
   font-size: var(--font-3xl);
   margin: 0;
@@ -329,7 +313,6 @@ const totalShown = useCountUp(totalCount);
   color: var(--color-text-primary);
 }
 
-/* ---------- 数据域入口卡片 ---------- */
 .dm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(204px, 1fr));
@@ -377,7 +360,6 @@ const totalShown = useCountUp(totalCount);
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 单行省略：卡片高度稳定，10 个入口不因说明长短参差 */
 .dm-card-desc {
   font-size: var(--font-xs);
   line-height: 1.4;
@@ -400,7 +382,7 @@ const totalShown = useCountUp(totalCount);
   height: 14px;
   border-radius: var(--radius-xs);
 }
-/* 当前数据域：品牌色描边 + 浅色底，和悬停位移区分开（不改变尺寸） */
+/* 当前域用描边+浅底区分，不改变尺寸 */
 .dm-card.is-active {
   border-color: var(--color-primary);
   background: var(--gradient-brand-soft);
@@ -414,7 +396,6 @@ const totalShown = useCountUp(totalCount);
   color: var(--color-primary);
 }
 
-/* 兜底占位（不属于任何管理器的数据域） */
 .placeholder {
   padding: 24px;
 }
@@ -423,7 +404,6 @@ const totalShown = useCountUp(totalCount);
   color: var(--color-text-secondary);
 }
 
-/* ---------- 响应式：平板收紧，手机两列紧凑卡 ---------- */
 @media (max-width: 1024px) {
   .dm-grid {
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -431,7 +411,6 @@ const totalShown = useCountUp(totalCount);
   }
 }
 @media (max-width: 640px) {
-  /* 手机端头部收到一行：标题 + 记录总数（说明文字与标签让位给数据域卡片） */
   .dm-hub-head {
     align-items: center;
     gap: 12px;
@@ -452,7 +431,7 @@ const totalShown = useCountUp(totalCount);
     margin-top: 0;
     font-size: var(--font-lg);
   }
-  /* 手机端两列紧凑卡：只留图标 + 名称 + 记录数 */
+  /* 手机两列紧凑卡 */
   .dm-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;

@@ -1,14 +1,9 @@
 """区域 / 消费者需求 / 总览卡片视图（比赛域，路由挂 /api 前缀下）。
 
-权限约定（对齐 basedata）：读 = 本比赛成员；写 = can_manage_competition。
-
-**区域总览（2026-10 需求：与旧系统一致）**：区域**在地图管理里创建**（地图节点上的
-``region`` 字段），总览页只做「按区域展示 + 配置数据框/消费者需求」：
-
-- ``GET  .../regions/map-overview``：区域来自 ``MapNode.region``（去重）∪ 已有 Region 实体，
-  每个区域带 ``companies``（公司 ``location`` 字段值 == 该区域下某个地图节点名）与
-  ``cards``（服务端算好当前值的概览卡片）；
-- ``PUT  .../regions/by-name/<name>/overview-cards``：按**区域名**保存卡片（无 Region 行时自动建）。
+权限：读 = 本比赛成员；写 = can_manage_competition（对齐 basedata）。
+区域总览（2026-10 需求）：区域在地图管理里创建（MapNode.region），总览页只做展示与卡片配置；
+map-overview 的区域 = MapNode.region 去重 ∪ 已有 Region 实体，卡片值由服务端算好；
+by-name 接口按区域名存卡片（无 Region 行时自动建）。
 """
 
 from __future__ import annotations
@@ -21,7 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authority import can_manage_competition, user_company_ids, user_membership
+from apps.common.authority import can_manage_competition, can_read_competition
 from apps.competition.regions import services as region_services
 from apps.competition.regions.models import ConsumerDemand, Region
 
@@ -34,15 +29,8 @@ def _err(code: int, message: str) -> Response:
 
 
 def _require_member(user, cid) -> bool:
-    """读权限：本比赛成员（系统超管恒通过；对齐 basedata.views._require_member）。"""
-    if user is not None and user.is_authenticated:
-        if user.is_superuser:
-            return True
-        if user_membership(user, cid) is not None:
-            return True
-        if user_company_ids(user, cid):
-            return True
-    return False
+    """读权限：本比赛成员（系统超管恒通过）——实现在 apps.common.authority。"""
+    return can_read_competition(user, cid)
 
 
 def _region_data(region: Region, demand_count: int | None = None) -> dict:
@@ -67,9 +55,6 @@ def _demand_data(demand: ConsumerDemand) -> dict:
         'note': demand.note or '',
         'updatedAt': demand.updated_at.isoformat(),
     }
-
-
-# ---------------------------------------------------------------- 地图概览（区域总览）
 
 
 def _parse_location_value(raw) -> str:
@@ -120,10 +105,7 @@ def _local_companies(region_name: str) -> list:
 
 
 def _resolve_cards(cards: list) -> list:
-    """补全卡片并算好当前值；公司/字段缺失 → ``valid=False``（旧系统口径）。
-
-    取值口径：优先**最新财年**行，其次无财年行，都没有则用字段初始值。
-    """
+    """补全卡片并算好当前值（公司/字段缺失 → valid=False）；取值优先最新财年行，其次无财年行，最后初始值。"""
     from apps.competition.companies.models import Company
     from apps.competition.industries.models import CompanyFieldValue, IndustryField
 
@@ -213,10 +195,7 @@ class RegionMapOverviewView(APIView):
 
 
 class RegionCardsByNameView(APIView):
-    """PUT /api/competitions/{cid}/regions/by-name/<name>/overview-cards（按区域名存卡片）。
-
-    区域由地图管理创建；这里按名字取（没有 Region 行就建一个）以便挂卡片配置。
-    """
+    """PUT /regions/by-name/<name>/overview-cards（按区域名存卡片）：区域由地图管理创建，无 Region 行时按名建。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -293,8 +272,6 @@ class RegionListView(APIView):
 
 
 class RegionDetailView(APIView):
-    """GET/PATCH/DELETE /api/competitions/{cid}/regions/{pk}。"""
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):
@@ -329,24 +306,20 @@ class RegionDetailView(APIView):
         region = Region.objects.filter(pk=pk).first()
         if region is None:
             return _err(404, '区域不存在')
-        # 阻断：区域名下仍挂着地图节点时不允许删除（与旧系统一致）——
-        # 否则区域总览仍会从地图节点列出该区域，但卡片配置已被删掉。
+        # 名下仍有地图节点时禁止删除（否则总览仍会从节点列出该区域，卡片配置却已丢失）
         from apps.competition.basedata.models import MapNode
 
         if MapNode.objects.filter(region=region.name).exists():
             return _err(400, '该区域下仍有地图节点，无法删除')
-        # 删除区域后：ConsumerDemand 随 CASCADE 一并删除；Company.region 走 SET_NULL
-        # 自动置空（不会残留悬空 region_id），无需再对该区域重算公司公式字段。
+        # 删除后 ConsumerDemand 随 CASCADE 删除、Company.region 走 SET_NULL（无悬空 region_id）。
         region.delete()
         return Response({'ok': True})
 
 
 class RegionOverviewCardsView(APIView):
-    """GET/PUT/PATCH /api/competitions/{cid}/regions/{pk}/overview-cards（整表替换）。
+    """GET/PUT/PATCH /regions/{pk}/overview-cards（整表替换）。
 
-    卡片结构：[{id, displayName, companyId, industryFieldKey, zone?}]
-    —— 规范字段键为 ``industryFieldKey``；提交仍兼容旧键 ``industryFieldId``，
-    写库时若卡片只有 ``industryFieldId`` 则复制到 ``industryFieldKey``（旧配置迁移）。
+    卡片键为 industryFieldKey；提交兼容旧键 industryFieldId（写库时复制，旧配置迁移）。
     """
 
     permission_classes = [IsAuthenticated]
@@ -398,11 +371,7 @@ def _parse_quantity(raw):
 
 
 def _resolve_demand_region(data):
-    """定位需求所属区域：``regionId`` 优先；否则按**区域名**（``region``）取/建。
-
-    区域在地图管理里创建（地图节点 region 字段），总览页只拿得到区域名，
-    因此这里支持用名字关联；没有 Region 行时自动补建，便于挂需求与卡片。
-    """
+    """定位需求所属区域：regionId 优先，否则按区域名取/建（区域在地图管理里创建，总览页只拿得到名字）。"""
     region_id = data.get('regionId')
     if region_id not in (None, ''):
         region = Region.objects.filter(pk=region_id).first()
@@ -415,10 +384,7 @@ def _resolve_demand_region(data):
 
 
 class ConsumerDemandListView(APIView):
-    """GET/POST /api/competitions/{cid}/consumer-demands（?regionId 过滤）。
-
-    POST 支持 ``{region: "区域名"}``（区域总览页口径）或 ``{regionId}``。
-    """
+    """GET/POST /consumer-demands（?regionId 过滤）；POST 支持 {region: 区域名}（总览页口径）或 {regionId}。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -453,8 +419,6 @@ class ConsumerDemandListView(APIView):
 
 
 class ConsumerDemandDetailView(APIView):
-    """GET/PATCH/DELETE /api/competitions/{cid}/consumer-demands/{pk}。"""
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, pk):

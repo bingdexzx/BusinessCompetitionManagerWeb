@@ -1,8 +1,4 @@
-"""合同类型暴露与合同实例导入（§9.2：合同信息自动导入并暴露为接口）。
-
-**重导入幂等（2026-10 决策）**：合同实例导入按「类型 + 名称 + 参与方 + 输入」指纹去重，
-同一份比赛包重复导入不会产生重复合同（已存在的跳过并记入导入报告）。
-"""
+"""合同类型暴露与合同实例导入（§9.2）；重导入按「类型+名称+参与方+输入」指纹幂等去重。"""
 
 import json
 
@@ -18,9 +14,6 @@ __all__ = ['contract_fingerprint', 'import_contract_instances']
 def _plugin_abs_path(file_path: str) -> str:
     from django.core.files.storage import default_storage
     return default_storage.path(file_path)
-
-
-# ---------------------------------------------------------------- 插件版本解析（引擎用）
 
 
 def _contract_registry(competition, contract_type_key, plugin_version=None):
@@ -62,11 +55,7 @@ def contract_number_prefix(contract_type_key: str) -> str:
     return contract_type_key[:2].upper()
 
 
-# ---------------------------------------------------------------- 合同类型接口
-
-
 def contract_types_for_competition(competition) -> list:
-    """比赛暴露的合同类型 schema（GET .../contract-types）。"""
     links = (
         PackagePlugin.objects
         .filter(package__competition=competition, kind='CONTRACT')
@@ -103,11 +92,8 @@ def _resolve_company(name: str, created_by: int) -> Company:
 def import_contract_instances(rows, contract_modules, *, user=None):
     """导入合同实例（草稿态）。rows 为 contracts.xlsx 解析行。
 
-    contract_modules: {contractTypeKey: {'module': ..., 'version': ...}}
-    返回 ``{'created', 'skipped', 'errors', 'skipNotes'}``。
-
-    幂等：按合同指纹（类型+名称+参与方+输入）跳过**已存在**的合同——包括同一份包内
-    重复的行，以及此前导入过（哪怕后来被软删除）的同一条合同，避免重导入产生重复合同。
+    幂等：按合同指纹（类型+名称+参与方+输入）跳过已存在的合同——同一份包内的重复行，
+    以及此前导入过（哪怕已软删除）的同一条，避免重导入产生重复合同。
     """
     errors, created, skipped, skip_notes = [], 0, 0, []
     seen_in_run: set[str] = set()

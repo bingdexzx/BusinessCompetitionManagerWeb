@@ -1,15 +1,8 @@
 """流量限制配置的服务层：默认配置 / 严格校验 / 5 秒读缓存。
 
-- 配置读取带 **5 秒缓存**（中间件与登录限流每个请求都要读配置，避免每请求查库）；
-  PUT / reset 保存后立即失效缓存（``invalidate_config_cache``）；
-- 校验规则（PUT 严格校验，非法字段一律 400）：
-  - 顶层只允许 ``login`` / ``api`` 两段，字段齐全、不得缺省或多余；
-  - 数值（failLimit / windowSeconds / lockSeconds / perMinute.*）必须是**正整数**
-    （布尔、浮点、数字字符串一律拒绝）；
-  - ``api.enabled`` 必须是布尔值；
-  - ``api.perMinute`` 键集合固定五角色：superuser / compSuperAdmin / admin /
-    player / anonymous。
-"""
+配置读取带 **5 秒缓存**（中间件与登录限流每请求都要读，避免每请求查库），PUT/reset 后立即
+失效。PUT 严格校验：只允许 login/api 两段且字段不多不少；数值必须**正整数**（bool / float /
+数字字符串一律拒绝）；``api.perMinute`` 固定五角色键。"""
 
 from __future__ import annotations
 
@@ -17,13 +10,10 @@ import copy
 import threading
 import time
 
-# 五种角色（API 每分钟限额的固定键集合）
 ROLE_KEYS = ('superuser', 'compSuperAdmin', 'admin', 'player', 'anonymous')
 
-# 登录限流三参数
 LOGIN_KEYS = ('failLimit', 'windowSeconds', 'lockSeconds')
 
-# 默认配置（从未保存过配置时使用）
 DEFAULT_RATE_LIMIT_CONFIG = {
     'login': {'failLimit': 10, 'windowSeconds': 300, 'lockSeconds': 900},
     'api': {
@@ -33,15 +23,13 @@ DEFAULT_RATE_LIMIT_CONFIG = {
             'compSuperAdmin': 300,
             'admin': 200,
             'player': 120,
-            # 匿名按**客户端 IP** 计数：同一台机器上的多个标签页 / 同一 NAT 出口
-            # （学校机房、办公室）共享这一个额度，30 太低会误伤正常浏览
-            # （实测：打开多个标签页 + 学校搜索即触发 429）。取 120（2 req/s）。
+            # 匿名按**客户端 IP** 计数：同机多标签页 / 同一 NAT 出口共享额度，
+            # 30 太低会误伤正常浏览（实测多标签页 + 学校搜索即 429），取 120（2 req/s）。
             'anonymous': 120,
         },
     },
 }
 
-# 配置读缓存 TTL（秒）
 CONFIG_CACHE_TTL_SECONDS = 5.0
 
 _cache_lock = threading.Lock()
@@ -57,10 +45,7 @@ def invalidate_config_cache() -> None:
 
 
 def load_saved_config():
-    """读取库中保存的配置（5 秒缓存）。
-
-    返回 dict（已保存）或 None（未保存过 / 读取失败，调用方自行回退）。
-    """
+    """读取库中保存的配置（5 秒缓存）；返回 dict 或 None（未保存/读取失败，调用方回退）。"""
     now = time.monotonic()
     with _cache_lock:
         if _cache_state['value'] is not _UNSET and now - _cache_state['loaded_at'] < CONFIG_CACHE_TTL_SECONDS:
@@ -89,11 +74,7 @@ def get_effective_config() -> dict:
 
 
 def load_saved_login_params():
-    """登录限流三参数 ``(failLimit, windowSeconds, lockSeconds)``。
-
-    优先读配置库 login 段（5 秒缓存）；未保存过配置 / 配置非法时返回 None，
-    由调用方回退 settings 默认值（LOGIN_FAIL_LIMIT 等）。
-    """
+    """登录限流三参数 ``(failLimit, windowSeconds, lockSeconds)``；未保存/非法返回 None，由调用方回退 settings。"""
     saved = load_saved_config()
     login = saved.get('login') if isinstance(saved, dict) else None
     if not isinstance(login, dict):
@@ -108,7 +89,6 @@ def load_saved_login_params():
 
 
 def save_config(config: dict) -> dict:
-    """整体保存配置（单例 id=1），保存后失效缓存，返回保存后的配置。"""
     from apps.global_.sysconfig.models import RateLimitConfig
 
     saved = RateLimitConfig.save_config(config)
@@ -117,11 +97,7 @@ def save_config(config: dict) -> dict:
 
 
 def reset_config() -> dict:
-    """恢复默认配置并失效缓存，返回默认配置。"""
     return save_config(copy.deepcopy(DEFAULT_RATE_LIMIT_CONFIG))
-
-
-# ---------------------------------------------------------------- 校验
 
 
 def _is_positive_int(value) -> bool:
@@ -130,16 +106,12 @@ def _is_positive_int(value) -> bool:
 
 
 def validate_config(payload):
-    """严格校验 PUT 的 config 整体。
-
-    返回 ``(config, None)`` 或 ``(None, 中文错误信息)``。
-    """
+    """严格校验 PUT 的 config 整体：返回 ``(config, None)`` 或 ``(None, 中文错误)``。"""
     if not isinstance(payload, dict):
         return None, '配置必须是 JSON 对象'
     if set(payload.keys()) != {'login', 'api'}:
         return None, '配置只允许 login / api 两个配置段'
 
-    # ---- login 段
     login = payload.get('login')
     if not isinstance(login, dict):
         return None, 'login 配置段必须是 JSON 对象'
@@ -149,7 +121,6 @@ def validate_config(payload):
         if not _is_positive_int(login.get(key)):
             return None, f'login.{key} 必须是正整数'
 
-    # ---- api 段
     api = payload.get('api')
     if not isinstance(api, dict):
         return None, 'api 配置段必须是 JSON 对象'

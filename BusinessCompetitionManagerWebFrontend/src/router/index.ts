@@ -51,7 +51,7 @@ const router = createRouter({
       name: 'competition-stocks-manage',
       component: () => import('../views/StockManageView.vue'),
       props: true,
-      meta: { participant: true }, // 交易管理需参赛身份
+      meta: { participant: true },
     },
     {
       path: '/competitions/:cid/stocks/admin',
@@ -174,8 +174,7 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
 
-  // 刷新/深链进来时用户资料可能还没加载：isSuperuser / memberships 都依赖它，
-  // 先补齐会话再判权限，否则系统超管会被误判成无权限、被重定向回比赛列表。
+  // 刷新/深链进来时用户资料可能还没加载：先补齐会话再判权限，否则系统超管会被误判成无权限
   await auth.ensureSession()
   if (!auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
@@ -185,14 +184,12 @@ router.beforeEach(async (to) => {
     return { name: 'competitions' }
   }
 
-  // cid 必须是纯数字：拦截 /competitions/undefined 等非法链接
-  //（否则页面会以 undefined 发 /api/competitions/undefined/... 请求 → 404 噪音）
+  // cid 必须是纯数字：拦截 /competitions/undefined 等非法链接（否则会发无效请求 → 404 噪音）
   const rawCid = to.params.cid
   if (rawCid !== undefined && !/^\d+$/.test(String(rawCid))) {
     return { name: 'competitions' }
   }
 
-  // 超管页（结算 / 审计日志）：系统超管 或 本比赛超管（与后端权限一致）
   if (to.meta.manager) {
     const cid = String(to.params.cid ?? '')
     const isCompSuperAdmin = auth.memberships.some(
@@ -203,7 +200,6 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // 参赛页（股票交易管理）：本比赛成员（参赛身份）或 系统超管
   if (to.meta.participant) {
     const cid = String(to.params.cid ?? '')
     const isMember = auth.memberships.some((m) => String(m.id) === cid)

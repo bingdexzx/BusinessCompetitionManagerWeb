@@ -1,24 +1,9 @@
-"""合同引擎（§3 合同状态机、§7 合同引擎与落账设计、§14.2 字段日志）。
+"""合同引擎（§3 合同状态机、§7 落账设计、§14.2 字段日志）。
 
-状态流转（转移表 §3.3）：
-  T1 create        → DRAFT            参与方与输入满足 inputSchema
-  T2 submit        → PENDING_PARTY    运行 check()（保证创建即能执行）
-  T3 confirm       → PENDING_PARTY/PENDING_EXEC   N 方按参与方顺序依次确认
-  T4 numbering     → EXECUTED         确认链完成 → 系统生成统一编号 → **自动执行**
-  T5 recheck       → POSTED           **再次运行检查**通过 → 落账 + 冻结
-  T6 request_modify→ MOD_APPLYING     任意一方申请修改（理由）
-  T7 approve       → MOD_EDITING      超管通过（解冻，仅申请方可改）
-  T7' reject       → POSTED           超管驳回
-  T8 other approve → MOD_EDITING      所有其他方逐一通过（缺一不可）
-  T8' other reject → POSTED           任一其他方驳回
-  T9 submit_changes→ PENDING_EXEC     回滚旧落账 → 运行新的检查 → 重新执行
-  T10              → EXECUTED → POSTED（round_no+1，根据新的内容修改落账）
-
-补录合同（is_backfill，决策 D14）：BACKFILL_REVIEW（超管审核）→ DRAFT 确认链；
-以**所补录财年末备份快照**为执行基准；落账后**非财年定时器字段自动同步**（BACKFILL_SYNC）。
-
-执行 = 落账前的字段改写（apply 产生效果）、检查保证正确（check）、落账冻结生效（§3.4）。
-回滚 = 逆序重放（ADD↔SUB、SET 恢复 beforeRaw，§7.2）。
+主链（§3.3）：create(DRAFT) → submit(运行 check) → 各方按序 confirm → 编号 → 自动 execute →
+再次 check → 落账冻结(POSTED)；修改链 T6→T8→T9/T10（回滚旧落账 + 重检查 + 重执行），驳回回 POSTED。
+补录（决策 D14）：以所补录财年末备份快照为执行基准，落账后非财年定时器字段自动同步（BACKFILL_SYNC）。
+执行 = apply 改写 + check + 落账冻结；回滚 = 逆序重放（ADD↔SUB、SET 恢复 beforeRaw，§7.2）。
 """
 
 from django.db import transaction
@@ -48,9 +33,6 @@ class CheckFailedError(ContractError):
 def comp_atomic():
     """比赛库事务（多库架构下事务必须落在比赛库连接上，§5.2）。"""
     return transaction.atomic(using=(ctx.get_competition_alias() or 'default'))
-
-
-# ================================================================ 插件与上下文
 
 
 def load_contract_module(contract: Contract):
@@ -122,18 +104,11 @@ def build_context(contract: Contract, *, basis=None):
     )
 
 
-def run_check(module, contract: Contract, *, basis=None) -> list:
-    """运行插件 check(ctx)（§7.3 四个检查点共用）。返回问题列表。"""
-    problems = module.check(build_context(contract, basis=basis))
-    return [str(p) for p in (problems or [])]
-
-
 def run_check_ex(module, contract: Contract, *, basis=None) -> tuple:
     """运行 check 并附带**检查依据快照**（当时字段值，供账本重演替换展示）。"""
     context = build_context(contract, basis=basis)
     problems = module.check(context)
     problems = [str(p) for p in (problems or [])]
-    # 快照 {role: {field: value}}（仅本合同参与方的字段；体积=字段数，可控）
     snapshot = {}
     for (role, field), value in getattr(context, '_fields', {}).items():
         snapshot.setdefault(role, {})[field] = value
@@ -142,10 +117,9 @@ def run_check_ex(module, contract: Contract, *, basis=None) -> tuple:
 
 def record_check(contract: Contract, checkpoint: str, problems: list, *, user=None,
                  round_no=None, basis=None):
-    """检查结果落库留痕（append-only，修改后界面按轮次回放当时的检查内容）。
+    """检查结果落库留痕（append-only，界面按轮次回放当时的检查内容）。
 
-    - round_no：事务回滚补记失败留痕时，显式指定检查所属轮次（可能与回滚后的合同轮次不同）；
-    - basis：检查依据快照（当时的字段值），账本重演时按链上重算值替换展示（§查账同步）。
+    round_no 可显式指定（回滚后补记失败留痕时与合同轮次不同）。
     """
     from apps.competition.contracts.models import ContractCheck
 
@@ -162,12 +136,8 @@ def record_check(contract: Contract, checkpoint: str, problems: list, *, user=No
 
 
 def run_apply(module, contract: Contract, *, basis=None) -> list:
-    """运行插件 apply(ctx) 得到效果列表（§7.2）。"""
     effects = module.apply(build_context(contract, basis=basis)) or []
     return list(effects)
-
-
-# ================================================================ 效果与落账
 
 
 def _resolve_effect_company(effect, companies: dict):
@@ -192,10 +162,7 @@ def _effect_after(before, op, value):
 
 
 def _write_value(company, field_key, value, fiscal_year):
-    """写字段值（财务报表按财年行，实体信息表按无财年行），乐观锁 version+1。
-
-    fiscal_year=None 时：财务报表写最新财年行（无则无财年行），实体信息表写无财年行。
-    """
+    """写字段值（财报按财年行、实体信息表按无财年行，乐观锁 version+1）；fiscal_year=None 时财报取最新财年行。"""
     definition = IndustryField.objects.filter(field_key=field_key).first()
     if definition and definition.data_table == IndustryField.DataTable.FINANCE:
         if fiscal_year is not None:
@@ -297,9 +264,6 @@ def rollback_round(contract: Contract, *, operator, round_no=None):
         )
 
 
-# ================================================================ 编号（D13）
-
-
 def generate_unified_number(contract: Contract, competition) -> str:
     """统一编号：类别前缀-比赛代码-财年-流水号（如 PO-2025-FY1-0001）。"""
     from apps.competition.contracts.services import contract_number_prefix
@@ -316,11 +280,7 @@ def generate_unified_number(contract: Contract, competition) -> str:
     return f'{prefix}-{comp_code}-{fy_part}-{seq.last_value:04d}'
 
 
-# ================================================================ 冻结（§7.4，决策 D10）
-
-
 def freeze_contract(contract: Contract):
-    """落账后冻结合同相关资源（字段级）。"""
     seen = set()
     for effect in contract.effects.filter(round_no=contract.round_no):
         key = (effect.company_id, effect.field_key)
@@ -344,9 +304,6 @@ def assert_field_writable(company_id, field_key):
         company_id=company_id, field_key=field_key, unfrozen_at__isnull=True).exists()
     if frozen:
         raise ContractError(f'字段 {field_key} 已被合同落账冻结，禁止其他途径修改')
-
-
-# ================================================================ 状态机操作
 
 
 def _competition():
@@ -461,7 +418,6 @@ def confirm_party(contract: Contract, *, user, party_role=None):
         _notify_pending_party(contract)
         return contract
 
-    # 确认链完成：系统自动生成统一编号 → 立即自动执行（T4）
     contract.status = Contract.Status.PENDING_EXEC
     contract.save(update_fields=['parties', 'pending_party_index', 'status', 'updated_at'])
     _auto_number_and_execute(contract)
@@ -490,7 +446,6 @@ def _auto_number_and_execute(contract: Contract):
 
 
 def _assert_backfill_backup(contract: Contract):
-    """补录合同执行前置守卫：必须有所补录财年末备份快照（§3.4 / §10.2）。"""
     from apps.competition.fiscal.models import FiscalYearBackup
 
     if not FiscalYearBackup.objects.filter(fiscal_year_id=contract.fiscal_year_id).exists():
@@ -507,10 +462,7 @@ def retry_execute(contract: Contract, *, user):
 
 
 def execute_and_post(contract: Contract, *, operator=None):
-    """PENDING_EXEC → EXECUTED（apply）→ 再次检查 → POSTED（落账 + 冻结）。
-
-    整体一个事务：自动执行失败不落半账（§7.5）。
-    """
+    """PENDING_EXEC → EXECUTED(apply) → 再次检查 → POSTED(落账+冻结)；整体一个事务，失败不落半账（§7.5）。"""
     if contract.is_backfill:
         _assert_backfill_backup(contract)
     module = load_contract_module(contract)
@@ -524,13 +476,11 @@ def execute_and_post(contract: Contract, *, operator=None):
             if contract.is_backfill and contract.fiscal_year_id:
                 basis = _backup_basis(contract)
 
-            # 待执行 → 已执行：apply() 产生效果
             effects = run_apply(module, contract, basis=basis)
             contract.status = Contract.Status.EXECUTED
             contract.executed_at = timezone.now()
             contract.save(update_fields=['status', 'executed_at', 'updated_at'])
 
-            # 已执行 → 落账：再次运行检查（获取公司数据并执行检查）
             problems, check_basis = run_check_ex(module, contract, basis=basis)
             record_check(contract, 'RECHECK', problems, user=operator, basis=check_basis)
             if problems:
@@ -557,7 +507,6 @@ def _actor(contract: Contract):
 
 
 def _backup_basis(contract: Contract):
-    """补录执行基准：所补录财年末数据表备份快照（§3.4 / §10.2）。"""
     from apps.competition.fiscal.models import FiscalYearBackup
     basis = {}
     for backup in FiscalYearBackup.objects.filter(fiscal_year_id=contract.fiscal_year_id):
@@ -566,12 +515,7 @@ def _backup_basis(contract: Contract):
 
 
 def _backfill_sync(contract: Contract, effects, operator):
-    """补录合同落账后：**非财年定时器字段自动同步修改信息**（§2.2 阶段五）。
-
-    - 实体信息表字段的效果已直接写入当前值（见 _write_value）；
-    - 财务报表字段（非定时器）把变化同步到当前数据（无财年行，BACKFILL_SYNC）；
-    - 财年定时器字段只改写所补录财年的数据行，不向后同步。
-    """
+    """补录落账后：非财年定时器字段自动同步到当前数据（§2.2 阶段五 / BACKFILL_SYNC）；财年定时器字段不向后同步。"""
     companies = party_company_map(contract)
     timer_keys = set(IndustryField.objects.filter(timer_enabled=True)
                      .values_list('field_key', flat=True))
@@ -603,9 +547,6 @@ def _write_base_value(company, field_key, value):
         row.version += 1
         row.save(update_fields=['value', 'version', 'updated_at'])
     return row
-
-
-# ================================================================ 修改流程（T6–T10）
 
 
 def request_modify(contract: Contract, *, user, reason: str):
@@ -657,11 +598,7 @@ def review_modify(contract: Contract, *, user, approve: bool, note: str = ''):
 
 
 def other_party_review(contract: Contract, *, user, approve: bool, note: str = ''):
-    """T8 / T8'：所有其他方逐一通过（任一方驳回 → 回到落账态）。
-
-    按**公司**计票：投票人必须是「申请方公司之外」的参与方公司的严格主体
-    （队长/队员/所辖管理员，比赛超管与系统超管不自动投票）；每家公司一票。
-    """
+    """T8 / T8'：所有其他方逐一通过，任一方驳回 → 回到落账态；按公司计票（超管不自动投票）。"""
     if contract.status != Contract.Status.MOD_EDITING:
         raise ContractError(f'当前状态 {contract.status} 不在修改中')
     mod = contract.mod_requests.filter(status=ContractModRequest.Status.EDITING).first()
@@ -811,9 +748,6 @@ def _execute_after_modify(contract: Contract):
                         f'统一编号 {contract.unified_number}（第 {contract.round_no} 轮）')
 
 
-# ================================================================ 补录审核（§3.4）
-
-
 def review_backfill(contract: Contract, *, user, approve: bool, note: str = ''):
     """补录合同需超级管理员审核：通过 → DRAFT 确认链；驳回 → 取消。"""
     if contract.status != Contract.Status.BACKFILL_REVIEW:
@@ -831,9 +765,6 @@ def review_backfill(contract: Contract, *, user, approve: bool, note: str = ''):
         payload={'contractId': contract.id},
     )
     return contract
-
-
-# ================================================================ 通知
 
 
 def _notify_pending_party(contract: Contract):

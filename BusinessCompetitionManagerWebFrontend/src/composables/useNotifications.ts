@@ -16,7 +16,6 @@ export interface NotificationPayload {
 
 type Handler = (message: NotificationPayload) => void
 
-/** 资源变更事件（resource:changed / resource:replay 条目） */
 export interface ResourceChangeEvent {
   type?: string
   seq?: number
@@ -39,16 +38,14 @@ let socket: WebSocket | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retryDelay = 1000
 let started = false
-/** 是否订阅系统级（global）资源变更（登录后常驻；重连后自动恢复） */
 let globalSubscribed = false
-/** 期望订阅的比赛（重连后自动恢复）与其本地 seq 游标 */
 const subscriptions = new Map<number, number>()
 const pendingResourceEvents: ResourceChangeEvent[] = []
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 
 const REPLAY_SEQ_PREFIX = 'gipfel:resource-seq:'
 const ANON_USER_KEY = 'gipfel:anon-user:'
-/** 系统级作用域：无比赛上下文的全局库资源（用户/学校/比赛/插件…），与后端 global 分组一致 */
+/** 系统级作用域：无比赛上下文的全局库资源（与后端 global 分组一致） */
 const GLOBAL_SCOPE = 'global'
 
 /** 控制帧（心跳/订阅确认/拒绝）：不得进入 lastMessage 或通知处理器 */
@@ -59,7 +56,7 @@ const CONTROL_TYPES = new Set([
   'resource:denied',
 ])
 
-/** 从 JWT access token 解出用户 id（Django simplejwt 默认 user_id；兼容 userId/sub/uid/id） */
+/** 从 JWT 解出用户 id：Django simplejwt 默认 user_id，兼容 userId/sub/uid/id */
 function tokenUserId(token: string): string {
   if (!token) return ''
   try {
@@ -86,10 +83,7 @@ function tokenUserId(token: string): string {
   }
 }
 
-/**
- * 当前用户桶键：优先 token 用户 id，其次 localStorage 存储的用户 id，
- * 都拿不到时落到稳定匿名桶（同一浏览器持久，避免每次刷新变化）。
- */
+/** 用户桶键：优先 token user id，其次 localStorage 用户 id，都没有则落稳定匿名桶（刷新不变） */
 function getUserKey(): string {
   const fromToken = tokenUserId(getAccessToken())
   if (fromToken) return fromToken
@@ -121,7 +115,6 @@ function getUserKey(): string {
   return anon
 }
 
-/** 事件作用域：有比赛 id → 该比赛；否则系统级（与后端 global 分组一致） */
 function scopeOf(ev: ResourceChangeEvent): string | number {
   return ev.competitionId ? ev.competitionId : GLOBAL_SCOPE
 }
@@ -138,7 +131,6 @@ function saveSeq(scope: string | number, seq: number): void {
   if (seq > 0) window.localStorage.setItem(seqKey(scope), String(seq))
 }
 
-/** 400ms 去抖合并后逐批回调（旧系统 useResourceChanged 语义：组件增量重拉） */
 function queueResourceEvents(events: ResourceChangeEvent[]): void {
   for (const ev of events) {
     const scope = scopeOf(ev)
@@ -168,7 +160,6 @@ function sendSubscribe(cid: number): void {
   }
 }
 
-/** 系统级资源订阅（登录后常驻；连接时后端已入组，这里补发回执式订阅 + 断线 seq 重放） */
 function sendSubscribeGlobal(): void {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: 'subscribe', scope: GLOBAL_SCOPE }))
@@ -183,7 +174,6 @@ function wsUrl(token: string): string {
   return `${proto}://${window.location.host}/ws/notifications?token=${encodeURIComponent(token)}`
 }
 
-/** 上次连接建立的时刻（毫秒）；用于识别「刚连上就被断开」的握手失败 */
 let openedAt = 0
 /** 下次连接前强制换新 token（握手被拒时置位，避免拿失效 token 空转重连） */
 let forceRefreshNext = false
@@ -210,7 +200,6 @@ async function connect(): Promise<void> {
     openedAt = Date.now()
     connected.value = true
     retryDelay = 1000
-    // 重连后恢复资源变更订阅并补拉漏掉的事件（系统级 + 各比赛）
     if (globalSubscribed) sendSubscribeGlobal()
     subscriptions.forEach((_seq, cid) => sendSubscribe(cid))
   }
@@ -219,7 +208,6 @@ async function connect(): Promise<void> {
       const data = JSON.parse(String(event.data)) as NotificationPayload & {
         events?: ResourceChangeEvent[]
       }
-      // 控制帧（心跳/订阅确认/拒绝）不进 lastMessage 与处理器
       if (!data.type || CONTROL_TYPES.has(data.type)) return
       if (data.type === 'resource:changed') {
         queueResourceEvents([data as ResourceChangeEvent])
@@ -242,7 +230,6 @@ async function connect(): Promise<void> {
     connected.value = false
     const lived = openedAt ? Date.now() - openedAt : 0
     openedAt = 0
-    // 连接存活过短 = 握手被拒（token 失效最常见）或代理中断：下次连接前强制换新 token
     if (lived < 1000) forceRefreshNext = true
     scheduleReconnect()
   }
@@ -261,14 +248,12 @@ function scheduleReconnect(): void {
   }, retryDelay)
 }
 
-/** 启动连接（幂等；登录后调用） */
 export function startNotifications(): void {
   if (started) return
   started = true
   void connect()
 }
 
-/** 登出/换账号时断开，并清空订阅、待冲刷事件与游标 */
 export function stopNotifications(): void {
   started = false
   globalSubscribed = false
@@ -290,7 +275,6 @@ export function stopNotifications(): void {
   unreadCount.value = 0
 }
 
-/** 订阅某比赛的资源变更广播（幂等；重连自动恢复，断线自动 seq 重放） */
 export function subscribeCompetition(cid: number | string): void {
   const id = Number(cid)
   if (!id) return
@@ -306,36 +290,21 @@ export function unsubscribeCompetition(cid: number | string): void {
   }
 }
 
-/**
- * 订阅系统级资源变更（全局库：用户/学校/比赛/插件…）。登录后常驻，幂等；
- * 重连自动恢复，断线按本地 seq 游标重放。
- */
+/** 订阅系统级资源变更（登录后常驻；重连自动恢复 + 本地 seq 游标重放） */
 export function subscribeGlobal(): void {
   globalSubscribed = true
   sendSubscribeGlobal()
 }
 
-/**
- * 组件内订阅资源变更（2026-10 实时广播）：400ms 去抖合并后回调事件批次，
- * 典型用法 = 在回调里增量重拉当前页面数据。
- */
+/** 组件内订阅资源变更：400ms 去抖合并后回调事件批次（通常就在回调里增量重拉） */
 export function useResourceChanged(handler: ResourceHandler) {
   resourceHandlers.add(handler)
   onBeforeUnmount(() => resourceHandlers.delete(handler))
   return { connected }
 }
 
-/**
- * 通用「资源变更 → 自动刷新」：页面只声明关心的资源名并传入自身加载函数，
- * 收到匹配的广播（400ms 去抖合并）后自动重拉，实现多端实时同步。
- *
- * - 只按声明的资源触发，避免无关变更造成刷新风暴；
- * - 后台标签页只标脏、回到前台再刷新（隐藏页不发无谓请求）；
- * - 组件卸载自动解绑。
- *
- * @param resources 关心的资源名（后端按路径推导：contracts/teams/users/fiscal-years…）；'all' = 任意变更
- * @param loader    重新拉取当前页数据的函数（通常是页面的 load）
- */
+/** 资源变更 → 自动刷新：只按声明的资源触发（防刷新风暴）；后台标签页只标脏、回前台再刷新；组件卸载自动解绑。
+ *  @param resources 资源名（后端按路径推导：contracts/teams/users/fiscal-years…；'all' = 任意变更） */
 export function useResourceRefresh(
   resources: string[] | 'all',
   loader: () => void | Promise<void>,
@@ -370,7 +339,6 @@ export function resetUnread(): void {
   unreadCount.value = 0
 }
 
-/** 组件内订阅实时通知（自动清理） */
 export function useNotifications(handler?: Handler) {
   if (handler) {
     handlers.add(handler)

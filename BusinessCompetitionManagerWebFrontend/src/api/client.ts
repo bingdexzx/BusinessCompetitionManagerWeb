@@ -1,5 +1,4 @@
-// 统一 fetch 封装：自动携带 Bearer / X-Device-Screen / X-Competition-Id，
-// 401 时自动用 refresh 换新 access 并重放一次，失败则跳转登录页。
+// 统一 fetch 封装：自动携带 Bearer / X-Device-Screen / X-Competition-Id；401 自动 refresh 后重放一次，失败跳登录
 import type { ApiErrorBody } from './types'
 
 const API_BASE = '/api'
@@ -8,11 +7,8 @@ const ACCESS_TOKEN_KEY = 'bcm.access'
 const REFRESH_TOKEN_KEY = 'bcm.refresh'
 const COMPETITION_ID_KEY = 'bcm.competitionId'
 
-/** 统一抛出的 API 错误（后端错误响应 { code, message, details }） */
 export class ApiError extends Error {
-  /** 后端业务错误码 */
   readonly code: number
-  /** HTTP 状态码 */
   readonly status: number
   readonly details: unknown
 
@@ -24,8 +20,6 @@ export class ApiError extends Error {
     this.details = details
   }
 }
-
-// ---------- token / 上下文 存取（localStorage 持久化） ----------
 
 export function getAccessToken(): string {
   return localStorage.getItem(ACCESS_TOKEN_KEY) ?? ''
@@ -59,35 +53,24 @@ export function setCompetitionId(id: number | string | null): void {
   }
 }
 
-// ---------- 登录失效处理（由 main.ts 注册，避免模块循环依赖） ----------
-
+// 登录失效处理由 main.ts 注册，避免模块循环依赖
 let unauthorizedHandler: (() => void) | null = null
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
   unauthorizedHandler = handler
 }
 
-// ---------- 请求 ----------
-
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
-  /** JSON 请求体 */
   body?: unknown
   /** 查询参数，自动过滤 undefined / null / '' */
   query?: Record<string, string | number | boolean | undefined | null>
-  /** 附加请求头 */
   headers?: Record<string, string>
   /** 覆盖 X-Competition-Id（不传则使用全局选中的比赛） */
   competitionId?: number | string | null
-  /** 跳过鉴权头（登录/注册等公开接口） */
   skipAuth?: boolean
-  /**
-   * 公开接口但**有 token 就带上**：让已登录用户的调用计入本人额度，而不是与
-   * 同机所有标签页共享的「匿名（按 IP）」额度；token 失效时自动降级为匿名重试，
-   * 既不报错也不登出（注册页/个人档案的学校搜索用）。
-   */
+  /** 公开接口但有 token 就带上：计入本人额度，而非同机标签页共享的「匿名（按 IP）」额度；token 失效自动降级匿名重试，不报错也不登出 */
   optionalAuth?: boolean
-  /** 禁止 401 自动刷新重放（refresh 接口自身使用） */
   skipRefresh?: boolean
 }
 
@@ -125,7 +108,7 @@ async function parseBody(res: Response): Promise<unknown> {
 }
 
 function toApiError(res: Response, body: unknown): ApiError {
-  // 中文兜底（简洁描述问题；不把 HTML 错误页/技术细节直接抛给用户）
+  // 中文兜底：不把 HTML 错误页/技术细节直接抛给用户
   const STATUS_TEXT: Record<number, string> = {
     400: '请求参数有误',
     401: '登录已过期，请重新登录',
@@ -152,7 +135,6 @@ function toApiError(res: Response, body: unknown): ApiError {
       err.details ?? body,
     )
   }
-  // 字符串回包：只接受简短中文业务提示（HTML 错误页/英文堆栈一律换中文兜底）
   const isShortChinese =
     typeof body === 'string' && body.length <= 200 && /[\u4e00-\u9fa5]/.test(body)
   return new ApiError(isShortChinese ? (body as string) : fallback, res.status, res.status, body)
@@ -187,7 +169,6 @@ async function refreshAccessToken(): Promise<boolean> {
   return refreshPromise
 }
 
-/** 解出 access token 的 exp（Unix 秒）；解析不出来返回 0（视为未知）。 */
 function accessTokenExp(token: string): number {
   if (!token) return 0
   try {
@@ -203,23 +184,17 @@ function accessTokenExp(token: string): number {
   }
 }
 
-/**
- * 取一个「可立即使用」的 access token：已过期/即将过期时先用 refresh 换新。
- *
- * 为什么需要：HTTP 请求在 401 时会自动刷新并重放，但 WebSocket 握手只带 URL 里的
- * token——若用过期 token 去连，服务端会在 accept 之前拒绝握手，浏览器只能拿到
- * 1006（且 Vite 代理会刷 `write ECONNABORTED`），于是推送一直连不上。
- *
- * @returns 可用的 access token；会话确实失效时返回 ''（调用方应停止重连）
- */
+/** WS 握手只带 URL 里的 token，过期会在 accept 之前被拒（浏览器只拿到 1006）→ 握手前必须先换新；
+ *  会话确实失效时返回 ''（调用方应停止重连）。 */
 export async function ensureFreshAccessToken(
   opts: { force?: boolean; skewSeconds?: number } = {},
 ): Promise<string> {
   const token = getAccessToken()
   const exp = accessTokenExp(token)
   const now = Date.now() / 1000
-  const skew = opts.skewSeconds ?? 30
-  const unexpired = Boolean(token) && (!exp || exp > now)
+  // 把「即将过期」也当作过期，避免握手途中失效
+  const skew = Math.max(0, opts.skewSeconds ?? 30)
+  const unexpired = Boolean(token) && (!exp || exp > now + skew)
   if (unexpired && !opts.force) return token
   if (!getRefreshToken()) return unexpired ? token : ''
   if (await refreshAccessToken()) return getAccessToken()
@@ -266,7 +241,6 @@ async function requestOnce<T>(path: string, options: RequestOptions, retried: bo
     return requestOnce<T>(path, { ...options, skipAuth: true }, true)
   }
 
-  // 401：尝试刷新 token 后重放一次
   if (res.status === 401 && !options.skipRefresh && !retried && !options.skipAuth) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {

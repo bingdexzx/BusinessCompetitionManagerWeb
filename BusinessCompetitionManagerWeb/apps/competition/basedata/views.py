@@ -1,28 +1,11 @@
 """基础数据管理 API（数据管理页）——统一通用契约（前后端并行开发口径）。
 
-    GET    /api/competitions/{cid}/basedata/{table}?page&pageSize&q  → {items, total, page, pageSize}
-    POST   /api/competitions/{cid}/basedata/{table}                  → 行（camelCase=旧字段名）
-    GET    /api/competitions/{cid}/basedata/{table}/{id}             → 行（含 relations）
-    PATCH  /api/competitions/{cid}/basedata/{table}/{id}             → 行
-    DELETE /api/competitions/{cid}/basedata/{table}/{id}             → {ok:true}
-    GET    /api/competitions/{cid}/basedata/{table}/{id}/impact      → {removable, refs:[{kind,label,count}]}
-
-- ``table`` ∈ fuels | warehouses | vehicles | materials | products | parts |
-  infrastructures | tech_nodes | production_lines | map_node_types | path_types |
-  map_nodes | map_edges（名称照旧模型 db_table）；
-- 行字段 camelCase（pricePerLiter、fuelConsumptionPerKm、maxMaterialCargo、
-  carbonEmissionCoefficient、nodePrices、activationPrice、laborCount、maxPerYear、
-  employmentRateBonus …），Decimal(60,4) 金额按旧系统口径序列化为数值；
-- **关联内嵌**：GET 行/列表项带 ``relations`` 对象（products → parts/techRequirements；
-  parts → materials/techRequirements；tech_nodes → prerequisites；vehicles → pathTypes；
-  map_nodes → edgesCount）；POST/PATCH body 支持嵌套 ``relations``（平铺同名数组作兼容
-  别名）**整体替换**：带 id 更新、无 id 新增、缺失删除（upsert by id）；
-- **impact**：删除影响检查（旧 get_delete_impact 语义，引用关系按旧模型 FK 梳理）：
-  ``refs`` 为所有引用/级联统计；``removable=false`` 表示存在**外部引用**（删除会破坏
-  其他主数据，如 fuel 被 vehicles 引用、part 被 products 引用、map_node 被 map_edges
-  引用），前端提示并拒绝删除；自身级联子配置（如产品的零件配比）计入 refs 但不阻塞。
-- 权限：读=本比赛成员；写=can_manage_competition（apps.common.authority）。
-- 错误响应：{code, message, details}（中文）。
+路由：/basedata/{table}（GET/POST）、/basedata/{table}/{id}（GET/PATCH/DELETE）、.../{id}/impact；
+table ∈ fuels|warehouses|vehicles|materials|products|parts|infrastructures|tech_nodes|
+production_lines|map_node_types|path_types|map_nodes|map_edges（旧模型 db_table）。
+行字段 camelCase（pricePerLiter、fuelConsumptionPerKm…），Decimal(60,4) 金额按旧口径序列化为数值；
+GET 带 relations，POST/PATCH 可提交嵌套 relations 整体替换（带 id 更新、无 id 新增、缺失删除）。
+权限：读=本比赛成员，写=can_manage_competition；错误响应 {code, message, details}。
 """
 
 from decimal import Decimal, InvalidOperation
@@ -33,15 +16,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.authority import can_manage_competition, user_company_ids, user_membership
+from apps.common.authority import can_manage_competition, can_read_competition
 from apps.common.context import get_competition_alias
 
 
-# ---------------------------------------------------------------- 表注册表
-
-
 def _f(api, field, kind, **kw):
-    """字段定义：API camelCase 名 → 模型字段 + 值类型。"""
     return dict(api=api, field=field, kind=kind, **kw)
 
 
@@ -180,9 +159,8 @@ TABLES = {
     },
 }
 
-# 关联内嵌定义（照旧关联模型）：
-#   assoc=关联模型，parent=指向本行的外键字段，target=指向目标主数据的外键字段；
-#   out=额外读出字段（ratio）；names=目标主数据名称字段（照旧嵌套展示 partName 等）。
+# 关联内嵌定义（照旧关联模型）：assoc=关联模型，parent/target=指向本行/目标主数据的外键，
+# out=额外读出字段（ratio），names=目标主数据名称字段（照旧嵌套展示 partName 等）。
 RELATIONS = {
     'products': {
         'parts': {
@@ -229,15 +207,12 @@ RELATIONS = {
         },
     },
     'map_nodes': {
-        # 只读统计：该节点关联的地图边数量
         'edgesCount': {'kind': 'count'},
     },
 }
 
-# 删除影响（旧 get_delete_impact 语义，照旧中文标签）：
-#   (kind, label, 取数函数, 是否外部引用——存在即 removable=False)
-#   外部引用 = 引用行归属于其他主数据（删除本行会破坏对方，如 fuel 被 vehicles 引用、
-#   part 被 products 引用、map_node 被 map_edges 引用）；自身级联子配置仅计入 refs。
+# 删除影响（旧 get_delete_impact 语义）：(kind, label, 取数函数, 是否外部引用)；外部引用即
+# removable=False，指引用行归属其他主数据（fuel←vehicles、part←products、map_node←map_edges）。
 
 
 def _impact_fuels(pk):
@@ -340,24 +315,14 @@ SEARCH_FIELDS = {
 }
 
 
-# ---------------------------------------------------------------- 工具
-
-
 def _error(message, code=400, details=''):
     """统一业务错误响应（{code, message, details}，中文）。"""
     return Response({'code': code, 'message': message, 'details': details}, status=code)
 
 
 def _require_member(user, cid):
-    """读权限：本比赛成员（系统超管恒通过）。"""
-    if user is not None and user.is_authenticated:
-        if user.is_superuser:
-            return True
-        if user_membership(user, cid) is not None:
-            return True
-        if user_company_ids(user, cid):
-            return True
-    return False
+    """读权限：本比赛成员（系统超管恒通过）——实现在 apps.common.authority。"""
+    return can_read_competition(user, cid)
 
 
 def _model_for(table):
@@ -375,9 +340,6 @@ def _db_alias():
 def _decimal_out(value):
     """Decimal(60,4) 金额按旧系统 JSON 口径输出为数值。"""
     return None if value is None else float(value)
-
-
-# ---------------------------------------------------------------- 序列化
 
 
 def _field_out(row, fdef):
@@ -417,7 +379,6 @@ def _serialize_relations_many(rows, table):
         assoc_model = django_apps.get_model('basedata', spec['assoc'])
         target_model = django_apps.get_model('basedata', spec['target_model'])
         parent_field, target_field = spec['parent'], spec['target']
-        # 目标外键的 API 键名（partId / techNodeId / materialId / prerequisiteId / pathTypeId）
         target_api = next(k for k, v in spec['writable'].items() if v == target_field)
         assocs = list(assoc_model.objects.filter(
             **{f'{parent_field}_id__in': ids},
@@ -453,9 +414,6 @@ def _serialize_many(rows, table):
         data['relations'] = rels.get(row.pk, {})
         items.append(data)
     return items
-
-
-# ---------------------------------------------------------------- 字段写入
 
 
 def _coerce_value(fdef, value):
@@ -548,9 +506,6 @@ def _apply_payload(row, spec, payload, creating):
 TABLES_BY_MODEL = {spec['model']: spec for spec in TABLES.values()}
 
 
-# ---------------------------------------------------------------- 关联整体替换
-
-
 def _relation_items(payload, key):
     """取关联数组：优先嵌套 relations.<key>，兼容平铺同名数组（别名）。"""
     rels = payload.get('relations')
@@ -562,9 +517,8 @@ def _relation_items(payload, key):
 
 
 def _replace_relations(row, table, payload):
-    """关联整体替换（upsert by id：带 id 更新、无 id 新增、缺失删除）。
-
-    必须在事务内调用：校验失败/唯一冲突即中止回滚（_ValidationAbort）。
+    """关联整体替换（upsert by id）：带 id 更新、无 id 新增、缺失删除；须在事务内调用（校验失败/唯一
+    冲突即抛 _ValidationAbort 回滚）。
     """
     from django.apps import apps as django_apps
 
@@ -593,7 +547,6 @@ def _replace_relations(row, table, payload):
         existing = list(assoc_model.objects.filter(**{parent_field: row.pk}))
         by_id = {a.pk: a for a in existing}
 
-        # ---- 校验阶段：带 id 更新 / 无 id 新增
         errors, pending, seen_ids, seen_targets = [], [], set(), set()
         for i, item in enumerate(items):
             prefix = f'{key}[{i}]'
@@ -665,9 +618,6 @@ def _replace_relations(row, table, payload):
                 # 唯一冲突（重复关联/互换更新中间态）：中止回滚
                 raise _ValidationAbort(f'{key} 关联冲突（重复或与现有关联互换）')
     return []
-
-
-# ---------------------------------------------------------------- 视图
 
 
 class BasedataTableView(APIView):

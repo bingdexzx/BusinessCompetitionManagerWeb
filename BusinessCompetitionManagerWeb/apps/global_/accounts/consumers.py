@@ -1,11 +1,8 @@
-"""WebSocket 实时通知（§5.1 Channels、§13 消息中心实时推送、§14.3 WebSocket 入网络日志）。
+"""WebSocket 实时通知（§5.1 Channels、§13 消息中心、§14.3 WS 入网络日志）。
 
-- 端点：``/ws/notifications?token=<access>``（JWT 鉴权，tokenVersion 校验）；
-- 连接后加入 ``user_<id>`` 分组（个人通知）与 ``global`` 分组（系统级资源变更广播，
-  用户/学校/比赛/插件等无比赛上下文的资源）；按比赛订阅 ``comp_<cid>`` 后再收该比赛的
-  资源变更（``messages.services.send_message`` 落库后经 ``user_<id>`` 实时推送）；
-- 连接/断开事件按 §14.3 写入网络日志（method=WS）。
-"""
+端点 ``/ws/notifications?token=<access>``（JWT + tokenVersion 校验）。连上后入 ``user_<id>``
+（个人通知）与 ``global``（系统级资源变更）分组；按比赛订阅 ``comp_<cid>`` 后收该比赛的资源
+变更。连接/断开按 §14.3 写网络日志（method=WS）。"""
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
@@ -15,7 +12,6 @@ from apps.common.devices import parse_user_agent
 
 
 def _is_global_scope(content: dict, cid: int) -> bool:
-    """是否为系统级（global）作用域：显式 ``scope=global``，或没有比赛 id。"""
     return str(content.get('scope') or '').strip().lower() == GLOBAL_GROUP or not cid
 
 
@@ -41,16 +37,13 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
             await database_sync_to_async(self._log_ws)('WS_DISCONNECT', code or 1000)
 
     async def receive_json(self, content, **kwargs):
-        # 前端可发 {"type": "ping"} 保活
         if isinstance(content, dict) and content.get('type') == 'ping':
             await self.send_json({'type': 'pong'})
             return
-        # 资源变更订阅（2026-10：实时广播 + 断线 seq 重放）
-        # 两个作用域：scope=global（系统级资源，连接时已入组）/ competitionId=<cid>（比赛级）
+        # 资源变更订阅（2026-10：实时广播 + 断线 seq 重放）：scope=global 或 competitionId=<cid>
         if isinstance(content, dict) and content.get('type') == 'subscribe':
             cid = int(content.get('competitionId') or 0)
             if _is_global_scope(content, cid):
-                # 连接时已加入 global 分组，这里只回执（前端据此推进游标/记录订阅）
                 await self.send_json(
                     {'type': 'resource:subscribed', 'scope': GLOBAL_GROUP, 'competitionId': None})
                 return
@@ -78,11 +71,9 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
             return
 
     async def _subscribe(self, competition_id: int):
-        """订阅某比赛的资源变更广播（须对本比赛有读权限：成员/可操作公司/系统超管）。
+        """订阅某比赛的资源变更广播（须有读权限：成员 / 可操作公司 / 系统超管）。
 
-        与 HTTP 读接口的成员门禁口径保持一致（membership 或 user_company_ids），
-        否则「能读但订阅被拒」会造成页面读得到、实时刷不动的割裂。
-        """
+        与 HTTP 读接口的成员门禁口径一致，否则「能读但订阅被拒」会让页面读得到、实时刷不动。"""
         if not competition_id:
             return
 
@@ -116,8 +107,6 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
         """group_send 消息入口（messages.services._push 使用同一 type）。"""
         await self.send_json(event.get('payload') or {})
 
-    # ------------------------------------------------------------ 鉴权
-
     async def _authenticate(self):
         from urllib.parse import parse_qs
 
@@ -146,8 +135,6 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
                 return None
 
         return await sync_to_async(_load_user)()
-
-    # ------------------------------------------------------------ 网络日志（§14.3）
 
     def _log_ws(self, event: str, status: int):
         from apps.global_.logs.models import NetworkLog

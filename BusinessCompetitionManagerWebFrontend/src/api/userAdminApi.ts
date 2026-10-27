@@ -81,10 +81,6 @@ export function getUsers(query: UserAdminQuery = {}): Promise<UserAdminPage> {
   })
 }
 
-/** GET /api/users/<id> 账号详情（同列表项字段 + memberships） */
-export function getUser(id: number): Promise<UserAdminItem> {
-  return http.get<UserAdminItem>(`/users/${id}`)
-}
 
 /** POST /api/users 新建账号 */
 export function createUser(payload: CreateUserPayload): Promise<UserAdminItem> {

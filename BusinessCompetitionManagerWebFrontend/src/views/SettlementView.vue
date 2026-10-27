@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// 结算管理：评分准则 / 奖项设置（人工定义奖项）+ 结算执行与结果 + 奖项人工发放（可撤销）
-// 2026-10 需求变更：结算只计算得分与名次，不再按名次自动评奖；奖项由超管定义后人工发放。
+// 结算只算得分与名次，不自动评奖；奖项由超管定义后人工发放/撤销。
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
@@ -37,15 +36,13 @@ import { errorMessage } from '@/utils/errors'
 const props = defineProps<{ cid: string }>()
 const auth = useAuthStore()
 
-/** 系统超管 / 本比赛超管：结算与获奖仅超管可见（可维护配置、执行结算与发放奖项） */
+// 仅系统超管/本比赛超管可见、可管理
 const canManage = computed(() => {
   if (auth.isSuperuser) return true
   return auth.memberships.some((m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN')
 })
-/** 页面可见性与可管理性一致（仅超管可见） */
 const canView = canManage
 
-// ---------- 结算配置（评分准则 + 奖项定义） ----------
 const config = ref<ScoringConfig | null>(null)
 const configLoading = ref(false)
 
@@ -70,7 +67,6 @@ async function loadConfig(): Promise<void> {
   }
 }
 
-// ---------- 新增对话框（准则 / 奖项共用） ----------
 const dialogVisible = ref(false)
 const dialogKind = ref<'criterion' | 'award'>('criterion')
 const submitting = ref(false)
@@ -167,19 +163,17 @@ async function removeAward(row: AwardDefinition): Promise<void> {
   try {
     await deleteScoringItem(props.cid, 'award', row.id)
     ElMessage.success('已删除')
-    // 删除奖项定义会连带撤销发放记录：配置与发放记录都要重拉
+    // 删除奖项会连带撤销发放记录，配置与记录都重拉
     await Promise.all([loadConfig(), loadGrants()])
   } catch (err) {
     ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
 
-/** 奖项类型标签配色：个人奖 = primary，集体奖 = success */
 function kindTagType(kind: AwardKind): 'primary' | 'success' {
   return kind === 'COLLECTIVE' ? 'success' : 'primary'
 }
 
-// ---------- 结算执行 ----------
 const running = ref(false)
 
 async function startSettlement(): Promise<void> {
@@ -204,7 +198,6 @@ async function startSettlement(): Promise<void> {
   }
 }
 
-// ---------- 结算结果 ----------
 const result = ref<SettlementResult | null>(null)
 const resultLoading = ref(false)
 
@@ -219,7 +212,6 @@ async function loadResult(): Promise<void> {
   }
 }
 
-/** 展开行：逐准则得分明细 */
 function detailRows(row: SettlementEntry): Array<{
   key: string
   value: number
@@ -230,18 +222,15 @@ function detailRows(row: SettlementEntry): Array<{
   return Object.entries(row.detail ?? {}).map(([key, d]) => ({ key, ...d }))
 }
 
-/** 得分/归一化/权重：统一 2 位小数展示（只影响显示，不参与计算与提交） */
 function fmtScore(value: number | null | undefined): string {
   const n = Number(value)
   return Number.isFinite(n) ? n.toFixed(2) : '—'
 }
 
-/** 名次顺序视觉：前 3 名给更强的标识 */
 function isTopRank(rank: number): boolean {
   return Number.isFinite(rank) && rank >= 1 && rank <= 3
 }
 
-// ---------- 结算结果汇总（展示聚合：不参与结算计算与提交） ----------
 const resultEntries = computed(() => result.value?.entries ?? [])
 const topScore = computed(() =>
   resultEntries.value.reduce((max, e) => Math.max(max, Number(e.score) || 0), 0),
@@ -255,7 +244,6 @@ const topScoreShown = useCountUp(topScore, { precision: 2 })
 const avgScoreShown = useCountUp(avgScore, { precision: 2 })
 const entryCountShown = useCountUp(computed(() => resultEntries.value.length), { precision: 0 })
 
-// ---------- 奖项发放 ----------
 const awardOptions = computed<AwardDefinition[]>(() => config.value?.awards ?? [])
 
 const grantForm = reactive({
@@ -272,7 +260,6 @@ const selectedAward = computed<AwardDefinition | null>(
 const isIndividual = computed(() => selectedAward.value?.kind === 'INDIVIDUAL')
 const isCollective = computed(() => selectedAward.value?.kind === 'COLLECTIVE')
 
-// 个人奖候选人（远程搜索：本比赛全部成员）
 const candidates = ref<AwardCandidate[]>([])
 const candidatesLoading = ref(false)
 
@@ -281,7 +268,7 @@ async function searchCandidates(q: string): Promise<void> {
   try {
     const picked = candidates.value.find((c) => c.userId === grantForm.userId)
     const list = await getAwardCandidates(props.cid, q.trim() || undefined)
-    // 保留已选人员：远端结果里没有他时补回，避免下拉框回退显示成用户 ID
+    // 保留已选人员，避免搜索后回退显示用户 ID
     if (picked && !list.some((c) => c.userId === picked.userId)) list.unshift(picked)
     candidates.value = list
   } catch (err) {
@@ -291,7 +278,6 @@ async function searchCandidates(q: string): Promise<void> {
   }
 }
 
-// 集体奖：公司列表
 const companies = ref<Company[]>([])
 const companiesLoading = ref(false)
 
@@ -306,7 +292,6 @@ async function loadCompanies(): Promise<void> {
   }
 }
 
-/** 切换奖项：清空已选发放对象，个人奖预拉候选人 */
 function onAwardChange(): void {
   grantForm.userId = null
   grantForm.companyId = null
@@ -391,7 +376,6 @@ async function submitGrant(): Promise<void> {
   }
 }
 
-// 已发放记录
 const grants = ref<AwardGrant[]>([])
 const grantsLoading = ref(false)
 
@@ -434,7 +418,7 @@ async function reloadAll(): Promise<void> {
   await Promise.all([loadConfig(), loadResult(), loadGrants(), loadCompanies()])
 }
 
-// 资源变更广播（400ms 去抖合并）：结算/奖项/公司写操作后自动刷新（沿用仅超管加载的口径）
+// 结算/奖项/公司变更后 400ms 去抖重拉，仍只超管加载
 useResourceRefresh(['settlement', 'awards', 'companies'], () => {
   if (canView.value) void reloadAll()
 })
@@ -448,11 +432,10 @@ onMounted(() => {
   <div class="settlement-page anim-stagger">
     <h1 class="page-title">结算管理</h1>
 
-    <!-- 权限口径：结算结果仅超级管理员（系统超管/比赛超管）可见 -->
+    <!-- 结算结果仅超级管理员可见 -->
     <el-empty v-if="!canView" description="结算与获奖仅超级管理员可见" />
     <template v-if="canView">
 
-    <!-- ===== 评分准则 ===== -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
@@ -508,7 +491,6 @@ onMounted(() => {
       </el-table>
     </el-card>
 
-    <!-- ===== 奖项设置（人工定义，供下方人工发放） ===== -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
@@ -553,7 +535,6 @@ onMounted(() => {
       </el-table>
     </el-card>
 
-    <!-- ===== 开始结算 + 结果 ===== -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
@@ -574,7 +555,6 @@ onMounted(() => {
       </template>
 
       <div v-loading="resultLoading">
-        <!-- 加载：骨架占位，避免「尚未执行结算」在加载过程中误显示 -->
         <div v-if="resultLoading && !result" class="result-skeleton">
           <div v-for="i in 3" :key="i" class="skeleton skeleton-card" />
         </div>
@@ -587,7 +567,6 @@ onMounted(() => {
             </span>
           </div>
 
-          <!-- 分数与名次是核心信息：先给一排聚合指标，再进名次明细 -->
           <div class="metric-grid result-metrics anim-stagger">
             <div class="metric-card">
               <span class="metric-label">参评公司</span>
@@ -656,7 +635,6 @@ onMounted(() => {
       </div>
     </el-card>
 
-    <!-- ===== 奖项发放（人工发放 / 撤销） ===== -->
     <el-card shadow="never" class="section-card">
       <template #header>
         <div class="card-head">
@@ -795,7 +773,6 @@ onMounted(() => {
       </el-table>
     </el-card>
 
-    <!-- ===== 新增对话框（评分准则 / 奖项定义） ===== -->
     <el-dialog
       v-model="dialogVisible"
       :title="dialogKind === 'criterion' ? '新增评分准则' : '新增奖项'"
@@ -879,7 +856,6 @@ onMounted(() => {
   gap: 12px;
   flex-wrap: wrap;
 }
-/* 区块标题在卡片头部里不需要额外下间距 */
 .card-head .section-title {
   margin-bottom: 0;
 }
@@ -888,7 +864,6 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-/* ===== 结算结果：聚合指标 + 名次顺序视觉 ===== */
 .result-metrics {
   margin-bottom: 16px;
 }
@@ -917,7 +892,7 @@ onMounted(() => {
   font-weight: 600;
   color: var(--color-text-primary);
 }
-/* 危险操作视觉降级：默认次要文字色，悬停才显红，不与主操作抢注意力 */
+/* 危险操作默认弱化，悬停才显红 */
 .section-card :deep(.danger-op) {
   color: var(--color-text-tertiary);
 }
@@ -941,7 +916,6 @@ onMounted(() => {
 .muted {
   color: var(--color-text-tertiary);
 }
-/* 奖项发放：奖项 / 发放对象 / 备注 / 发放按钮 一行排布 */
 .grant-form {
   display: flex;
   align-items: center;

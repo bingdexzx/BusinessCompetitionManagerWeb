@@ -2,8 +2,6 @@
   <router-view v-if="isPublic" />
   <AppLayout v-else>
     <MessageToastHost />
-    <!-- 页面切换过渡：宿主 div 保证 Transition 只有一个根节点（多根视图也不会报错），
-         以 route.path 为 key —— 查询参数（?tab=/?type=）变化不重挂载，保留页内状态。 -->
     <router-view v-slot="{ Component, route: current }">
       <transition name="page-shift" mode="out-in">
         <div :key="current.path" class="page-shift-root">
@@ -13,7 +11,7 @@
     </router-view>
   </AppLayout>
 
-  <!-- 版本硬封锁：客户端版本与服务端不一致时全屏阻断（旧系统 /api/version 轮询比对的等价能力） -->
+  <!-- 版本硬封锁：客户端版本与服务端版本不一致时全屏阻断 -->
   <div v-if="versionMismatch" class="version-block">
     <div class="version-block__box">
       <h2>版本已更新，请刷新页面</h2>
@@ -47,7 +45,7 @@ async function checkVersion(): Promise<void> {
     serverVersion.value = version
     versionMismatch.value = Boolean(version) && version !== APP_VERSION
   } catch {
-    // 版本服务暂时不可用不阻断使用（网络恢复后下一轮比对）
+    // 版本服务暂不可用时不阻断
   }
 }
 

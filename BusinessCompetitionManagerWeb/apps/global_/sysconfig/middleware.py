@@ -1,26 +1,11 @@
 """API 请求限流中间件（系统设置 — 流量限制）。
 
-注册（settings.MIDDLEWARE）::
+**必须注册在 ``AuthenticationMiddleware`` 之后**（依赖 ``request.user`` 判角色），建议放在
+``CompetitionContextMiddleware`` 之后（此时 ``request.competition_id`` 已解析）。
 
-    'apps.global_.sysconfig.middleware.RateLimitMiddleware'
-
-**需注册在 ``django.contrib.auth.middleware.AuthenticationMiddleware`` 之后**
-（依赖 ``request.user`` 判定角色），建议放在
-``apps.common.middleware.CompetitionContextMiddleware`` 之后（此时
-``request.competition_id`` 已解析）。
-
-行为：
-
-- 只拦 ``/api/`` 前缀请求，按「用户身份角色」每分钟窗口计数（计数落库，
-  多进程 worker 共享）；角色判定：is_superuser → superuser；当前比赛身份
-  comp_super_admin / admin / player（见 apps.common.authority.user_membership，
-  比赛取 ``request.competition_id`` 或 ``X-Competition-Id`` 头）→ compSuperAdmin /
-  admin / player；无身份（含匿名）→ anonymous；
-- 每分钟窗口超限 → 429 ``{"code": 429, "message": "请求过于频繁，请稍后再试", "details": ""}``
-  + ``Retry-After``（到窗口结束的秒数）；
-- 配置读取带 5 秒缓存（apps.global_.sysconfig.service），``api.enabled=false`` 时放行；
-- 顺带每分钟清理一次过期计数行（窗口过期且未锁定的行）。
-"""
+只拦 ``/api/``，按角色每分钟窗口计数（计数落库，多进程 worker 共享），超限 429 + ``Retry-After``
+（到窗口结束秒数）；``api.enabled=false`` 放行；配置读取带 5 秒缓存。角色：superuser /
+compSuperAdmin / admin / player / anonymous（比赛身份取 ``request.competition_id`` 或头）。"""
 
 from __future__ import annotations
 
@@ -46,17 +31,15 @@ logger = logging.getLogger(__name__)
 
 API_PREFIX = '/api/'
 
-# 每分钟窗口（API 限流固定按分钟计数）
 WINDOW_SECONDS = 60
 
-# 比赛身份 → 限额角色
 ROLE_BY_IDENTITY = {
     'COMP_SUPER_ADMIN': 'compSuperAdmin',
     'ADMIN': 'admin',
     'PLAYER': 'player',
 }
 
-# 过期计数行清理：每 CLEANUP_INTERVAL 秒最多一次，删掉 CLEANUP_AFTER_SECONDS 之前的旧行
+# 过期计数行清理：每 CLEANUP_INTERVAL 秒最多一次，删 CLEANUP_AFTER_SECONDS 之前的旧行
 CLEANUP_INTERVAL_SECONDS = 60
 CLEANUP_AFTER_SECONDS = 600
 
@@ -112,8 +95,6 @@ class RateLimitMiddleware(MiddlewareMixin):
             logger.exception('RateLimitMiddleware 内部错误，本次请求放行')
             return None
 
-    # ------------------------------------------------------------ 内部
-
     def _throttle(self, request):
         config = get_effective_config()
         api_cfg = config.get('api') or {}
@@ -151,10 +132,7 @@ class RateLimitMiddleware(MiddlewareMixin):
 
 
 def _hit(subject: str, role: str, limit: int):
-    """计一次请求；返回 None（放行）或 Retry-After 秒数（429）。
-
-    窗口：同一 ``api:<subject>:<role>`` 键 60 秒窗口内超过 limit → 锁到窗口结束。
-    """
+    """计一次请求；返回 None（放行）或 Retry-After 秒数（429，窗口内超 limit 则锁到窗口结束）。"""
     now = timezone.now()
     key = f'api:{subject}:{role}'[:220]
 
@@ -167,7 +145,6 @@ def _hit(subject: str, role: str, limit: int):
         if row.locked_until is not None and row.locked_until > now:
             return max(1, math.ceil((row.locked_until - now).total_seconds()))
         if row.window_start is None or now - row.window_start >= timedelta(seconds=WINDOW_SECONDS):
-            # 新窗口：重新计数
             row.window_start = now
             row.count = 1
             row.locked_until = None
