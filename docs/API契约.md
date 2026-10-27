@@ -72,11 +72,11 @@
 |------|------|------|
 | GET | `/competitions/{cid}/contracts` | 合同列表（**服务端分页 + 薄字段**）：`?page&pageSize&status&q` → `{items, total, page, pageSize}`；**增量同步**：`?updatedAfter=<ISO>` → `{items, serverTime, hasMore, mode:'delta'}`（游标用上次 `serverTime`）。可见性：系统/比赛超管全量，其余按可操作公司过滤（JSONB containment + GIN 索引） |
 | POST | `/competitions/{cid}/contracts` | 创建草稿 `{contractTypeKey, pluginVersion?, name?, parties[{role, companyId}], inputs{}, isBackfill?, fiscalYearId?}` |
-| GET | `/competitions/{cid}/contracts/{id}` | 详情 **含 timeline**（§14.6 确认时间线：谁/何时/设备/IP）与 **checks**（§7.3 四检查点落库：`roundStatus: ACTIVE/HISTORY`，修改后按轮次回放当时的检查内容）。**`timeline` / `checks` 只对系统超管 / 比赛超管返回**，其他身份不下发（不透出审计信息） |
+| GET | `/competitions/{cid}/contracts/{id}` | 详情 **含 timeline**（§14.6 确认时间线：谁/何时/设备/IP）与 **checks**（§7.3 四检查点落库：`roundStatus: ACTIVE/HISTORY`，修改后按轮次回放当时的检查内容）。两者按 `audit_company_ids` 下发：**参赛代表不下发**；主席团只下发所辖公司相关的字段节点/依据；系统超管与比赛超管全量 |
 | POST | `.../contracts/{id}/submit` | T2 提交（运行 check，保证创建即能执行） |
 | POST | `.../contracts/{id}/confirm` | T3 逐方确认；末方确认后**自动编号 + 自动执行 + 落账**（T4/T5） |
-| GET | `.../contracts/{id}/effects` | 不可变落账审计（before/after/roundNo + `roundStatus: ACTIVE/ROLLED_BACK`）+ **重演值** `replayBefore/replayAfter`（按当前内容重算，上游修改后自动同步；与当时值不一致=上游被改过）。**仅系统超管 / 比赛超管可读** |
-| GET | `.../contracts/{id}/ledger` | **资金账本链（查账，仅系统超管 / 比赛超管）**：该合同触及的 (公司,字段) 全链 `{initialValue → nodes[当时值+重演值+检查依据重演] → currentValue}`，按编号顺序重放生效效果 |
+| GET | `.../contracts/{id}/effects` | 不可变落账审计（before/after/roundNo + `roundStatus: ACTIVE/ROLLED_BACK`）+ **重演值** `replayBefore/replayAfter`（按当前内容重算，上游修改后自动同步；与当时值不一致=上游被改过）。可见范围同 timeline：选手 ❌、主席团仅所辖公司、超管全量 |
+| GET | `.../contracts/{id}/ledger` | **资金账本链（查账）**：该合同触及的 (公司,字段) 全链 `{initialValue → nodes[当时值+重演值+检查依据重演] → currentValue}`，按编号顺序重放生效效果。可见范围同 timeline：选手 ❌、主席团仅所辖公司、超管全量 |
 | POST | `.../contracts/{id}/request-modify` | T6 申请修改 `{reason}`（任意参与方） |
 | POST | `.../contracts/{id}/modify/review` | T7/T7' 超管审核 `{action: approve\|reject, note?}` |
 | POST | `.../contracts/{id}/modify/other-party` | T8/T8' 其他方表态 `{action: approve\|reject, note?}` |
@@ -194,6 +194,7 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 | 结算配置/运行/结果/获奖 | ✅ | ✅ | ❌ | ❌ |
 | 个人档案获奖/电子奖牌 | ✅ | ✅ | ✅ | ✅（本人） |
 | 查看字段日志 | ✅ | ✅（本比赛） | ❌ | ❌ |
+| 合同审计（确认时间线/检查记录/效果与账本/资金账本链） | ✅ | ✅ | ✅（**仅所辖公司**） | ❌ |
 | 审计日志 | ✅ | ✅（本比赛） | ❌ | ❌ |
 | 查看网络日志/设备/导出 | ✅ | ❌ | ❌ | ❌ |
 

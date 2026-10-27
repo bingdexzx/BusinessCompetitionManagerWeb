@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from apps.common import context as ctx
 from apps.common.authority import (
-    can_act_for_company, can_manage_competition, user_company_ids,
+    audit_company_ids, can_act_for_company, can_manage_competition, user_company_ids,
 )
 from apps.common.labels import op_label
 from apps.competition.audit import services as audit_services
@@ -59,8 +59,8 @@ def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
                    company_map=None, viewer=None) -> dict:
     """合同序列化；列表/增量走 thin=True（字段裁剪：不带 inputs 等大字段）。
 
-    ``with_timeline`` 只对**超级管理员**生效：确认时间线与检查记录（含重演依据）属于
-    审计信息，不对参赛代表与主席团返回（与效果审计/资金账本同口径）。
+    ``with_timeline`` 受审计可见范围约束（``audit_company_ids``）：参赛代表拿不到时间线与
+    检查记录；主席团只拿所辖公司相关的字段内容；系统超管 / 比赛超管拿全部。
     """
     data = {
         'id': contract.id,
@@ -84,24 +84,45 @@ def _contract_data(contract: Contract, *, with_timeline=False, thin=False,
     }
     if not thin or with_timeline:
         data['inputs'] = contract.inputs
-    if with_timeline and can_manage_competition(viewer, ctx.get_competition_id()):
-        data['timeline'] = _timeline(contract)
-        data['checks'] = _checks_data(contract)
+    if with_timeline:
+        scope = audit_company_ids(viewer, ctx.get_competition_id())
+        if scope:
+            scoped = None if '*' in scope else scope
+            party_ids = {int(p['companyId']) for p in (contract.parties or [])
+                         if p.get('companyId')}
+            # 主席团：只在其所辖公司与本合同当事公司有交集时才给审计信息（且只给交集部分）
+            if scoped is None or (scoped & party_ids):
+                data['timeline'] = _timeline(contract, company_ids=scoped)
+                data['checks'] = _checks_data(contract, company_ids=scoped)
     return data
 
 
-def _checks_data(contract: Contract) -> list:
-    """检查记录（§7.3 四检查点）：含依据快照与重演值（replayBasis，上游修改后按账本链重算）。"""
+def _checks_data(contract: Contract, company_ids=None) -> list:
+    """检查记录（§7.3 四检查点）：含依据快照与重演值（replayBasis，上游修改后按账本链重算）。
+
+    ``company_ids`` 非空时只保留这些公司角色对应的依据（主席团按所辖公司过滤）。
+    """
     from apps.competition.contracts import ledger
 
-    return ledger.annotate_checks(contract)
+    rows = ledger.annotate_checks(contract)
+    if company_ids is None:
+        return rows
+    party_companies = {p['role']: p.get('companyId') for p in (contract.parties or [])}
+    for row in rows:
+        for key in ('basis', 'replayBasis'):
+            row[key] = {
+                role: fields for role, fields in (row.get(key) or {}).items()
+                if party_companies.get(role) in company_ids
+            }
+    return rows
 
 
-def _timeline(contract: Contract) -> list:
+def _timeline(contract: Contract, company_ids=None) -> list:
     """确认时间线（§14.6）：谁在什么时候确认 + 设备信息 + 全流程节点。
 
     文案一律中文：参与方角色取插件 ``PARTY_ROLES[].label``，字段取 ``IndustryField.name``，
     操作人显示用户名（不再出现 ``buyer`` / ``cash`` / 用户 id）。
+    ``company_ids`` 非空时，字段变更节点只保留这些公司的流水（主席团按所辖公司过滤）。
     """
     from django.contrib.auth import get_user_model
 
@@ -122,7 +143,8 @@ def _timeline(contract: Contract) -> list:
         role_labels = {}
 
     value_logs = list(FieldLog.objects.filter(
-        contract=contract, event=FieldLog.Event.VALUE_CHANGE)[:200])
+        contract=contract, event=FieldLog.Event.VALUE_CHANGE,
+        **({'company_id__in': company_ids} if company_ids is not None else {}))[:200])
     field_names = {
         f.field_key: (f.name or f.field_key)
         for f in IndustryField.objects.filter(
@@ -424,7 +446,8 @@ class ContractRetryExecuteView(APIView):
 class ContractEffectsView(APIView):
     """效果审计（§7.2）：每行带轮次状态与重演值（replayBefore/replayAfter，上游修改后重算）。
 
-    仅系统超管 / 比赛超管可读（含重演值与检查依据，属审计信息）。
+    可见范围按 ``audit_company_ids``：参赛代表不可见；主席团只看所辖公司的行；
+    系统超管 / 比赛超管看全部。
     """
 
     permission_classes = [IsAuthenticated]
@@ -432,20 +455,25 @@ class ContractEffectsView(APIView):
     def get(self, request, cid, pk):
         from apps.competition.contracts import ledger
 
-        if not can_manage_competition(request.user, cid):
-            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''},
+        scope = audit_company_ids(request.user, cid)
+        if not scope:
+            return Response({'code': 403, 'message': '需要管理员权限', 'details': ''},
                             status=status.HTTP_403_FORBIDDEN)
         contract = _visible_contract_or_none(request, pk)
         if contract is None:
             return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
                             status=status.HTTP_404_NOT_FOUND)
-        return Response(ledger.annotate_effects(contract))
+        rows = ledger.annotate_effects(contract)
+        if '*' not in scope:
+            rows = [row for row in rows if row['companyId'] in scope]
+        return Response(rows)
 
 
 class ContractLedgerView(APIView):
     """资金账本链（查账）：(公司, 字段) 全链——初始值 → 各合同节点（当时值+重演值）→ 当前值。
 
-    仅系统超管 / 比赛超管可读：链路含跨公司资金流与重算依据，不对参赛代表与主席团开放。
+    可见范围按 ``audit_company_ids``：参赛代表不可见；主席团只看所辖公司的链；
+    系统超管 / 比赛超管看全部。
     """
 
     permission_classes = [IsAuthenticated]
@@ -453,14 +481,18 @@ class ContractLedgerView(APIView):
     def get(self, request, cid, pk):
         from apps.competition.contracts import ledger
 
-        if not can_manage_competition(request.user, cid):
-            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''},
+        scope = audit_company_ids(request.user, cid)
+        if not scope:
+            return Response({'code': 403, 'message': '需要管理员权限', 'details': ''},
                             status=status.HTTP_403_FORBIDDEN)
         contract = _visible_contract_or_none(request, pk)
         if contract is None:
             return Response({'code': 404, 'message': '合同不存在或无权查看', 'details': ''},
                             status=status.HTTP_404_NOT_FOUND)
-        return Response(ledger.contract_ledger(contract))
+        data = ledger.contract_ledger(contract)
+        if '*' not in scope:
+            data['chains'] = [c for c in data.get('chains', []) if c['companyId'] in scope]
+        return Response(data)
 
 
 class ContractRequestModifyView(APIView):

@@ -110,6 +110,26 @@ def can_manage_competition(user, competition_id=None) -> bool:
     return bool(membership and membership.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN)
 
 
+def audit_company_ids(user, competition_id=None) -> set:
+    """审计信息（确认时间线 / 检查记录 / 效果审计 / 资金账本）的**可见公司范围**。
+
+    ``'*'`` = 全部（系统超管 / 比赛超管）；普通集合 = 仅这些公司（主席团只到所辖公司）；
+    **空集 = 完全没有审计可见性**（参赛代表，含队长与队员——不因参赛而看到任何审计流水）。
+    """
+    if user is None or not user.is_authenticated:
+        return set()
+    if user.is_superuser:
+        return {'*'}
+    membership = user_membership(user, competition_id)
+    if membership is None:
+        return set()
+    if membership.identity == CompetitionMembership.Identity.COMP_SUPER_ADMIN:
+        return {'*'}
+    if membership.identity == CompetitionMembership.Identity.ADMIN:
+        return {int(c) for c in (membership.managed_companies or [])}
+    return set()
+
+
 def company_actor_ids(company_id) -> set:
     """对某公司可表态的用户 ID 集（队长/队员 + 所辖管理员 + 比赛超管）。"""
     competition_id = get_competition_id()

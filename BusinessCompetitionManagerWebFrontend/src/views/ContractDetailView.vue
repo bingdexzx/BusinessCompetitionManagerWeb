@@ -212,9 +212,15 @@ const isCompSuperAdmin = computed(() =>
   ),
 )
 const canReview = computed(() => auth.isSuperuser || isCompSuperAdmin.value)
-// 「效果与账本」「确认时间线」「资金账本链（重演）」都是审计信息（含重演值/跨公司资金流），
-// 只给超级管理员看；后端同样只对超管返回 timeline/checks 并校验 effects/ledger 接口。
-const canViewAudit = canReview
+// 主席团（管理员）：能看到审计信息，但只限**自己管理的公司**（范围由后端按所辖公司过滤）
+const isCommitteeAdmin = computed(() =>
+  auth.memberships.some(
+    (m) => String(m.id) === props.cid && m.identity === 'ADMIN',
+  ),
+)
+// 「效果与账本」「确认时间线」「资金账本链（重演）」：参赛代表一律不可见；
+// 超管看全部；主席团看所辖公司那部分（后端同样按 audit_company_ids 过滤）
+const canViewAudit = computed(() => canReview.value || isCommitteeAdmin.value)
 
 // 可操作公司：参赛代表=本队公司，管理员=所辖公司；null=未知按放开
 const myCompanyIds = ref<Set<number> | null>(null)

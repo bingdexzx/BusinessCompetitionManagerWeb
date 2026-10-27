@@ -70,12 +70,28 @@ class ContractLedgerPermissionTests(TestCase):
         self.client.force_authenticate(player)
         resp = self.client.get(self._url())
         self.assertEqual(resp.status_code, 403, resp.content)
-        self.assertIn('超级管理员', resp.json()['message'])
+        self.assertIn('管理员', resp.json()['message'])
 
-    def test_committee_admin_cannot_read_ledger(self):
+    def test_committee_admin_cannot_see_other_companies_contract(self):
+        """主席团只辖别的公司 → 本合同对他不可见（404，连链都拿不到）。"""
+        other = Company.objects.create(name='别人的公司')
         admin = self._user('lg_admin', CompetitionMembership.Identity.ADMIN)
+        admin_membership = CompetitionMembership.objects.get(user=admin)
+        admin_membership.managed_companies = [other.id]
+        admin_membership.save(update_fields=['managed_companies'])
         self.client.force_authenticate(admin)
-        self.assertEqual(self.client.get(self._url()).status_code, 403)
+        self.assertEqual(self.client.get(self._url()).status_code, 404)
+
+    def test_committee_admin_sees_own_company_chain(self):
+        admin = self._user('lg_admin2', CompetitionMembership.Identity.ADMIN)
+        admin_membership = CompetitionMembership.objects.get(user=admin)
+        admin_membership.managed_companies = [self.company.id]
+        admin_membership.save(update_fields=['managed_companies'])
+        self.client.force_authenticate(admin)
+        resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        chains = resp.json()['chains']
+        self.assertEqual([c['companyId'] for c in chains], [self.company.id])
 
     def test_competition_super_admin_can_read_ledger(self):
         comp_admin = self._user('lg_comp', CompetitionMembership.Identity.COMP_SUPER_ADMIN)
@@ -167,6 +183,38 @@ class ContractAuditVisibilityTests(TestCase):
         self.client.force_authenticate(self.player)
         resp = self.client.get(self._effects_url())
         self.assertEqual(resp.status_code, 403, resp.content)
+
+    def test_committee_admin_sees_managed_company_audit(self):
+        """主席团管辖本合同的公司 → 能看到时间线/检查记录与效果审计。"""
+        admin = self._user('aud_admin', CompetitionMembership.Identity.ADMIN)
+        membership = CompetitionMembership.objects.get(user=admin)
+        membership.managed_companies = [self.company.id]
+        membership.save(update_fields=['managed_companies'])
+
+        self.client.force_authenticate(admin)
+        body = self.client.get(self._detail_url()).json()
+        self.assertIn('timeline', body)
+        self.assertIn('checks', body)
+
+        effects = self.client.get(self._effects_url())
+        self.assertEqual(effects.status_code, 200, effects.content)
+        self.assertEqual([row['companyId'] for row in effects.json()], [self.company.id])
+
+    def test_committee_admin_without_managed_party_gets_no_audit(self):
+        """主席团只管别的公司（这里靠队伍身份才看得见合同）→ 不下发审计信息。"""
+        other = Company.objects.create(name='别家公司')
+        admin = self._user('aud_admin2', CompetitionMembership.Identity.ADMIN)
+        membership = CompetitionMembership.objects.get(user=admin)
+        membership.managed_companies = [other.id]
+        membership.save(update_fields=['managed_companies'])
+        TeamMember.objects.create(team=Team.objects.get(name='审计队'), user=admin,
+                                  role=TeamMember.Role.MEMBER)
+
+        self.client.force_authenticate(admin)
+        body = self.client.get(self._detail_url()).json()
+        self.assertNotIn('timeline', body)
+        self.assertNotIn('checks', body)
+        self.assertEqual(self.client.get(self._effects_url()).json(), [])
 
     def test_comp_super_admin_can_read_effects(self):
         comp_admin = self._user('aud_comp2', CompetitionMembership.Identity.COMP_SUPER_ADMIN)
