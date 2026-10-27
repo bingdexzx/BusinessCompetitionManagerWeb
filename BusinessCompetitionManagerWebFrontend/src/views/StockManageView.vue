@@ -30,6 +30,9 @@ const {
   removeLocalOrder,
 } = useStockSync(() => props.cid)
 
+// 轮次 0 是合法值（未推进过），只有「还没同步成功」才算未知——否则 0 会被显示成「—」
+const roundReady = computed(() => round.value > 0 || lastSyncAt.value !== null)
+
 // WS 信号只当触发器，去抖合并成一次增量同步，防请求风暴
 useNotifications((message) => {
   if (message.payload?.type === 'stock-updated' || message.type === 'stock-updated') {
@@ -380,7 +383,7 @@ watch(
     <div class="mm-toolbar">
       <h2 class="mm-title">交易管理</h2>
       <div class="mm-actions">
-        <el-tag type="info" effect="plain">轮次：{{ round || '—' }}</el-tag>
+        <el-tag type="info" effect="plain">轮次：{{ roundReady ? round : '—' }}</el-tag>
         <el-tag v-if="lastSyncAt" type="success" effect="plain">
           同步于 {{ formatDateTime(lastSyncAt) }}
         </el-tag>

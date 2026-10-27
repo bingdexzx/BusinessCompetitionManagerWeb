@@ -117,8 +117,14 @@ const { flashing: quoteFlashing, flash: flashQuote } = useFlash()
 
 const overviewRound = computed(() => round.value || market.value?.round || 0)
 const roundShown = useCountUp(overviewRound, { precision: 0 })
+// 轮次 0 是**合法值**（股票已发行但还没推进过），只有「概览未加载」才算未知；
+// 之前用 `roundShown || '—'` 把 0 也当成未知，导致行情页一直显示「—」。
+const roundReady = computed(() => market.value !== null || round.value > 0)
 const stockCount = computed(() => market.value?.stockCount ?? stocks.value.length)
 const stockCountShown = useCountUp(stockCount, { precision: 0 })
+const noStocks = computed(
+  () => !missing.value && !loadingStocks.value && stockCount.value === 0,
+)
 
 const selectedPrice = computed(() => num(selectedStock.value?.currentPrice))
 const selectedPriceShown = useCountUp(selectedPrice, { precision: 2 })
@@ -542,10 +548,37 @@ watch(
       class="sync-error"
     />
 
+    <!-- 尚未发行股票：轮次/行情都不会有数据，给出明确指引而不是让人看「—」 -->
+    <el-alert
+      v-if="noStocks"
+      type="info"
+      show-icon
+      :closable="false"
+      title="本比赛尚未发行股票"
+      :description="
+        canManage
+          ? '请先在「股票管理」中新建股票并设定发行价，之后即可在此查看行情、推进轮次。'
+          : '行情尚未开始，请联系比赛管理员发行股票。'
+      "
+      class="no-stocks-alert"
+    >
+      <template v-if="canManage" #default>
+        <el-button
+          type="primary"
+          size="small"
+          @click="$router.push(`/competitions/${props.cid}/stocks/admin`)"
+        >
+          去发行股票
+        </el-button>
+      </template>
+    </el-alert>
+
     <div class="mm-toolbar">
       <h2 class="mm-title">股票行情</h2>
       <div class="mm-actions">
-        <el-tag type="info" effect="plain">轮次：{{ round || market?.round || '—' }}</el-tag>
+        <el-tag type="info" effect="plain">
+          轮次：{{ roundReady ? overviewRound : '—' }}
+        </el-tag>
         <el-button :loading="syncing" @click="manualSync">
           <el-icon><Refresh /></el-icon>
           <span>同步</span>
@@ -554,6 +587,8 @@ watch(
           v-if="canManage"
           type="warning"
           :loading="advancing"
+          :disabled="noStocks"
+          :title="noStocks ? '尚未发行股票，无法推进轮次' : ''"
           @click="onAdvanceRound"
         >
           <el-icon><VideoPlay /></el-icon>
@@ -565,7 +600,7 @@ watch(
     <div class="metric-grid overview-grid anim-fade-in-up">
       <div class="metric-card">
         <span class="metric-label">当前轮次</span>
-        <div class="metric-value">{{ roundShown || '—' }}</div>
+        <div class="metric-value">{{ roundReady ? roundShown : '—' }}</div>
       </div>
       <div class="metric-card">
         <span class="metric-label">股票数</span>
@@ -701,6 +736,9 @@ watch(
   margin-bottom: 16px;
 }
 .sync-error {
+  margin-bottom: 16px;
+}
+.no-stocks-alert {
   margin-bottom: 16px;
 }
 .ov-time {
