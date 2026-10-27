@@ -8,6 +8,7 @@ from django.db.models import Q
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.devices import localize_snapshot
 from apps.common.permissions import IsSystemSuperAdmin
 from apps.global_.logs.models import Device, NetworkLog
 
@@ -57,7 +58,7 @@ class NetworkLogListView(APIView):
                     'userId': r.user_id,
                     'username': r.user.username if r.user else None,
                     'competitionId': r.competition_id,
-                    'deviceSnapshot': r.device_snapshot,
+                    'deviceSnapshot': localize_snapshot(r.device_snapshot),
                     'payloadDigest': r.payload_digest,
                     'responseDigest': r.response_digest,
                 }
@@ -111,7 +112,8 @@ class NetworkLogExportView(APIView):
                 'method': r.method, 'path': r.path, 'status': r.status,
                 'durationMs': r.duration_ms, 'ip': r.ip,
                 'username': r.user.username if r.user else None,
-                'competitionId': r.competition_id, 'deviceSnapshot': r.device_snapshot,
+                'competitionId': r.competition_id,
+                'deviceSnapshot': localize_snapshot(r.device_snapshot),
             }
             for r in qs
         ]})

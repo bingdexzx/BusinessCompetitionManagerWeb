@@ -94,17 +94,59 @@ def _checks_data(contract: Contract) -> list:
 
 
 def _timeline(contract: Contract) -> list:
-    """确认时间线（§14.6 硬性要求）：谁在什么时候点击了确认 + 设备信息 + 全流程节点。"""
+    """确认时间线（§14.6）：谁在什么时候确认 + 设备信息 + 全流程节点。
+
+    文案一律中文：参与方角色取插件 ``PARTY_ROLES[].label``，字段取 ``IndustryField.name``，
+    操作人显示用户名（不再出现 ``buyer`` / ``cash`` / 用户 id）。
+    """
+    from django.contrib.auth import get_user_model
+
+    from apps.common.devices import localize_snapshot
+    from apps.competition.contracts import services as contract_services
+    from apps.competition.industries.models import IndustryField
+
+    # 参与方角色 → 中文名；插件缺失时退回角色键，不影响时间线
+    role_labels: dict[str, str] = {}
+    try:
+        module = contract_services.contract_module_for(
+            contract.contract_type_key, contract.plugin_version)
+        for role in getattr(module, 'PARTY_ROLES', None) or []:
+            key = role.get('role')
+            if key:
+                role_labels[key] = role.get('label') or key
+    except Exception:  # noqa: BLE001
+        role_labels = {}
+
+    value_logs = list(FieldLog.objects.filter(
+        contract=contract, event=FieldLog.Event.VALUE_CHANGE)[:200])
+    field_names = {
+        f.field_key: (f.name or f.field_key)
+        for f in IndustryField.objects.filter(
+            field_key__in={log.field_key for log in value_logs})
+    }
+
+    mod_requests = list(contract.mod_requests.all())
+    user_ids = {contract.created_by} | {m.reviewed_by for m in mod_requests if m.reviewed_by}
+    user_ids.discard(None)
+    usernames = dict(
+        get_user_model().objects.filter(pk__in=user_ids).values_list('id', 'username'))
+
+    def user_label(user_id) -> str:
+        if not user_id:
+            return '系统'
+        return usernames.get(user_id) or f'用户#{user_id}'
+
     nodes = [{
         'type': 'CREATED', 'at': contract.created_at.isoformat(),
-        'title': '合同创建', 'actor': str(contract.created_by), 'detail': '',
+        'title': '合同创建', 'actor': user_label(contract.created_by), 'detail': '',
     }]
     for c in contract.confirmations.all():
+        snapshot = localize_snapshot(c.device_snapshot)
         nodes.append({
             'type': 'CONFIRM', 'at': c.confirmed_at.isoformat(),
-            'title': f'参与方 {c.party_role} 确认',
-            'actor': c.confirmed_by_username or str(c.confirmed_by),
-            'detail': f'IP {c.ip or "-"} / 设备 {(c.device_snapshot or {}).get("browser", "-")}',
+            'title': f'参与方 {role_labels.get(c.party_role, c.party_role)} 确认',
+            'actor': c.confirmed_by_username or user_label(c.confirmed_by),
+            'detail': f'IP {c.ip or "-"} / 设备 {snapshot.get("browser") or "未知"}',
             'traceId': c.trace_id,
         })
     if contract.numbered_at:
@@ -115,7 +157,7 @@ def _timeline(contract: Contract) -> list:
     if contract.executed_at:
         nodes.append({
             'type': 'EXECUTED', 'at': contract.executed_at.isoformat(),
-            'title': '自动执行', 'actor': '系统', 'detail': 'apply() 产生字段效果',
+            'title': '自动执行', 'actor': '系统', 'detail': '执行插件逻辑，产生字段效果',
         })
     if contract.posted_at:
         nodes.append({
@@ -123,7 +165,7 @@ def _timeline(contract: Contract) -> list:
             'title': f'落账（第 {contract.round_no} 轮）', 'actor': '系统',
             'detail': '再次运行检查通过，冻结合同相关资源',
         })
-    for mod in contract.mod_requests.all():
+    for mod in mod_requests:
         nodes.append({
             'type': 'MOD_APPLY', 'at': mod.created_at.isoformat(),
             'title': f'申请修改（{mod.requested_by_username}）',
@@ -133,7 +175,7 @@ def _timeline(contract: Contract) -> list:
             nodes.append({
                 'type': 'MOD_REVIEW', 'at': mod.updated_at.isoformat(),
                 'title': f'超级管理员审核：{mod.get_status_display()}',
-                'actor': str(mod.reviewed_by), 'detail': mod.review_note,
+                'actor': user_label(mod.reviewed_by), 'detail': mod.review_note,
             })
         for a in (mod.other_party_approvals or []):
             nodes.append({
@@ -142,10 +184,10 @@ def _timeline(contract: Contract) -> list:
                 'title': f'其他方 {a.get("username")} {"通过" if a.get("approved") else "驳回"}',
                 'actor': a.get('username', ''), 'detail': a.get('note', ''),
             })
-    for log in FieldLog.objects.filter(contract=contract, event=FieldLog.Event.VALUE_CHANGE)[:200]:
+    for log in value_logs:
         nodes.append({
             'type': 'FIELD', 'at': log.occurred_at.isoformat(),
-            'title': f'字段 {log.field_key} {op_label(log.op)}',
+            'title': f'字段 {field_names.get(log.field_key, log.field_key)} {op_label(log.op)}',
             'actor': log.operator_username,
             'detail': f'{log.before_raw} → {log.after_raw}（{log.get_source_display()}）',
             'traceId': log.trace_id,

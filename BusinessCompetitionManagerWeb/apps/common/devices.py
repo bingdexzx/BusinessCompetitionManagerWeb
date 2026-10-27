@@ -4,6 +4,9 @@ import re
 
 from django.conf import settings
 
+# 无法识别的设备信息统一显示中文（历史数据里存的是 'Unknown'）
+UNKNOWN_DEVICE = '未知'
+
 UA_RULES = [
     # (正则, 系统, 浏览器) —— 顺序敏感，先特异后一般
     (r'Windows NT 10', 'Windows 10/11', None),
@@ -29,17 +32,27 @@ BROWSER_RULES = [
 
 def parse_user_agent(ua: str) -> dict:
     ua = ua or ''
-    os_name = 'Unknown'
+    os_name = UNKNOWN_DEVICE
     for pattern, name, _ in UA_RULES:
         if re.search(pattern, ua):
             os_name = name
             break
-    browser = 'Unknown'
+    browser = UNKNOWN_DEVICE
     for pattern, name in BROWSER_RULES:
         if re.search(pattern, ua):
             browser = name
             break
     return {'os': os_name, 'browser': browser}
+
+
+def localize_snapshot(snapshot: dict | None) -> dict:
+    """把设备快照里的未知值统一成中文（历史数据里存的是 ``Unknown``）。"""
+    snap = dict(snapshot or {})
+    for key in ('os', 'browser'):
+        value = str(snap.get(key) or '').strip()
+        if not value or value.lower() == 'unknown':
+            snap[key] = UNKNOWN_DEVICE
+    return snap
 
 
 def client_ip(request) -> str:

@@ -2,7 +2,7 @@
 
 from django.test import SimpleTestCase
 
-from apps.common.devices import parse_user_agent
+from apps.common.devices import UNKNOWN_DEVICE, localize_snapshot, parse_user_agent
 from apps.common.redaction import REDACTED, digest, redact
 
 
@@ -45,5 +45,8 @@ class DeviceParseTests(SimpleTestCase):
 
     def test_unknown(self):
         parsed = parse_user_agent('')
-        self.assertEqual(parsed['os'], 'Unknown')
-        self.assertEqual(parsed['browser'], 'Unknown')
+        self.assertEqual(parsed['os'], UNKNOWN_DEVICE)
+        self.assertEqual(parsed['browser'], UNKNOWN_DEVICE)
+        self.assertEqual(UNKNOWN_DEVICE, '未知')
+        # 历史数据里存的 'Unknown' 展示时也要变成中文
+        self.assertEqual(localize_snapshot({'os': 'Unknown', 'browser': ''})['browser'], '未知')
