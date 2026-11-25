@@ -671,6 +671,83 @@ def install_python_deps(runner: Runner, cfg: Config) -> None:
     ok('后端依赖安装完成（.venv）')
 
 
+def ensure_database(runner: Runner, cfg: Config) -> None:
+    """库不存在时用配置的用户名/密码创建（owner=该用户）。"""
+    step('确保数据库存在')
+    if runner.dry_run:
+        info(f'[dry-run] 若 {cfg.db_name} 不存在，则用 {cfg.db_user} 创建')
+        return
+
+    app_dir = Path(cfg.app_dir)
+    code = (
+        "import os, sys\n"
+        "import psycopg2\n"
+        "from psycopg2 import sql\n"
+        "name = os.environ['BCM_DB_NAME']\n"
+        "user = os.environ['BCM_DB_USER']\n"
+        "try:\n"
+        "    conn = psycopg2.connect(\n"
+        "        dbname='postgres', user=user,\n"
+        "        password=os.environ['BCM_DB_PASSWORD'],\n"
+        "        host=os.environ['BCM_DB_HOST'],\n"
+        "        port=os.environ['BCM_DB_PORT'], connect_timeout=5)\n"
+        "    conn.autocommit = True\n"
+        "    cur = conn.cursor()\n"
+        "    cur.execute('SELECT 1 FROM pg_database WHERE datname = %s', (name,))\n"
+        "    if cur.fetchone():\n"
+        "        print('EXISTS')\n"
+        "    else:\n"
+        "        cur.execute(sql.SQL('CREATE DATABASE {} OWNER {}').format(\n"
+        "            sql.Identifier(name), sql.Identifier(user)))\n"
+        "        print('CREATED')\n"
+        "    conn.close()\n"
+        "except Exception as exc:\n"
+        "    print(str(exc).strip())\n"
+        "    sys.exit(1)\n"
+    )
+    result = runner.run(
+        [str(app_dir / '.venv' / 'bin' / 'python'), '-c', code],
+        env={
+            'BCM_DB_NAME': cfg.db_name,
+            'BCM_DB_USER': cfg.db_user,
+            'BCM_DB_PASSWORD': cfg.db_password,
+            'BCM_DB_HOST': cfg.db_host,
+            'BCM_DB_PORT': cfg.db_port,
+        },
+        check=False, capture=True,
+    )
+    if result.returncode == 0:
+        detail = (result.stdout or '').strip()
+        if detail == 'CREATED':
+            ok(f'数据库不存在，已创建：{cfg.db_name}（owner={cfg.db_user}）')
+        else:
+            ok('数据库已存在')
+        return
+
+    detail = (result.stdout or '').strip()
+    # 用户没有 CREATEDB 权限时，尝试用系统 postgres 超级用户建库（仅本地套接字可用时）
+    if 'permission denied' in detail.lower() and cfg.db_name.replace('_', '').isalnum():
+        check = runner.run(
+            ['sudo', '-u', 'postgres', 'psql', '-tAc',
+             f"SELECT 1 FROM pg_database WHERE datname = '{cfg.db_name}'"],
+            check=False, capture=True)
+        if check.returncode == 0 and (check.stdout or '').strip() != '1':
+            created = runner.run(
+                ['sudo', '-u', 'postgres', 'createdb', '-O', cfg.db_user, cfg.db_name],
+                check=False, capture=True)
+            if created.returncode == 0:
+                ok(f'已通过系统 postgres 用户创建数据库：{cfg.db_name}')
+                return
+    die(
+        f'数据库不存在且自动创建失败：{detail}\n'
+        f'  配置：{cfg.db_user}@{cfg.db_host}:{cfg.db_port}/{cfg.db_name}\n'
+        '  处理办法：\n'
+        '  1) 1Panel「数据库」里创建该库（owner 选该用户），再重跑；\n'
+        '  2) 或给该用户 CREATEDB 权限：ALTER ROLE <用户> CREATEDB;\n'
+        '  3) 1Panel 数据库若只允许面板创建，请在面板建好后用 '
+        '--db-name/--db-user/--db-password 指定。')
+
+
 def verify_database(runner: Runner, cfg: Config) -> None:
     step('校验数据库连接')
     if runner.dry_run:
@@ -1137,6 +1214,7 @@ def main() -> int:
     copy_project(runner, cfg)
     write_env(runner, cfg)
     install_python_deps(runner, cfg)
+    ensure_database(runner, cfg)
     verify_database(runner, cfg)
     migrate(runner, cfg)
     create_superuser(runner, cfg)

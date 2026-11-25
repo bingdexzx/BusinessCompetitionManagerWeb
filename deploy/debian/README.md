@@ -104,6 +104,10 @@ curl -s -H 'Host: <IP>' http://127.0.0.1/api/health
 1Panel 创建站点时根目录只能选它规定的位置（如
 `/opt/1panel/apps/openresty/openresty/www/sites/<站点>/index`）。两种做法：
 
+> 部署脚本在进入迁移前会检查目标库：**不存在就用你输入的用户名/密码/库名创建**
+> （owner 为该用户）。如果该用户没有 CREATEDB 权限，脚本会尝试用系统 postgres 创建；
+> 仍失败时请到 1Panel 里建库，或给用户授权：`ALTER ROLE <用户> CREATEDB;`。
+
 **推荐：部署时把 dist 同步进站点目录**
 
 ```bash
