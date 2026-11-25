@@ -344,10 +344,10 @@ def collect(cli) -> Config:
     reuse = bool(reuse_env.get('DATABASES_PASSWORD')) and not cli.db_password
     if reuse:
         cfg.db_mode = 'existing'
-        cfg.db_host = reuse_env.get('DATABASES_HOST', 'localhost')
-        cfg.db_port = reuse_env.get('DATABASES_PORT', '5432')
-        cfg.db_name = reuse_env.get('DATABASES_NAME', DB_NAME_DEFAULT)
-        cfg.db_user = reuse_env.get('DATABASES_USER', DB_USER_DEFAULT)
+        cfg.db_host = cli.db_host or reuse_env.get('DATABASES_HOST', 'localhost')
+        cfg.db_port = cli.db_port or reuse_env.get('DATABASES_PORT', '5432')
+        cfg.db_name = cli.db_name or reuse_env.get('DATABASES_NAME', DB_NAME_DEFAULT)
+        cfg.db_user = cli.db_user or reuse_env.get('DATABASES_USER', DB_USER_DEFAULT)
         cfg.db_password = reuse_env['DATABASES_PASSWORD']
         cfg.secret_key = reuse_env.get('SECRET_KEY', '')
         info('检测到已有 .env：复用数据库连接与 SECRET_KEY'
@@ -704,8 +704,20 @@ def verify_database(runner: Runner, cfg: Config) -> None:
     )
     if result.returncode != 0:
         detail = (result.stdout or '').strip()
+        lowered = detail.lower()
+        if 'does not exist' in lowered and 'database' in lowered:
+            hint = ('数据库不存在：请先在 1Panel「数据库」里创建该库，'
+                    '或用 --db-name 指定实际库名（库名区分大小写）。')
+        elif 'password authentication failed' in lowered:
+            hint = ('密码不对：在 1Panel 里重置该用户密码，并把同样的值写进 '
+                    '--db-password 或 /opt/bcm/.env。')
+        elif 'role' in lowered and 'does not exist' in lowered:
+            hint = '数据库用户不存在：在 1Panel 里创建该用户，或用 --db-user 指定。'
+        else:
+            hint = '请检查 1Panel 里该库的连接信息（主机/端口/库名/用户/密码）。'
         die(
             f'数据库连接失败：{detail}\n'
+            f'  {hint}\n'
             f'  当前配置：{cfg.db_user}@{cfg.db_host}:{cfg.db_port}/{cfg.db_name}\n'
             '  处理办法：\n'
             '  1) 1Panel：在「数据库」里把该用户密码改成 /opt/bcm/.env 的 '
