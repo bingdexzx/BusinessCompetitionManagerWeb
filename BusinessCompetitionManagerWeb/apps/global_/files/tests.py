@@ -169,11 +169,11 @@ class MapBackgroundTests(MediaRootTestCase):
             name='文件测试赛', code='FILES', db_name=COMP_ALIAS)
         self.cid = self.competition.pk
         self.manager = user_model.objects.create_user(
-            username='filemgr', password='x' * 12, email='filemgr@test.local')
+            username='filemgr', password='x' * 12, email='filemgr@test.local', is_superuser=True)
         from apps.global_.memberships.models import CompetitionMembership
         CompetitionMembership.objects.create(
             user=self.manager, competition=self.competition,
-            identity=CompetitionMembership.Identity.COMP_SUPER_ADMIN)
+            identity=CompetitionMembership.Identity.ADMIN)
         self.player = user_model.objects.create_user(
             username='fileplayer', password='x' * 12, email='fileplayer@test.local')
         CompetitionMembership.objects.create(

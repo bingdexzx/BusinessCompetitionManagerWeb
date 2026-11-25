@@ -35,7 +35,7 @@ def password_url(pk):
 
 @override_settings(ROOT_URLCONF=__name__)
 class UserAdminBaseTestCase(TestCase):
-    """公共夹具：系统超管 admin、普通账号 member（带学校 + 比赛身份）。"""
+    """公共夹具：系统超级管理员 admin、普通账号 member（带学校 + 比赛身份）。"""
 
     @classmethod
     def setUpTestData(cls):
@@ -321,7 +321,7 @@ class UserUpdateTests(UserAdminBaseTestCase):
             ({'email': 'bad-email'}, '邮箱格式'),
             ({'schoolId': 999999}, '学校'),
             ({'isActive': 'yes'}, '是否启用'),
-            ({'isSuperuser': 1}, '是否超管'),
+            ({'isSuperuser': 1}, '是否超级管理员'),
         ]
         for payload, keyword in cases:
             with self.subTest(payload=payload):
@@ -349,7 +349,7 @@ class UserDeleteTests(UserAdminBaseTestCase):
         self.assertFalse(User.objects.filter(pk=victim.pk).exists())
 
     def test_delete_self_forbidden(self):
-        # 存在另一个超管时：命中「不能删自己」
+        # 存在另一个超级管理员时：命中「不能删自己」
         User.objects.create_superuser('super2', 'super2@example.com', 'superpass12')
         resp = self.client.delete(detail_url(self.admin.pk))
         self.assertEqual(resp.status_code, 400)
@@ -357,11 +357,11 @@ class UserDeleteTests(UserAdminBaseTestCase):
         self.assertTrue(User.objects.filter(pk=self.admin.pk).exists())
 
     def test_delete_last_superuser_forbidden(self):
-        # 唯一超管删除自己：命中「不能删除最后一个系统超管」
+        # 唯一超级管理员删除自己：命中「不能删除最后一个系统超级管理员」
         self.assertEqual(User.objects.filter(is_superuser=True).count(), 1)
         resp = self.client.delete(detail_url(self.admin.pk))
         self.assertEqual(resp.status_code, 400)
-        self.assertEqual(resp.json()['message'], '不能删除最后一个系统超级管理员')
+        self.assertEqual(resp.json()['message'], '不能删除最后一个超级管理员')
         self.assertTrue(User.objects.filter(pk=self.admin.pk).exists())
 
     def test_delete_not_found(self):
@@ -412,7 +412,7 @@ class UserResetPasswordTests(UserAdminBaseTestCase):
 
 class UserPermissionTests(UserAdminBaseTestCase):
     def test_non_superuser_forbidden_on_all_endpoints(self):
-        client = self.api_as(self.member)  # 非超管
+        client = self.api_as(self.member)  # 非超级管理员
         calls = [
             ('get', LIST_URL, None),
             ('post', LIST_URL, {'username': 'x', 'password': 'x' * 8, 'displayName': 'x'}),

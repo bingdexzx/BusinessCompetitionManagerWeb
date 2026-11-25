@@ -1,5 +1,7 @@
 """比赛 API（§12：创建比赛（图片/名称/办赛学校/地点/人员安排）、meta、生命周期）。"""
 
+from django.db.models import Case, IntegerField, Value, When
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -7,21 +9,43 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import (
-    IsSystemSuperAdmin, IsSystemOrCompetitionSuperAdmin, get_membership,
+    IsSystemOrCompetitionSuperAdmin, get_membership,
 )
 from apps.global_.competitions import services
 from apps.global_.competitions.models import Competition
 from apps.global_.schools.models import School
 
 
+def _school_ids_from(data) -> list:
+    """办赛学校 ID 列表：优先 hostSchoolIds（数组），兼容旧的单值 hostSchoolId。"""
+    raw = data.get('hostSchoolIds')
+    if raw is None:
+        raw = data.get('hostSchoolId')
+        if raw in (None, ''):
+            return []
+        raw = [raw]
+    ids = []
+    for item in raw or []:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def _competition_data(c: Competition) -> dict:
+    schools = list(c.host_schools.all())
     return {
         'id': c.id,
         'name': c.name,
         'code': c.code,
         'coverImage': c.cover_image,
-        'hostSchoolId': c.host_school_id,
-        'hostSchoolName': c.host_school.name if c.host_school else None,
+        'ticketImage': c.ticket_image,
+        'hostSchoolIds': [s.id for s in schools],
+        'hostSchoolNames': [s.name for s in schools],
+        # 兼容旧字段（单校）
+        'hostSchoolId': schools[0].id if schools else None,
+        'hostSchoolName': schools[0].name if schools else None,
         'location': c.location,
         'staffingInfo': c.staffing_info,
         'status': c.status,
@@ -33,7 +57,7 @@ def _competition_data(c: Competition) -> dict:
 
 
 class CompetitionListCreateView(APIView):
-    """GET 比赛列表（系统超管看全部，用户看有身份的比赛）；POST 创建比赛（系统超管）。"""
+    """GET 比赛列表（系统超级管理员看全部，用户看有身份的比赛）；POST 创建比赛（系统超级管理员）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -42,27 +66,48 @@ class CompetitionListCreateView(APIView):
             qs = Competition.objects.all()
         else:
             qs = Competition.objects.filter(memberships__user=request.user, memberships__is_active=True)
+        # 已结束（CLOSED）的比赛自动排到最后；其余按创建时间倒序（新比赛在前）
+        qs = qs.annotate(
+            _ended_last=Case(
+                When(status=Competition.Status.CLOSED, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+        ).order_by('_ended_last', '-created_at')
         return Response([_competition_data(c) for c in qs.distinct()[:200]])
 
     def post(self, request):
         if not request.user.is_superuser:
-            return Response({'code': 403, 'message': '需要系统超级管理员权限', 'details': ''}, status=403)
+            return Response({'code': 403, 'message': '仅超级管理员可操作', 'details': ''}, status=403)
         name = (request.data.get('name') or '').strip()
         if not name:
             return Response({'code': 400, 'message': '比赛名称必填', 'details': ''}, status=400)
-        host_school = None
-        host_school_id = request.data.get('hostSchoolId')
-        if host_school_id:
-            host_school = get_object_or_404(School, pk=host_school_id)
-        competition = services.create_competition(
-            name=name,
-            created_by=request.user,
-            cover_image=request.data.get('coverImage', '') or '',
-            host_school=host_school,
-            location=request.data.get('location', '') or '',
-            staffing_info=request.data.get('staffingInfo', '') or '',
-            code=(request.data.get('code') or '').strip(),
-        )
+        school_ids = _school_ids_from(request.data)
+        if not school_ids:
+            return Response({'code': 400, 'message': '请选择办赛学校', 'details': ''}, status=400)
+        schools = list(School.objects.filter(pk__in=school_ids))
+        if len(schools) != len(set(school_ids)):
+            return Response({'code': 400, 'message': '办赛学校不存在', 'details': ''}, status=400)
+        code = (request.data.get('code') or '').strip()
+        if code and Competition.objects.filter(code=code).exists():
+            return Response({'code': 400, 'message': '比赛代码已存在', 'details': ''}, status=400)
+        try:
+            competition = services.create_competition(
+                name=name,
+                created_by=request.user,
+                cover_image=request.data.get('coverImage', '') or '',
+                ticket_image=request.data.get('ticketImage', '') or '',
+                host_schools=schools,
+                location=request.data.get('location', '') or '',
+                staffing_info=request.data.get('staffingInfo', '') or '',
+                code=code,
+            )
+        except IntegrityError:
+            # 自动生成的比赛代码撞车（如删除后序号复用）：重试一次新代码
+            return Response(
+                {'code': 400, 'message': '比赛代码已存在，请指定一个比赛代码后重试', 'details': ''},
+                status=400,
+            )
         return Response(_competition_data(competition), status=status.HTTP_201_CREATED)
 
 
@@ -83,21 +128,40 @@ class CompetitionDetailView(APIView):
 
 
 class CompetitionMetaView(APIView):
-    """完善比赛信息（§2.2 阶段四）：系统超管 / 本比赛超管（§15.2）。"""
+    """完善比赛信息（§2.2 阶段四）：系统超级管理员 / 本比赛超级管理员（§15.2）。"""
 
     permission_classes = [IsSystemOrCompetitionSuperAdmin]
 
     def patch(self, request, cid):
         competition = get_object_or_404(Competition, pk=cid)
-        for field, key in (
-            ('cover_image', 'coverImage'), ('location', 'location'),
-            ('staffing_info', 'staffingInfo'), ('name', 'name'),
-        ):
+        if 'name' in request.data:
+            name = (request.data.get('name') or '').strip()
+            if not name:
+                return Response({'code': 400, 'message': '比赛名称必填', 'details': ''}, status=400)
+            competition.name = name
+        if 'code' in request.data:
+            code = (request.data.get('code') or '').strip()
+            if not code:
+                return Response({'code': 400, 'message': '比赛代码不能为空', 'details': ''}, status=400)
+            if len(code) > 32:
+                return Response({'code': 400, 'message': '比赛代码最长 32 个字符', 'details': ''}, status=400)
+            if Competition.objects.exclude(pk=competition.pk).filter(code=code).exists():
+                return Response({'code': 400, 'message': '比赛代码已存在', 'details': ''}, status=400)
+            competition.code = code
+        for field, key in (('cover_image', 'coverImage'),
+                           ('ticket_image', 'ticketImage'),
+                           ('location', 'location'),
+                           ('staffing_info', 'staffingInfo')):
             if key in request.data:
                 setattr(competition, field, request.data.get(key) or '')
-        if 'hostSchoolId' in request.data:
-            school_id = request.data.get('hostSchoolId')
-            competition.host_school = get_object_or_404(School, pk=school_id) if school_id else None
+        if 'hostSchoolIds' in request.data or 'hostSchoolId' in request.data:
+            school_ids = _school_ids_from(request.data)
+            if not school_ids:
+                return Response({'code': 400, 'message': '请选择办赛学校', 'details': ''}, status=400)
+            schools = list(School.objects.filter(pk__in=school_ids))
+            if len(schools) != len(set(school_ids)):
+                return Response({'code': 400, 'message': '办赛学校不存在', 'details': ''}, status=400)
+            competition.host_schools.set(schools)
         competition.save()
         return Response(_competition_data(competition))
 

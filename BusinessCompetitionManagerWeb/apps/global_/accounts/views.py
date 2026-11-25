@@ -3,6 +3,7 @@
 import hashlib
 
 from django.contrib.auth import get_user_model
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -13,7 +14,9 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from apps.common import context as ctx
 from apps.common.devices import device_snapshot
+from apps.common.permissions import IsSystemSuperAdmin
 from apps.global_.accounts import throttle
+from apps.global_.accounts.models import UpdateLog
 from apps.global_.accounts.serializers import RegisterSerializer, UserSerializer
 from apps.global_.logs.models import Device
 
@@ -158,6 +161,12 @@ class MeView(APIView):
         user = request.user
         if 'displayName' in request.data:
             user.display_name = request.data.get('displayName') or ''
+        if 'avatar' in request.data:
+            avatar = str(request.data.get('avatar') or '').strip()
+            if len(avatar) > 500:
+                return Response(
+                    {'code': 400, 'message': '头像地址过长', 'details': ''}, status=400)
+            user.avatar = avatar
         if 'email' in request.data:
             email = (request.data.get('email') or '').strip()
             if email:
@@ -196,3 +205,77 @@ class MyDevicesView(APIView):
             }
             for d in devices
         ])
+
+
+def _update_log_data(log: UpdateLog) -> dict:
+    return {
+        'id': log.id,
+        'version': log.version,
+        'title': log.title,
+        'content': log.content,
+        'createdByUsername': log.created_by_username,
+        'publishedAt': log.published_at.isoformat(),
+    }
+
+
+class UpdateLogListView(APIView):
+    """更新日志列表 / 发布（仅系统超级管理员）。"""
+
+    permission_classes = [IsSystemSuperAdmin]
+
+    def get(self, request):
+        return Response([_update_log_data(log) for log in UpdateLog.objects.all()[:100]])
+
+    def post(self, request):
+        version = str(request.data.get('version') or '').strip()
+        title = str(request.data.get('title') or '').strip()
+        content = str(request.data.get('content') or '').strip()
+        if not version:
+            return Response({'code': 400, 'message': '请填写版本号', 'details': ''}, status=400)
+        if not title:
+            return Response({'code': 400, 'message': '请填写更新标题', 'details': ''}, status=400)
+        if not content:
+            return Response({'code': 400, 'message': '请填写更新内容', 'details': ''}, status=400)
+        if len(version) > 40 or len(title) > 120:
+            return Response({'code': 400, 'message': '版本号或标题过长', 'details': ''}, status=400)
+        if UpdateLog.objects.filter(version=version).exists():
+            return Response({'code': 400, 'message': '该版本号已存在', 'details': ''}, status=400)
+        log = UpdateLog.objects.create(
+            version=version,
+            title=title,
+            content=content,
+            created_by=request.user,
+            created_by_username=request.user.username,
+        )
+        # 发布人默认已读，避免下次登录看到自己刚发布的更新
+        request.user.update_log_seen_id = log.id
+        request.user.save(update_fields=['update_log_seen_id'])
+        return Response(_update_log_data(log), status=status.HTTP_201_CREATED)
+
+
+class UpdateLogLatestView(APIView):
+    """当前用户是否需要看最新更新（按已读游标判断）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        log = UpdateLog.objects.order_by('-published_at', '-id').first()
+        seen = request.user.update_log_seen_id or 0
+        return Response({
+            'log': _update_log_data(log) if log is not None else None,
+            'shouldShow': bool(log is not None and log.id > seen),
+        })
+
+
+class UpdateLogReadView(APIView):
+    """关闭更新弹窗后推进已读游标；只前进不后退。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        log = get_object_or_404(UpdateLog, pk=pk)
+        if log.id > (request.user.update_log_seen_id or 0):
+            request.user.update_log_seen_id = log.id
+            request.user.save(update_fields=['update_log_seen_id'])
+        return Response({'seen': request.user.update_log_seen_id})
+

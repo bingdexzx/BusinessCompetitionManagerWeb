@@ -1,8 +1,8 @@
 """学校 API（§12：GET/POST /api/schools、GET/PATCH/DELETE /api/schools/<pk>）。
 
-学校是组织主数据，由办赛方（系统超管）维护：
+学校是组织主数据，由办赛方（系统超级管理员）维护：
 - 读（列表/搜索/详情）：公开——注册页与个人档案选学校时未登录/任意角色都要能搜到；
-- 写（新建/修改/删除）：仅系统超管。
+- 写（新建/修改/删除）：仅系统超级管理员。
 
 删除学校不删账号：``User.school`` 为 ``SET_NULL``，仅把账号的学校置空。
 """
@@ -36,7 +36,7 @@ def _clean_name(raw):
 
 
 class SchoolListCreateView(APIView):
-    """GET /api/schools?q= 列表搜索；POST /api/schools 新建（系统超管）。"""
+    """GET /api/schools?q= 列表搜索；POST /api/schools 新建（系统超级管理员）。"""
 
     def get_permissions(self):
         return [AllowAny()] if self.request.method == 'GET' else [IsSystemSuperAdmin()]
@@ -60,7 +60,7 @@ class SchoolListCreateView(APIView):
 
 
 class SchoolDetailView(APIView):
-    """GET /api/schools/<pk>；PATCH 改名/地区、DELETE 删除（写操作仅系统超管）。"""
+    """GET /api/schools/<pk>；PATCH 改名/地区、DELETE 删除（写操作仅系统超级管理员）。"""
 
     def get_permissions(self):
         return [AllowAny()] if self.request.method == 'GET' else [IsSystemSuperAdmin()]

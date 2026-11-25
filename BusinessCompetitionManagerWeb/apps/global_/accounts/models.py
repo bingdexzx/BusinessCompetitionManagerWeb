@@ -9,6 +9,7 @@ from django.db import models
 
 class User(AbstractUser):
     display_name = models.CharField('显示名', max_length=100, blank=True)
+    avatar = models.TextField('头像 URL', blank=True, default='')
     email = models.EmailField('邮箱', unique=True, null=True, blank=True)
     school = models.ForeignKey(
         'schools.School',
@@ -19,6 +20,7 @@ class User(AbstractUser):
         related_name='users',
     )
     token_version = models.PositiveIntegerField('令牌版本', default=0)
+    update_log_seen_id = models.PositiveBigIntegerField('已读更新日志 ID', default=0)
 
     class Meta:
         verbose_name = '用户'
@@ -40,7 +42,6 @@ class LoginThrottle(models.Model):
     键 = 用户名|客户端 IP（大小写不敏感用户名），逐键计数；
     成功登录即清零。多进程部署下用数据库计数（进程内计数会被 worker 数摊薄）。
     """
-
     key = models.CharField('限流键（用户名|IP）', max_length=220, unique=True)
     fail_count = models.PositiveIntegerField('窗口内失败次数', default=0)
     window_start = models.DateTimeField('窗口起点', auto_now_add=True)
@@ -53,3 +54,30 @@ class LoginThrottle(models.Model):
 
     def __str__(self):
         return self.key
+
+
+class UpdateLog(models.Model):
+    """系统更新日志：超管发布，用户按 ``User.update_log_seen_id`` 游标只弹一次。"""
+
+    version = models.CharField('版本号', max_length=40, unique=True)
+    title = models.CharField('标题', max_length=120)
+    content = models.TextField('更新内容')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name='发布人',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='update_logs',
+    )
+    created_by_username = models.CharField('发布人用户名', max_length=150, blank=True)
+    published_at = models.DateTimeField('发布时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '更新日志'
+        verbose_name_plural = '更新日志'
+        ordering = ['-published_at', '-id']
+
+    def __str__(self):
+        return f'{self.version} {self.title}'
+

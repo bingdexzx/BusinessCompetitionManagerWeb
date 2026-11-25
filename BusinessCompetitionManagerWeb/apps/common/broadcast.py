@@ -23,6 +23,14 @@ def emit_resource_changed(competition_id, resource: str, action: str, payload: d
     **落库（重放源）优先**：写完流水即返回 seq，实时推送尽力而为。``competition_id`` 为空 =
     全局库资源 → 投 ``global`` 分组，否则投 ``comp_<cid>``。
     """
+    # 目录型缓存失效（合同类型 schema / 公司列表）：写成功才失效，避免脏读
+    try:
+        from apps.common.cache import bump_for_resource
+
+        bump_for_resource(str(resource))
+    except Exception:  # noqa: BLE001 —— 缓存失效失败不影响业务
+        logger.warning('缓存失效失败 resource=%s', resource, exc_info=True)
+
     try:
         from apps.global_.logs.models import BroadcastEvent
 

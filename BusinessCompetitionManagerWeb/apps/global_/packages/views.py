@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import uuid
 
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -35,7 +36,7 @@ def _package_data(p: Package) -> dict:
 class PackageUploadView(APIView):
     """上传比赛包（multipart: file）→ 解析/建库/导入 → 返回导入报告。
 
-    权限：系统超管 / 本比赛超管（§15.2；M1 阶段上传权限严格管控，§5.4 护栏 1）。
+    权限：系统超级管理员 / 本比赛超级管理员（§15.2；M1 阶段上传权限严格管控，§5.4 护栏 1）。
     """
 
     permission_classes = [IsSystemOrCompetitionSuperAdmin]
@@ -47,6 +48,25 @@ class PackageUploadView(APIView):
             return Response({'code': 400, 'message': '缺少上传文件（file）', 'details': ''}, status=400)
         if not upload.name.lower().endswith('.zip'):
             return Response({'code': 400, 'message': '比赛包必须是 .zip 压缩包', 'details': ''}, status=400)
+
+        # 后台导入：先把 zip 落盘，再入队（导入可能建库+迁移，耗时长）
+        async_flag = str(request.data.get('async') or '').lower() in ('1', 'true', 'yes')
+        if async_flag:
+            from django.core.files.base import ContentFile
+            from django.core.files.storage import default_storage
+
+            from apps.global_.jobs import services as job_services
+
+            stored = default_storage.save(
+                f'packages/pending/{uuid.uuid4().hex}.zip',
+                ContentFile(b''.join(upload.chunks())),
+            )
+            job = job_services.enqueue(
+                kind='PACKAGE_IMPORT', competition_id=competition.id,
+                user=request.user,
+                payload={'storedPath': stored, 'fileName': upload.name},
+            )
+            return Response({'job': job_services.serialize(job)}, status=status.HTTP_202_ACCEPTED)
 
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
             for chunk in upload.chunks():
@@ -81,7 +101,7 @@ class PackageListView(APIView):
 class ContractTypeListView(APIView):
     """导入后自动暴露的合同类型接口（§12：GET .../contract-types，含 schema）。
 
-    可见性与比赛详情一致（系统超管或本比赛成员）——参赛代表创建合同需要 schema。
+    可见性与比赛详情一致（系统超级管理员或本比赛成员）——参赛代表创建合同需要 schema。
     """
 
     permission_classes = [IsAuthenticated]
@@ -99,7 +119,7 @@ class IndustryListView(APIView):
     只列已导入的产业：只有它们才了解对应的产业插件，能给公司初始化字段值；
     手工乱填产业标识会导致公司建出来却没有字段数据。
 
-    可见性与合同类型一致（系统超管或本比赛成员）。
+    可见性与合同类型一致（系统超级管理员或本比赛成员）。
     """
 
     permission_classes = [IsAuthenticated]
@@ -131,12 +151,27 @@ class IndustryListView(APIView):
 
 
 class PluginRegistryView(APIView):
-    """插件管理：已注册的不可变插件版本（§13 系统/插件管理，仅系统超管）。"""
+    """插件管理：已注册的不可变插件版本（§13 系统/插件管理，仅系统超级管理员）。
+
+    ``?competitionId=<cid>`` 时只返回该比赛导入过的插件（经 PackagePlugin 关联），
+    实现「合同/产业插件按比赛隔离」。
+    """
 
     permission_classes = [IsSystemSuperAdmin]
 
     def get(self, request):
         qs = PluginRegistry.objects.all()
+
+        competition_id = request.query_params.get('competitionId') or request.query_params.get('cid')
+        if competition_id:
+            try:
+                competition_id = int(competition_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {'code': 400, 'message': 'competitionId 非法', 'details': ''}, status=400)
+            qs = qs.filter(
+                package_links__package__competition_id=competition_id).distinct()
+
         if request.query_params.get('kind'):
             qs = qs.filter(kind=request.query_params['kind'].upper())
         return Response([

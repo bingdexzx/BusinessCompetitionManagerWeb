@@ -1,4 +1,4 @@
-"""学校 API 测试：读公开、写仅系统超管；新建/改名唯一性；删除不清账号。"""
+"""学校 API 测试：读公开、写仅系统超级管理员；新建/改名唯一性；删除不清账号。"""
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase

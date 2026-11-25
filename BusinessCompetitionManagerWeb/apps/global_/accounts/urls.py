@@ -10,4 +10,7 @@ urlpatterns = [
     path('me', views.MeView.as_view()),
     path('me/devices', views.MyDevicesView.as_view()),
     path('version', views.VersionView.as_view()),
+    path('update-logs', views.UpdateLogListView.as_view()),
+    path('update-logs/latest', views.UpdateLogLatestView.as_view()),
+    path('update-logs/<int:pk>/read', views.UpdateLogReadView.as_view()),
 ]

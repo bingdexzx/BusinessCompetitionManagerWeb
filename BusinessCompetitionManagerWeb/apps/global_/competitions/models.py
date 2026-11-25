@@ -30,14 +30,18 @@ class Competition(models.Model):
         '比赛代码（统一编号用，D13）', max_length=32, unique=True, blank=True,
     )
     cover_image = models.TextField('展示图片', blank=True)
-    host_school = models.ForeignKey(
-        'schools.School', verbose_name='办赛学校', null=True, blank=True,
-        on_delete=models.SET_NULL, related_name='hosted_competitions',
+    # 加入比赛时播放的纪念票：图片铺在票面左侧主票上
+    ticket_image = models.TextField('纪念票图', blank=True)
+    host_schools = models.ManyToManyField(
+        'schools.School', verbose_name='办赛学校', blank=True,
+        related_name='hosted_competitions',
     )
     location = models.CharField('比赛地点', max_length=200, blank=True)
     staffing_info = models.TextField('人员安排信息', blank=True)
     # 仪表盘布局（比赛包 dashboard.json，2026-10 决策：样式文件 + 绑定产业字段值）
     dashboard_layout = models.JSONField('仪表盘布局', default=dict, blank=True)
+    # 角色权限矩阵：{"PLAYER": ["view.contracts", ...], "ADMIN": [...]}；空 = 用默认值
+    permissions = models.JSONField('角色权限矩阵', default=dict, blank=True)
     status = models.CharField('状态', max_length=32, choices=Status.choices, default=Status.CREATED)
     db_name = models.CharField('比赛库名', max_length=64, unique=True, blank=True)
     created_by = models.ForeignKey(

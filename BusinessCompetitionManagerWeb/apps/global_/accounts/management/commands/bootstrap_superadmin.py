@@ -1,11 +1,11 @@
-"""引导系统超级管理员（§15.1：系统级只有超管与用户；首个超管由此命令指定）。"""
+"""引导超级管理员（§15.1：系统级只有超级管理员与用户；首个超级管理员由此命令指定）。"""
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
-    help = '创建或提升系统超级管理员：bootstrap_superadmin <username> [--password ...]'
+    help = '创建或提升超级管理员：bootstrap_superadmin <username> [--password ...]'
 
     def add_arguments(self, parser):
         parser.add_argument('username')
@@ -37,4 +37,4 @@ class Command(BaseCommand):
         user.is_staff = True
         user.save()
         user.bump_token_version()
-        self.stdout.write(self.style.SUCCESS(f'系统超级管理员已就绪：{username}'))
+        self.stdout.write(self.style.SUCCESS(f'超级管理员已就绪：{username}'))

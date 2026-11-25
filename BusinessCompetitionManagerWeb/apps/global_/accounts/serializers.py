@@ -23,6 +23,7 @@ class UserSerializer(serializers.Serializer):
     username = serializers.CharField(read_only=True)
     email = serializers.EmailField(allow_null=True, default=None)
     displayName = serializers.CharField(source='display_name', default='')
+    avatar = serializers.CharField(default='')
     school = serializers.IntegerField(source='school_id', allow_null=True, default=None)
     schoolName = serializers.CharField(source='school.name', allow_null=True, default=None)
     isActive = serializers.BooleanField(source='is_active')

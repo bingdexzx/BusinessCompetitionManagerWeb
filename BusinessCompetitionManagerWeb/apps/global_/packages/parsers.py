@@ -10,7 +10,6 @@ import json
 
 from pathlib import Path
 
-from django.apps import apps as django_apps
 
 # ---------------------------------------------------------------- 表格规格
 
@@ -86,11 +85,10 @@ BASEDATA_SPECS = {
     'tech_tree': {
         'model': ('basedata', 'TechNode'),
         'required': ['code', 'name'],
-        'columns': {'code': 'code', 'name': 'name', 'tier': 'tier',
+        'columns': {'code': 'code', 'name': 'name',
                     'prerequisitecodes': 'prerequisite_codes', 'researchcost': 'research_cost',
                     'effect': 'effect', 'notes': 'notes'},
         'floats': ['researchcost'],
-        'ints': ['tier'],
         'jsons': ['effect'],
         'refs': {},
     },

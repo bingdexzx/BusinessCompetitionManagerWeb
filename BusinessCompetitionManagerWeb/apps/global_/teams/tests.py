@@ -1,6 +1,6 @@
 """队伍分配公司测试（2026-10 决策）。
 
-管理员（系统超管 / 比赛超管）选产业 + 填公司名称 → 分配公司；
+管理员（系统超级管理员 / 比赛超级管理员）选产业 + 填公司名称 → 分配公司；
 分配后**队长可操作、队员只读**（apps.common.authority）。
 
 多库约定：比赛域模型走 comp_<id>；比赛库 alias 在导入期注册，URL 用 self.cid。
@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from apps.common import context as ctx
 from apps.common.authority import can_act_for_company, can_view_company
 from apps.competition.companies.models import Company
+from apps.competition.industries.models import IndustryField
 from apps.global_.competitions.models import Competition
 from apps.global_.memberships.models import CompetitionMembership
 from apps.global_.packages.models import Package, PackagePlugin
@@ -42,10 +43,11 @@ class TeamCompanyAssignTests(TestCase):
         ctx.set_competition_context(self.cid, ALIAS)
 
         self.manager = User.objects.create_user(
-            username='assigner', password='x' * 12, email='assigner@test.local')
+            username='assigner', password='x' * 12, email='assigner@test.local',
+            is_superuser=True)
         CompetitionMembership.objects.create(
             user=self.manager, competition=self.competition,
-            identity=CompetitionMembership.Identity.COMP_SUPER_ADMIN)
+            identity=CompetitionMembership.Identity.ADMIN)
         self.captain = User.objects.create_user(
             username='tcap', password='x' * 12, email='tcap@test.local')
         self.mate = User.objects.create_user(
@@ -57,22 +59,29 @@ class TeamCompanyAssignTests(TestCase):
 
         self.team = Team.objects.create(
             competition=self.competition, name='甲队', captain=self.captain,
-            industry_choice=['steel'])
+            industry_choice=['industry1'])
         TeamMember.objects.create(team=self.team, user=self.captain,
                                   role=TeamMember.Role.CAPTAIN)
         TeamMember.objects.create(team=self.team, user=self.mate,
                                   role=TeamMember.Role.MEMBER)
 
-        # 已导入的产业插件（steel）：分配公司只允许选已导入的产业
+        # 已导入的产业插件（industry1）：分配公司只允许选已导入的产业
         registry = PluginRegistry.objects.create(
-            kind='INDUSTRY', key='steel', name='钢铁产业', version='1.0.0',
-            sha256='a' * 64, file_name='industry_steel.py',
-            file_path='plugins/steel/1.0.0/industry_steel.py')
+            kind='INDUSTRY', key='industry1', name='产业1', version='1.0.0',
+            sha256='a' * 64, file_name='industry_industry1.py',
+            file_path='plugins/industry1/1.0.0/industry_industry1.py')
         package = Package.objects.create(
             competition=self.competition, file_name='p.zip', file_path='packages/p.zip',
             sha256='b' * 64, status=Package.Status.SUCCESS)
         PackagePlugin.objects.create(
-            package=package, plugin=registry, kind='INDUSTRY', key='steel', version='1.0.0')
+            package=package, plugin=registry, kind='INDUSTRY', key='industry1', version='1.0.0')
+
+        # 字段定义通常由比赛包导入（apply_industry_fields）落库；测试里直接建一条
+        ctx.set_competition_context(self.cid, ALIAS)
+        IndustryField.objects.create(
+            field_key='yinhangzhanghu', name='银行账户',
+            field_type=IndustryField.FieldType.NUMBER,
+            data_table=IndustryField.DataTable.ENTITY)
 
         self.client = APIClient()
         self.client.force_authenticate(self.manager)
@@ -83,7 +92,7 @@ class TeamCompanyAssignTests(TestCase):
         return f'/api/competitions/{self.cid}{suffix}'
 
     def _assign(self, **payload):
-        body = {'industryKey': 'steel', 'companyName': '钢铁一号公司'}
+        body = {'industryKey': 'industry1', 'companyName': '产业一号公司'}
         body.update(payload)
         return self.client.post(self._url(f'/teams/{self.team.id}/company'),
                                 body, format='json')
@@ -98,18 +107,18 @@ class TeamCompanyAssignTests(TestCase):
         resp = self._assign()
         self.assertEqual(resp.status_code, 200, resp.content)
         body = resp.json()
-        self.assertEqual(body['companyName'], '钢铁一号公司')
-        self.assertEqual(body['industryFinal'], 'steel')
+        self.assertEqual(body['companyName'], '产业一号公司')
+        self.assertEqual(body['industryFinal'], 'industry1')
         self.assertIsNotNone(body['companyId'])
 
         company = self._company(body['companyId'])
-        self.assertEqual(company.name, '钢铁一号公司')  # 用输入的公司名，不是队伍名
-        self.assertEqual(company.industry_key, 'steel')
+        self.assertEqual(company.name, '产业一号公司')  # 用输入的公司名，不是队伍名
+        self.assertEqual(company.industry_key, 'industry1')
         self.assertEqual(company.team_id, self.team.id)  # 一队一公司
 
         self.team.refresh_from_db()
         self.assertEqual(self.team.company_id, company.id)
-        self.assertEqual(self.team.industry_final, 'steel')
+        self.assertEqual(self.team.industry_final, 'industry1')
 
     def test_assign_requires_industry_and_company_name(self):
         self.assertEqual(self._assign(industryKey='').status_code, 400)
@@ -164,12 +173,12 @@ class TeamCompanyAssignTests(TestCase):
         self.client.force_authenticate(self.mate)
         self.assertEqual(self.client.get(table_url).status_code, 200)
         # 队员：不能改字段
-        resp = self.client.patch(fields_url, {'fieldKey': 'cash', 'value': 1}, format='json')
+        resp = self.client.patch(fields_url, {'fieldKey': 'yinhangzhanghu', 'value': 1}, format='json')
         self.assertEqual(resp.status_code, 403)
 
         # 队长：可改字段
         self.client.force_authenticate(self.captain)
-        resp = self.client.patch(fields_url, {'fieldKey': 'cash', 'value': 1}, format='json')
+        resp = self.client.patch(fields_url, {'fieldKey': 'yinhangzhanghu', 'value': 1}, format='json')
         self.assertEqual(resp.status_code, 200, resp.content)
 
     def test_team_list_exposes_company_name(self):
@@ -177,7 +186,7 @@ class TeamCompanyAssignTests(TestCase):
         resp = self.client.get(self._url('/teams'))
         self.assertEqual(resp.status_code, 200, resp.content)
         row = next(t for t in resp.json() if t['id'] == self.team.id)
-        self.assertEqual(row['companyName'], '钢铁一号公司')
+        self.assertEqual(row['companyName'], '产业一号公司')
 
     # ------------------------------------------------------------ 产业下拉
 
@@ -185,8 +194,8 @@ class TeamCompanyAssignTests(TestCase):
         resp = self.client.get(self._url('/industries'))
         self.assertEqual(resp.status_code, 200, resp.content)
         rows = resp.json()
-        self.assertEqual([r['key'] for r in rows], ['steel'])
-        self.assertEqual(rows[0]['name'], '钢铁产业')
+        self.assertEqual([r['key'] for r in rows], ['industry1'])
+        self.assertEqual(rows[0]['name'], '产业1')
 
         # 参赛代表也能读（组队时填产业志愿要用）
         self.client.force_authenticate(self.captain)
@@ -289,9 +298,10 @@ class TeamMembershipProvisionTests(TestCase):
         admin = self._user('teamadmin')
         CompetitionMembership.objects.create(
             user=admin, competition=self.competition,
-            identity=CompetitionMembership.Identity.ADMIN, managed_companies=[999])
+            identity=CompetitionMembership.Identity.ADMIN)
         self.client.force_authenticate(admin)
-        resp = self.client.post(self._url('/teams'), {'name': '主席团队'}, format='json')
+        resp = self.client.post(self._url('/teams'), {'name': '管理员队'}, format='json')
         self.assertEqual(resp.status_code, 201, resp.content)
-        self.assertEqual(self._membership(admin).identity, CompetitionMembership.Identity.ADMIN)
+        self.assertEqual(
+            self._membership(admin).identity, CompetitionMembership.Identity.ADMIN)
 

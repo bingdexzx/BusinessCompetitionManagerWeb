@@ -17,6 +17,7 @@ urlpatterns = [
     path('api/', include('apps.global_.useradmin.urls')),  # 用户管理（仅系统超管）
     path('api/', include('apps.global_.schools.urls')),
     path('api/', include('apps.global_.competitions.urls')),
+    path('api/', include('apps.global_.jobs.urls')),
     path('api/', include('apps.global_.memberships.urls')),
     path('api/', include('apps.global_.logs.urls')),
     path('api/', include('apps.global_.packages.urls')),
@@ -44,4 +45,6 @@ urlpatterns = [
     path('api/', include('apps.competition.stock.urls')),
     # 区域与消费者需求（2026-10 决策补齐；区域总览卡片）
     path('api/', include('apps.competition.regions.urls')),
+    # 工具箱（计时器）
+    path('api/', include('apps.competition.tools.urls')),
 ]

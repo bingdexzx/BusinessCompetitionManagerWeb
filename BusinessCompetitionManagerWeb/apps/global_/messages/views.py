@@ -1,7 +1,7 @@
 """站内信 API（系统级，独立于比赛）。
 
 - 收件箱 / 发件箱 / 已读 / 全部已读；
-- 发送（`POST /api/messages`）：**个人自由**，**按比赛批量（公告）仅超管**（需求方口径）；
+- 发送（`POST /api/messages`）：**个人自由**，**按比赛批量（公告）仅超级管理员**（需求方口径）；
 - 通讯录（`GET /api/messages/address-book`）：收件人多选框数据（比赛 + 个人）。
 """
 
@@ -88,7 +88,7 @@ class SentView(APIView):
 
 
 class SendView(APIView):
-    """发送站内信（需求方口径：个人自由；按比赛批量公告仅超管）。"""
+    """发送站内信（需求方口径：个人自由；按比赛批量公告仅超级管理员）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -101,14 +101,14 @@ class SendView(APIView):
         user_ids = {int(u) for u in (request.data.get('recipientUserIds') or []) if str(u).isdigit()}
         competition_ids = {int(c) for c in (request.data.get('competitionIds') or []) if str(c).isdigit()}
 
-        # 按比赛批量 = 公告：仅超管（系统超管或所选比赛的比赛超管，逐个校验）
+        # 按比赛批量 = 公告：仅超级管理员（系统超级管理员或所选比赛的比赛超级管理员，逐个校验）
         if competition_ids:
             if not request.user.is_superuser:
                 for cid in competition_ids:
                     if not can_manage_competition(request.user, cid):
                         return Response(
                             {'code': 403,
-                             'message': '按比赛批量发送（公告）仅超级管理员可用（比赛 ' + str(cid) + ' 无权限）',
+                             'message': '仅超级管理员可按比赛批量发送公告',
                              'details': ''},
                             status=403)
             for cid in competition_ids:

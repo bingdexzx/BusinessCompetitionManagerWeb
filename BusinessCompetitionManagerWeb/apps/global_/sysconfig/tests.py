@@ -191,7 +191,7 @@ class RateLimitConfigApiTests(ConfigIsolationMixin, TestCase):
         self.assertEqual(stats['activeLocks'], 1)
 
     def test_non_superuser_forbidden(self):
-        """非系统超管 → 403 {code: 403, message 中文}（四个端点全部拦截）。"""
+        """非系统超级管理员 → 403 {code: 403, message 中文}（四个端点全部拦截）。"""
         client = APIClient()
         client.force_authenticate(self.member)
         calls = [
@@ -331,7 +331,6 @@ class ResolveRoleTests(TestCase):
 
     def test_competition_identity_roles(self):
         for identity, role in (
-            (CompetitionMembership.Identity.COMP_SUPER_ADMIN, 'compSuperAdmin'),
             (CompetitionMembership.Identity.ADMIN, 'admin'),
             (CompetitionMembership.Identity.PLAYER, 'player'),
         ):

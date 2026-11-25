@@ -5,7 +5,7 @@
 
 只拦 ``/api/``，按角色每分钟窗口计数（计数落库，多进程 worker 共享），超限 429 + ``Retry-After``
 （到窗口结束秒数）；``api.enabled=false`` 放行；配置读取带 5 秒缓存。角色：superuser /
-compSuperAdmin / admin / player / anonymous（比赛身份取 ``request.competition_id`` 或头）。"""
+compSuperAdmin / player / anonymous（比赛身份取 ``request.competition_id`` 或头）。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ API_PREFIX = '/api/'
 WINDOW_SECONDS = 60
 
 ROLE_BY_IDENTITY = {
-    'COMP_SUPER_ADMIN': 'compSuperAdmin',
     'ADMIN': 'admin',
     'PLAYER': 'player',
 }
@@ -48,7 +47,7 @@ _last_cleanup_at = 0.0
 
 
 def resolve_role(request) -> str:
-    """请求 → 限额角色（superuser / compSuperAdmin / admin / player / anonymous）。"""
+    """请求 → 限额角色（superuser / compSuperAdmin / player / anonymous）。"""
     user = getattr(request, 'user', None)
     if user is None or not getattr(user, 'is_authenticated', False):
         return 'anonymous'

@@ -1,7 +1,7 @@
 """比赛内身份 API（§12：GET .../members、POST .../members/assign）。
 
-- 指派比赛超管（决策 D9：由**系统超级管理员**指派，可多人）；
-- 管理员（主席团）所辖公司指派（§2.2 阶段三）。
+- 指派管理员（主席团）并设置所辖公司（§2.2 阶段三，由**超级管理员**操作）；
+- 2026-11 决策：取消「比赛超级管理员」身份，其权限并入系统超级管理员。
 """
 
 from django.contrib.auth import get_user_model
@@ -29,7 +29,7 @@ def _member_data(m: CompetitionMembership) -> dict:
 
 
 class MemberListCreateView(APIView):
-    """GET 列出比赛成员；POST 指派/调整身份与所辖公司（仅系统超管，D9）。"""
+    """GET 列出比赛成员；POST 指派/调整身份与所辖公司（仅系统超级管理员）。"""
 
     permission_classes = [IsSystemSuperAdmin]
 
@@ -63,7 +63,7 @@ class MemberListCreateView(APIView):
 
 
 class MemberDetailView(APIView):
-    """调整所辖公司 / 停用身份（仅系统超管）。"""
+    """调整所辖公司 / 停用身份（仅系统超级管理员）。"""
 
     permission_classes = [IsSystemSuperAdmin]
 

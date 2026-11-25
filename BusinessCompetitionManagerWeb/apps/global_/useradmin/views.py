@@ -1,4 +1,4 @@
-"""用户管理 API（仅系统超级管理员）：账号列表 / 新建 / 详情 / 修改 / 删除 / 重置密码。
+"""用户管理 API（仅超级管理员）：账号列表 / 新建 / 详情 / 修改 / 删除 / 重置密码。
 
 错误响应统一 ``{'code': 400|403|404, 'message': '中文提示', 'details': ''}``
 （风格见 apps.common.errors 与 apps.global_.accounts.views）。对外字段全部 camelCase。
@@ -180,7 +180,7 @@ class UserListCreateView(APIView):
 
         is_superuser = False
         if superuser_raw is not None:
-            is_superuser, bool_error = _normalize_bool(superuser_raw, '是否超管')
+            is_superuser, bool_error = _normalize_bool(superuser_raw, '是否超级管理员')
             if bool_error:
                 return _error(bool_error)
 
@@ -247,14 +247,14 @@ class UserDetailView(APIView):
             user.is_active = is_active
 
         if 'isSuperuser' in data:
-            is_superuser, bool_error = _normalize_bool(data.get('isSuperuser'), '是否超管')
+            is_superuser, bool_error = _normalize_bool(data.get('isSuperuser'), '是否超级管理员')
             if bool_error:
                 return _error(bool_error)
             user.is_superuser = is_superuser
             user.is_staff = is_superuser
 
-        # 权限收窄（取消超管 / 停用账号）保护 + 顶号：
-        # 最后一个活跃超管不允许被降级/停用（否则系统无人可管理）。
+        # 权限收窄（取消超级管理员 / 停用账号）保护 + 顶号：
+        # 最后一个活跃超级管理员不允许被降级/停用（否则系统无人可管理）。
         demoted = was_superuser and not user.is_superuser
         deactivated = was_active and not user.is_active
         if demoted or deactivated:
@@ -262,8 +262,8 @@ class UserDetailView(APIView):
                     and not User.objects.filter(is_superuser=True, is_active=True)
                     .exclude(pk=user.pk).exists()):
                 if demoted:
-                    return _error('不能取消最后一个系统超级管理员')
-                return _error('不能停用最后一个系统超级管理员')
+                    return _error('不能取消最后一个超级管理员')
+                return _error('不能停用最后一个超级管理员')
 
         user.save()
         if demoted or deactivated:
@@ -275,10 +275,10 @@ class UserDetailView(APIView):
         if user is None:
             return _error('用户不存在', 404)
         # 两条删除保护都强制生效；顺序仅影响命中哪条中文提示：
-        # 1) 目标是最后一个系统超管（含「唯一超管删除自己」的场景，此时先命中本条）；
+        # 1) 目标是最后一个系统超级管理员（含「唯一超级管理员删除自己」的场景，此时先命中本条）；
         # 2) 目标是当前登录账号（不能删自己）。
         if user.is_superuser and User.objects.filter(is_superuser=True).count() <= 1:
-            return _error('不能删除最后一个系统超级管理员')
+            return _error('不能删除最后一个超级管理员')
         if user.pk == request.user.pk:
             return _error('不能删除当前登录账号')
         user.delete()

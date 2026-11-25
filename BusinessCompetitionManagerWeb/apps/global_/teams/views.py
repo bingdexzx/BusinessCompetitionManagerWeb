@@ -9,7 +9,6 @@
 import secrets
 import string
 
-from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -213,7 +212,7 @@ class TeamIndustryAdjustView(APIView):
 class TeamCompanyAssignView(APIView):
     """分配/修改队伍公司（§2.2 阶段三；2026-10 决策）。
 
-    管理员（系统超管 / 比赛超管）**选择产业 + 填写公司名称**为队伍分配公司：
+    管理员（系统超级管理员 / 比赛超级管理员）**选择产业 + 填写公司名称**为队伍分配公司：
     - 在比赛库创建/更新对应公司（一队一公司），按产业插件回填初始字段值；
     - 分配后**队长**获得该公司权限（可操作股票与合同），队员只读
       （见 apps.common.authority：user_company_ids 可查看 / user_operable_company_ids 仅队长）。
@@ -230,7 +229,7 @@ class TeamCompanyAssignView(APIView):
         if not industry_key:
             return Response({'code': 400, 'message': '请选择产业', 'details': ''}, status=400)
         if not company_name:
-            return Response({'code': 400, 'message': '请填写公司名称', 'details': ''}, status=400)
+            return Response({'code': 400, 'message': '请输入公司名称', 'details': ''}, status=400)
         if len(company_name) > 120:
             return Response(
                 {'code': 400, 'message': '公司名称最长 120 个字符', 'details': ''}, status=400)
@@ -271,6 +270,8 @@ def _sync_team_company(team: Team, operator, company_name: str = ''):
             )
             initial = industry_services.industry_initial_values(competition, team.industry_final)
             industry_services.initialize_company_values(company, initial)
+            industry_services.recompute_company_fields(
+                company, log_source='CALC')
         else:
             old_key = company.industry_key
             company.name = name
@@ -280,6 +281,8 @@ def _sync_team_company(team: Team, operator, company_name: str = ''):
             if old_key != team.industry_final:
                 initial = industry_services.industry_initial_values(competition, team.industry_final)
                 industry_services.initialize_company_values(company, initial)
+                industry_services.recompute_company_fields(
+                    company, log_source='CALC')
         team.company_id = company.id
         team.save(update_fields=['company_id'])
     finally:

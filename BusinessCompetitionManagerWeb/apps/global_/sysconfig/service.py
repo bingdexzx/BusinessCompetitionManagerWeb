@@ -10,7 +10,7 @@ import copy
 import threading
 import time
 
-ROLE_KEYS = ('superuser', 'compSuperAdmin', 'admin', 'player', 'anonymous')
+ROLE_KEYS = ('superuser', 'admin', 'player', 'anonymous')
 
 LOGIN_KEYS = ('failLimit', 'windowSeconds', 'lockSeconds')
 
@@ -20,7 +20,6 @@ DEFAULT_RATE_LIMIT_CONFIG = {
         'enabled': True,
         'perMinute': {
             'superuser': 600,
-            'compSuperAdmin': 300,
             'admin': 200,
             'player': 120,
             # 匿名按**客户端 IP** 计数：同机多标签页 / 同一 NAT 出口共享额度，
@@ -132,7 +131,7 @@ def validate_config(payload):
     if not isinstance(per_minute, dict):
         return None, 'api.perMinute 必须是 JSON 对象'
     if set(per_minute.keys()) != set(ROLE_KEYS):
-        return None, 'api.perMinute 键集合必须为 superuser / compSuperAdmin / admin / player / anonymous'
+        return None, 'api.perMinute 键集合必须为 superuser / admin / player / anonymous'
     for role in ROLE_KEYS:
         if not _is_positive_int(per_minute.get(role)):
             return None, f'api.perMinute.{role} 必须是正整数'

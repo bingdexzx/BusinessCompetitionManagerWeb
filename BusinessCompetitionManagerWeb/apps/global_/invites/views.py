@@ -33,7 +33,7 @@ def _invite_data(i: InviteCode) -> dict:
 
 
 class InviteListCreateView(APIView):
-    """激活码管理（生成/列表，仅系统超管 / 本比赛超管，§15.2）。"""
+    """激活码管理（生成/列表，仅系统超级管理员 / 本比赛超级管理员，§15.2）。"""
 
     permission_classes = [IsSystemOrCompetitionSuperAdmin]
 
@@ -73,16 +73,25 @@ class InviteRedeemView(APIView):
             return Response({'code': 400, 'message': '激活码无效或已过期', 'details': ''}, status=400)
         if InviteRedemption.objects.filter(invite=invite, user=request.user).exists():
             return Response({'code': 400, 'message': '你已使用过该激活码', 'details': ''}, status=400)
-
-        membership, created = CompetitionMembership.objects.get_or_create(
+        # 每人每场比赛只能激活一次：已经加入过的账号不再占用第二个名额，
+        # 也不再生成第二个票据编号（票号挂在比赛内身份上，一场一条）。
+        if CompetitionMembership.objects.filter(
             user=request.user, competition=invite.competition,
-            defaults={'identity': invite.identity, 'is_active': True},
+        ).exists():
+            return Response({
+                'code': 400,
+                'message': '你已激活过这场比赛，每人每场只能激活一次',
+                'details': '',
+            }, status=400)
+
+        membership = CompetitionMembership.objects.create(
+            user=request.user, competition=invite.competition,
+            identity=invite.identity, is_active=True,
         )
-        if not created and membership.identity != invite.identity:
-            # 同一账号多比赛身份唯一（每比赛一条），激活码授予的身份优先
-            membership.identity = invite.identity
-            membership.is_active = True
-            membership.save(update_fields=['identity', 'is_active'])
+        # 纪念票：把这次加入的左侧票面定格（比赛改名/换票图不影响已发出的票）
+        membership.capture_ticket(
+            user_name=(request.user.display_name or request.user.username),
+        )
 
         InviteRedemption.objects.create(invite=invite, user=request.user)
         invite.used_count += 1
@@ -92,4 +101,5 @@ class InviteRedeemView(APIView):
             'competitionName': invite.competition.name,
             'identity': membership.identity,
             'identityLabel': membership.get_identity_display(),
+            'ticketNo': membership.ticket_no,
         }, status=status.HTTP_201_CREATED)

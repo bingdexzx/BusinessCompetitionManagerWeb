@@ -71,7 +71,7 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
             return
 
     async def _subscribe(self, competition_id: int):
-        """订阅某比赛的资源变更广播（须有读权限：成员 / 可操作公司 / 系统超管）。
+        """订阅某比赛的资源变更广播（须有读权限：成员 / 可操作公司 / 系统超级管理员）。
 
         与 HTTP 读接口的成员门禁口径一致，否则「能读但订阅被拒」会让页面读得到、实时刷不动。"""
         if not competition_id:

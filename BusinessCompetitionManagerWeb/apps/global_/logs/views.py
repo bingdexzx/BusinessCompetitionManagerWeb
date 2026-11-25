@@ -1,10 +1,9 @@
 """日志中心 API（§12：GET /api/logs/network、/api/logs/devices、导出）。
 
-权限（§15.2）：查看网络日志 / 设备管理 / 导出日志 仅**系统超管**。
+权限（§15.2）：查看网络日志 / 设备管理 / 导出日志 仅**系统超级管理员**。
 只增不删（决策 D20）：日志无修改/删除接口；导出动作本身也入网络日志。
 """
 
-from django.db.models import Q
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -68,7 +67,7 @@ class NetworkLogListView(APIView):
 
 
 class DeviceListView(APIView):
-    """设备管理（仅系统超管，§15.2）。"""
+    """设备管理（仅系统超级管理员，§15.2）。"""
 
     permission_classes = [IsSystemSuperAdmin]
 
@@ -95,7 +94,7 @@ class DeviceListView(APIView):
 
 
 class NetworkLogExportView(APIView):
-    """导出网络日志（仅系统超管；导出动作本身也入日志，§14.3）。M0 返回 JSON 流。"""
+    """导出网络日志（仅系统超级管理员；导出动作本身也入日志，§14.3）。M0 返回 JSON 流。"""
 
     permission_classes = [IsSystemSuperAdmin]
 

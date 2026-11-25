@@ -22,14 +22,14 @@ class UserPrivilegeReductionTests(TestCase):
     def test_demote_last_active_superuser_forbidden(self):
         resp = self._patch(self.admin.pk, {'isSuperuser': False})
         self.assertEqual(resp.status_code, 400, resp.content)
-        self.assertEqual(resp.json()['message'], '不能取消最后一个系统超级管理员')
+        self.assertEqual(resp.json()['message'], '不能取消最后一个超级管理员')
         self.admin.refresh_from_db()
         self.assertTrue(self.admin.is_superuser)
 
     def test_deactivate_last_active_superuser_forbidden(self):
         resp = self._patch(self.admin.pk, {'isActive': False})
         self.assertEqual(resp.status_code, 400, resp.content)
-        self.assertEqual(resp.json()['message'], '不能停用最后一个系统超级管理员')
+        self.assertEqual(resp.json()['message'], '不能停用最后一个超级管理员')
         self.admin.refresh_from_db()
         self.assertTrue(self.admin.is_active)
 

@@ -3,7 +3,6 @@
 不可变版本：kind + key + version + sha256 唯一；文件内容落盘 media/plugins/ 留存。
 """
 
-from django.conf import settings
 from django.db import models
 
 

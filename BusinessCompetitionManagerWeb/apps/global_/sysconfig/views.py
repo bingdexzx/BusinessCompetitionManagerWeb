@@ -1,4 +1,4 @@
-"""系统设置 — 流量限制配置 API（仅系统超级管理员）。
+"""系统设置 — 流量限制配置 API（仅超级管理员）。
 
 路由：GET/PUT ``/api/system/rate-limit``、POST ``.../reset``、DELETE ``.../records``；错误响应
 统一 {code, message, details}（风格见 apps.common.errors）。"""
