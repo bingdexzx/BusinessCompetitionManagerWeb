@@ -155,6 +155,7 @@ sudo bash deploy/debian/install.sh \
 | [docs/实时同步覆盖.md](docs/实时同步覆盖.md) | 哪些资源会实时推送、怎么新增 |
 | [docs/股票模块与同步优化.md](docs/股票模块与同步优化.md) | 股票快照+增量协议与防刷新风暴设计 |
 | [tools/plugin-sdk/README.md](tools/plugin-sdk/README.md) | 插件开发 SDK：ctx 补全/参数说明、manifest 校验 |
+| [tools/package-tools/README.md](tools/package-tools/README.md) | 比赛包工程：创建脚手架 / 校验 / 打包 |
 
 ## 常用命令
 
