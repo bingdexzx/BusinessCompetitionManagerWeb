@@ -69,7 +69,7 @@
         <el-sub-menu index="data-management" class="sidebar-group">
           <template #title>
             <el-icon><Grid /></el-icon>
-            <span>数据管理</span>
+            <span>{{ canManageComp ? '数据管理' : '数据' }}</span>
           </template>
           <el-menu-item
             v-for="item in dataManagementItems"
