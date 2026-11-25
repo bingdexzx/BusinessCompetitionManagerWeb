@@ -97,6 +97,40 @@ def confirm(question: str, default: bool = True) -> bool:
     return value in ('y', 'yes', '是')
 
 
+def detect_primary_ip() -> str:
+    """尽力探测本机对外 IP（供纯 IP 部署做默认值；失败返回空串）。"""
+    import socket
+    import subprocess
+
+    try:
+        result = subprocess.run(['ip', '-4', 'route', 'get', '1.1.1.1'],
+                                capture_output=True, text=True, timeout=3)
+        parts = result.stdout.split()
+        if 'src' in parts:
+            candidate = parts[parts.index('src') + 1]
+            if candidate and not candidate.startswith('127.'):
+                return candidate
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True,
+                                timeout=3)
+        for candidate in result.stdout.split():
+            if candidate and not candidate.startswith('127.'):
+                return candidate
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        candidate = socket.gethostbyname(socket.gethostname())
+        if candidate and not candidate.startswith('127.'):
+            return candidate
+    except OSError:
+        pass
+    return ''
+
+
 def _is_ip(value: str) -> bool:
     import ipaddress
 
@@ -223,6 +257,7 @@ def collect(cli) -> Config:
     cfg = Config(dry_run=cli.dry_run, assume_yes=cli.yes)
 
     step('基础信息')
+    detected_ip = detect_primary_ip()
     if cli.ip:
         cfg.domain = cli.ip
         cfg.ip_mode = True
@@ -232,10 +267,15 @@ def collect(cli) -> Config:
         cfg.domain = cli.domain
         cfg.ip_mode = _is_ip(cli.domain)
     elif cli.yes:
-        die('--yes 模式必须提供 --domain 或 --ip')
+        if not detected_ip:
+            die('--yes 模式需要 --domain 或 --ip（未能自动检测本机 IP）')
+        cfg.domain = detected_ip
+        cfg.ip_mode = True
+        warn(f'未指定域名/IP，自动使用本机检测到的 IP：{detected_ip}'
+             '（公网 IP 不同请用 --ip 指定）')
     else:
         cfg.domain = ask('站点域名或公网 IP（如 bcm.example.com / 203.0.113.10）',
-                         required=True)
+                         detected_ip, required=True)
         cfg.ip_mode = _is_ip(cfg.domain)
 
     if cfg.ip_mode:
@@ -246,9 +286,10 @@ def collect(cli) -> Config:
 
     cfg.app_dir = cli.app_dir or (ask('安装目录', '/opt/bcm') if not cli.yes else '/opt/bcm')
     cfg.admin_user = cli.admin_user or (ask('管理员用户名', 'admin') if not cli.yes else 'admin')
+    # 纯 IP 的 admin@203.0.113.10 过不了邮箱校验，默认用 example.com 占位
+    default_email = 'admin@example.com' if cfg.ip_mode else f'admin@{cfg.domain}'
     cfg.admin_email = cli.admin_email or (
-        ask('管理员邮箱', f'admin@{cfg.domain}') if not cli.yes
-        else f'admin@{cfg.domain}')
+        ask('管理员邮箱', default_email) if not cli.yes else default_email)
 
     generated = gen_token(12)
     if cli.yes:

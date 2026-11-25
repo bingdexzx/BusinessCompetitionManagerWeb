@@ -99,6 +99,8 @@ sudo bash deploy/debian/install.sh \
 ```bash
 sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes
 # 或：--domain 203.0.113.10（脚本检测到是 IP，效果相同）
+# 或直接：sudo bash deploy/debian/install.sh --yes
+#   → 不带域名/IP 时自动检测本机 IP（公网 IP 不同时请用 --ip 指定）
 ```
 
 脚本会：

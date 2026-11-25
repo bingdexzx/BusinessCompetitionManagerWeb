@@ -120,7 +120,7 @@ npx vue-tsc --build ; npx eslint src ; npm run build
 
 ```bash
 sudo bash deploy/debian/install.sh
-# 没有域名、纯 IP 部署：
+# 没有域名、纯 IP 部署（不写 --ip 会自动检测本机 IP）：
 # sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes
 ```
 
