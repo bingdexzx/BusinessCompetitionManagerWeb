@@ -563,7 +563,7 @@ def install_system(runner: Runner, cfg: Config) -> None:
         need.append('nginx')
     if cfg.db_mode == 'local' and not cfg.facts.postgres_port:
         need += ['postgresql', 'postgresql-contrib']
-    if cfg.pgbouncer and cfg.db_port != '6432':
+    if cfg.pgbouncer:
         need.append('pgbouncer')
     if cfg.tls and not cfg.facts.certbot:
         need += ['certbot', 'python3-certbot-nginx']
@@ -685,16 +685,43 @@ def setup_database(runner: Runner, cfg: Config) -> None:
     UI.ok('数据库就绪')
 
 
+def set_env_db_endpoint(cfg: Config, host: str, port: str) -> None:
+    path = Path(cfg.app_dir) / '.env'
+    if not path.exists():
+        return
+    text = path.read_text(encoding='utf-8')
+    text = re.sub(r'^DATABASES_HOST\s*=.*$', f"DATABASES_HOST = '{host}'", text, flags=re.M)
+    text = re.sub(r'^DATABASES_PORT\s*=.*$', f"DATABASES_PORT = '{port}'", text, flags=re.M)
+    path.write_text(text, encoding='utf-8')
+    path.chmod(0o600)
+
+
+def _pgbouncer_backend(ini: Path) -> tuple[str, str]:
+    """从现有 pgbouncer.ini 里读 * 的后端 host/port（没有则回退 127.0.0.1:5432）。"""
+    try:
+        text = ini.read_text(encoding='utf-8', errors='replace')
+        match = re.search(r'^\*\s*=\s*host=(\S+)\s+port=(\S+)', text, re.M)
+        if match:
+            return match.group(1), match.group(2)
+    except OSError:
+        pass
+    return '127.0.0.1', '5432'
+
+
 def setup_pgbouncer(runner: Runner, cfg: Config) -> None:
-    """配置并启动 PgBouncer（transaction pooling），随后让应用连 6432。"""
-    if not cfg.pgbouncer or cfg.db_port == '6432':
+    """安装/配置/校验 PgBouncer；校验失败自动回退直连，保证部署不中断。"""
+    if not cfg.pgbouncer:
         return
     UI.step('PgBouncer')
-    direct_host = '127.0.0.1' if cfg.db_host in ('localhost', '') else cfg.db_host
-    direct_port = cfg.db_port
+    direct_host, direct_port = cfg.db_host, cfg.db_port
+    if direct_port == '6432':
+        # 已经切到 PgBouncer：从配置文件还原真实后端
+        direct_host, direct_port = _pgbouncer_backend(Path('/etc/pgbouncer/pgbouncer.ini'))
+    if direct_host in ('localhost', ''):
+        direct_host = '127.0.0.1'
 
     if runner.dry_run:
-        UI.info(f'[dry-run] 配置 PgBouncer：监听 127.0.0.1:6432 → {direct_host}:{direct_port}')
+        UI.info(f'[dry-run] 配置 PgBouncer：127.0.0.1:6432 → {direct_host}:{direct_port}')
         cfg.db_host, cfg.db_port = '127.0.0.1', '6432'
         return
 
@@ -717,7 +744,8 @@ reserve_pool_size = 5
 server_reset_query = DISCARD ALL
 ignore_startup_parameters = extra_float_digits,options
 """, encoding='utf-8')
-    userlist.write_text(f'"{cfg.db_user}" "{cfg.db_password}"\n', encoding='utf-8')
+    escaped = cfg.db_password.replace('\\', '\\\\').replace('"', '\\"')
+    userlist.write_text(f'"{cfg.db_user}" "{escaped}"\n', encoding='utf-8')
     userlist.chmod(0o600)
     try:
         import pwd
@@ -727,15 +755,45 @@ ignore_startup_parameters = extra_float_digits,options
         pass
 
     runner.run(['systemctl', 'enable', '--now', 'pgbouncer'])
-    # 等端口就绪
     for _ in range(10):
         if port_open('127.0.0.1', 6432):
             break
         time.sleep(0.5)
+
     if not port_open('127.0.0.1', 6432):
-        die('PgBouncer 未监听 6432，请检查：journalctl -u pgbouncer -n 50 --no-pager')
+        UI.warn('PgBouncer 未监听 6432，回退为直连数据库')
+        cfg.pgbouncer = False
+        cfg.db_host, cfg.db_port = direct_host, direct_port
+        set_env_db_endpoint(cfg, cfg.db_host, cfg.db_port)
+        return
+
+    # 用真实凭据经 6432 连一次，确认 userlist/后端认证都正确
+    code = (
+        "import os, sys, psycopg2\n"
+        "try:\n"
+        "    psycopg2.connect(dbname=os.environ['BCM_DB_NAME'], user=os.environ['BCM_DB_USER'],\n"
+        "        password=os.environ['BCM_DB_PASSWORD'], host='127.0.0.1', port='6432',\n"
+        "        connect_timeout=5).close()\n"
+        "except Exception as exc:\n"
+        "    print(str(exc).strip()); sys.exit(1)\n"
+    )
+    result = runner.capture(
+        [str(Path(cfg.app_dir) / '.venv' / 'bin' / 'python'), '-c', code],
+        env={'BCM_DB_NAME': cfg.db_name, 'BCM_DB_USER': cfg.db_user,
+             'BCM_DB_PASSWORD': cfg.db_password},
+    )
+    if result.returncode != 0:
+        UI.warn('经 PgBouncer 连接失败：' + (result.stdout or '').strip())
+        UI.warn(f'已回退为直连 {direct_host}:{direct_port}（.env 会写成 5432 或实际端口）')
+        cfg.pgbouncer = False
+        cfg.db_host, cfg.db_port = direct_host, direct_port
+        set_env_db_endpoint(cfg, cfg.db_host, cfg.db_port)
+        return
+
     cfg.db_host, cfg.db_port = '127.0.0.1', '6432'
-    UI.ok('PgBouncer 已启动：127.0.0.1:6432（transaction pooling）')
+    set_env_db_endpoint(cfg, '127.0.0.1', '6432')
+    UI.ok('PgBouncer 已启动并校验通过：127.0.0.1:6432（transaction pooling）')
+
 
 
 def db_env(cfg: Config) -> dict:
@@ -1177,11 +1235,11 @@ def health(runner: Runner, cfg: Config) -> None:
 def run_install(runner: Runner, cfg: Config) -> None:
     install_system(runner, cfg)
     setup_database(runner, cfg)
-    setup_pgbouncer(runner, cfg)
     ensure_user(runner, cfg)
     sync_code(runner, cfg)
-    write_env(runner, cfg)
     install_python(runner, cfg)
+    setup_pgbouncer(runner, cfg)
+    write_env(runner, cfg)
     ensure_database(runner, cfg)
     verify_database(runner, cfg)
     migrate(runner, cfg)
@@ -1196,10 +1254,9 @@ def run_install(runner: Runner, cfg: Config) -> None:
 
 
 def run_upgrade(runner: Runner, cfg: Config) -> None:
-    if cfg.db_port == '6432':
-        runner.run(['systemctl', 'enable', '--now', 'pgbouncer'], check=False)
     sync_code(runner, cfg)
     install_python(runner, cfg)
+    setup_pgbouncer(runner, cfg)
     verify_database(runner, cfg)
     migrate(runner, cfg)
     build_frontend(runner, cfg)
