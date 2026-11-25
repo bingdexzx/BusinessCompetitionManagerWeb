@@ -258,7 +258,7 @@ class Config:
     workers: int = 4
     threads: int = 8
     http_port: int = 80
-    nginx_mode: str = 'auto'       # auto | system | manage | manual
+    nginx_mode: str = 'system'     # 默认系统 nginx；manage | manual 可覆盖
     stop_openresty: bool = False
     tls: bool | None = None
     build_frontend: bool = True
@@ -403,18 +403,11 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
     cfg.workers = int(args.workers or (cpu if cfg.yes else ask('worker 进程数', str(cpu))))
     cfg.threads = int(args.threads or (8 if cfg.yes else ask('每 worker 线程数', '8')))
 
-    # ---- nginx 模式（智能判断）
-    if args.nginx_mode:
-        cfg.nginx_mode = args.nginx_mode
-    elif cfg.ip_mode:
-        cfg.nginx_mode = 'system' if (cfg.yes or confirm(
-            '使用系统 nginx（脚本自动配置 80 端口）？', True)) else 'manual'
-    elif facts.onepanel or facts.openresty:
-        cfg.nginx_mode = 'system' if (cfg.yes or confirm(
-            '检测到 1Panel/OpenResty：改用系统 nginx 托管（会停止 OpenResty 或改用 8080）？',
-            True)) else 'manual'
-    else:
-        cfg.nginx_mode = 'manage' if facts.system_nginx else 'system'
+    # ---- nginx 模式：默认就是系统 nginx（不再依赖 1Panel/OpenResty 的判断）
+    cfg.nginx_mode = args.nginx_mode or 'system'
+    if cfg.nginx_mode == 'system' and (facts.onepanel or facts.openresty):
+        UI.info('默认使用系统 nginx；若 80 被 1Panel OpenResty 占用，'
+                '脚本会停掉它或自动改用 8080')
 
     if cfg.nginx_mode == 'manual':
         cfg.tls = False

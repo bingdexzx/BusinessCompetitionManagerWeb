@@ -32,7 +32,7 @@ python3 deploy/debian/deploy.py status
 | 已装依赖 | `dpkg -s` 逐个判断，只 apt 安装缺的 |
 | 已有 `.env` | 复用数据库连接与 `SECRET_KEY`，部署/升级不会改密、不会让登录态失效 |
 | 本机已有 PostgreSQL | 默认复用；自动创建数据库（用输入的用户/密码，owner 为该用户） |
-| 1Panel / OpenResty 占着 80 | 默认改用系统 nginx；有 `--stop-openresty` 或确认时停掉 OpenResty，否则自动改用 8080 |
+| 1Panel / OpenResty 占着 80 | **默认使用系统 nginx**；有 `--stop-openresty` 或确认时停掉 OpenResty，否则自动改用 8080 |
 | uv 的 Python 在 /root 下 | 固定装到 `/opt/uv-python`，并检测到旧 venv 指向 `/root` 时自动重建 |
 | 前端站点目录受限（1Panel） | `--site-dir` 自动 `rsync` dist 进去并 `chown www:www` |
 | 机器没有 Node.js | 询问后装 Node 20；`--no-frontend-build` 可跳过 |
@@ -51,7 +51,7 @@ python3 deploy/debian/deploy.py status
 | `--site-dir` | 把前端 dist 同步到该目录（1Panel 站点根目录） |
 | `--db-mode local\|existing` | 本机装 PostgreSQL / 使用已有库 |
 | `--db-name/--db-user/--db-password/--db-host/--db-port` | 数据库连接 |
-| `--nginx-mode auto\|system\|manage\|manual` | auto=自动判断；system=系统 nginx；manage=写现有 nginx；manual=只导出配置（1Panel） |
+| `--nginx-mode system\|manage\|manual` | **默认 system（系统 nginx）**；manage=写现有 nginx；manual=只导出配置（1Panel） |
 | `--http-port` | nginx 端口，默认 80；被占用自动换 8080 |
 | `--stop-openresty` | 80 被 1Panel OpenResty 占用时停掉它 |
 | `--tls` / `--no-tls` | 是否申请 Let's Encrypt 证书 |
