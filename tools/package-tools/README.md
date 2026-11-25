@@ -8,8 +8,9 @@
 python tools/package-tools/package_tools.py init my_package
 
 cd my_package
-# 2) 校验（目录）
+# 2) 校验（目录；直接传路径等价于 check）
 python ../package-tools/package_tools.py check .
+python ../package-tools/package_tools.py .
 
 # 3) 重算 sha256 并打包 zip
 python ../package-tools/package_tools.py build . --out ../my_package.zip

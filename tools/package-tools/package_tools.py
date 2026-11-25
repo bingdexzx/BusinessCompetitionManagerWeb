@@ -569,7 +569,7 @@ def cmd_check(args) -> int:
     source = Path(args.path).resolve()
     if source.is_dir():
         return check_directory(source)
-    if source.is_file() and source.suffix.lower() == '.zip':
+    if source.is_file() and zipfile.is_zipfile(source):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             if not extract_zip(source, target):
@@ -616,7 +616,16 @@ def cmd_build(args) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='比赛包工程工具（init / check / build）')
+    argv = sys.argv[1:]
+    if not argv:
+        # 无参数：默认检查当前目录，比只打印 usage 更实用
+        argv = ['check', '.']
+    elif argv[0] not in ('init', 'check', 'build') and not argv[0].startswith('-'):
+        # 直接传目录/zip：等价于 check <路径>
+        argv = ['check', *argv]
+
+    parser = argparse.ArgumentParser(
+        description='比赛包工程工具（init / check / build；直接传路径等价于 check）')
     sub = parser.add_subparsers(dest='command', required=True)
     init_parser = sub.add_parser('init', help='创建包工程脚手架')
     init_parser.add_argument('directory')
@@ -625,7 +634,7 @@ def main() -> int:
     build_parser = sub.add_parser('build', help='重算 sha256 并打包')
     build_parser.add_argument('directory')
     build_parser.add_argument('--out', help='输出 zip 路径')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == 'init':
         return cmd_init(args)
     if args.command == 'check':
