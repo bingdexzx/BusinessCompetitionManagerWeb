@@ -75,7 +75,7 @@ def apply(ctx: ContractContext) -> list[Effect]:
 | `list_field(key, label, table, item_label, fields=None, optional=False)` | 清单（LIST:\<表\>） | `fields=[]` 表示只登记条目 |
 | `list_sub_field(key, label, min=0, max=None)` | 清单行内数量 | — |
 | `party_role(role, label, optional=False)` | 参与方角色 | `role` 是 `ctx.party()` / `Effect` 的键 |
-| `industry_field(key, name, type='NUMBER', *, table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段 | `type` 可作第 3 个位置参数；`formula` 非空即由引擎重算 |
+| `industry_field(key, name, type='NUMBER', table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段 | 参数均可按顺序位置传；`formula` 非空即由引擎重算 |
 
 ### 区域字段定义（`region-fields.json`）
 
