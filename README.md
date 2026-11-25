@@ -146,6 +146,7 @@ sudo bash deploy/debian/install.sh \
 
 | 文档 | 内容 |
 | --- | --- |
+| [docs/更新报告-重构之后.md](docs/更新报告-重构之后.md) | 重构以来的更新总结（有趣版，含升级须知） |
 | [docs/API契约.md](docs/API契约.md) | 接口清单、鉴权、多库与错误约定 |
 | [docs/比赛包格式规范.md](docs/比赛包格式规范.md) | 比赛包/插件格式、输入项、`ctx` 方法、Effect、公式与循环检测 |
 | [docs/UI设计规范.md](docs/UI设计规范.md) | 版式、动效、按钮排布、提示分级、确认框、文案细则 |
