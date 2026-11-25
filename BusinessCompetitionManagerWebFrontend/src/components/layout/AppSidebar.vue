@@ -3,7 +3,7 @@
     <div class="sidebar-brand">
       <div class="brand-text">
         <div class="brand-title-row">
-          <img class="brand-logo" src="@/assets/logo.svg" alt="logo" />
+          <img class="brand-logo" src="@/assets/logo.png" alt="Gipfel" />
           <div class="brand-name">商赛辅助办赛系统</div>
         </div>
         <div class="brand-meta">

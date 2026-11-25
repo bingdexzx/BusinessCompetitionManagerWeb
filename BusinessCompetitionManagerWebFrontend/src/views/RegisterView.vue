@@ -100,7 +100,7 @@ async function onSubmit(): Promise<void> {
     <div class="login-card anim-fade-in-up">
       <!-- 品牌渐变头部 -->
       <div class="login-header">
-        <img class="login-logo" src="@/assets/logo.svg" alt="logo" />
+        <img class="login-logo" src="@/assets/logo.png" alt="Gipfel" />
         <h1 class="login-title">创建账号</h1>
         <p class="login-subtitle">注册后自动登录商赛辅助办赛系统</p>
       </div>

@@ -53,7 +53,7 @@ async function handleLogin(): Promise<void> {
     <div class="login-card anim-fade-in-up">
       <!-- 品牌渐变头部 -->
       <div class="login-header">
-        <img class="login-logo" src="@/assets/logo.svg" alt="logo" />
+        <img class="login-logo" src="@/assets/logo.png" alt="Gipfel" />
         <h1 class="login-title">商赛辅助办赛系统</h1>
         <p class="login-subtitle">Business Competition Manager</p>
       </div>
