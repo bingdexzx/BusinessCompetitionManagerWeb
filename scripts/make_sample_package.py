@@ -1,6 +1,6 @@
 """生成示例比赛包（《比赛包格式规范》配套交付物）。
 
-输出：dist/sample_competition_package.zip（含 manifest.yaml、dashboard.json、3 个插件、2 张表）
+输出：dist/sample_competition_package.zip（含 manifest.yaml、dashboard.json、3 个插件、产业/合同/基础数据表）
 
 运行：.venv\\Scripts\\python.exe scripts\\make_sample_package.py [--out <目录>]
 """
@@ -247,9 +247,9 @@ def build(out_dir: Path) -> Path:
     (root / 'plugins' / 'contract_loan.py').write_text(CONTRACT_LOAN, encoding='utf-8')
     (root / 'plugins' / 'industry_manufacturer.py').write_text(INDUSTRY_MANUFACTURER, encoding='utf-8')
 
-    # 基础数据不再随比赛包提供（导入方式变更：改由系统「数据管理」页维护），
-    # 示例包只含 产业信息（industries.xlsx）与 合同信息（contracts.xlsx）；
-    # BASEDATA_SHEETS 定义保留作数据字典参考。
+    # 基础数据表（fuels/warehouses/...）随包提供，导入到系统「数据管理」
+    for sheet_key, spec in BASEDATA_SHEETS.items():
+        write_xlsx(root / 'sheets' / f'{sheet_key}.xlsx', spec['headers'], spec['rows'])
 
     # industries.xlsx（双工作表：industries + fields 对账）
     write_xlsx(
@@ -268,22 +268,11 @@ def build(out_dir: Path) -> Path:
         )},
     )
 
-    # contracts.xlsx（合同实例）
+    # contracts.xlsx（合同实例；公司需先在系统中存在，示例包不预置公司，故只留表头）
     write_xlsx(
         root / 'sheets' / 'contracts.xlsx',
         ['contractTypeKey', 'name', 'partiesJSON', 'inputsJSON', 'fiscalYear', 'notes'],
-        [
-            ['purchase', '首笔钢材采购',
-             json.dumps([{'role': 'buyer', 'companyName': '阿尔法公司'},
-                         {'role': 'seller', 'companyName': '贝塔公司'}], ensure_ascii=False),
-             json.dumps({'product': 'P1', 'quantity': 10, 'unitPrice': 5000}, ensure_ascii=False),
-             '', '示例采购合同'],
-            ['loan', '启动贷款',
-             json.dumps([{'role': 'lender', 'companyName': '贝塔公司'},
-                         {'role': 'borrower', 'companyName': '阿尔法公司'}], ensure_ascii=False),
-             json.dumps({'principal': 500000, 'rate': 0.05}, ensure_ascii=False),
-             '', '示例贷款合同'],
-        ],
+        [],
     )
 
     # 仪表盘布局（可选，但示例包带上）

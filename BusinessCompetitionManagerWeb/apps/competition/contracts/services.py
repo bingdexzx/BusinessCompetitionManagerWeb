@@ -93,10 +93,12 @@ def _build_contract_types(competition) -> list:
     return out
 
 
-def _resolve_company(name: str, created_by: int) -> Company:
+def _resolve_company(name: str, created_by: int = 0) -> Company | None:
+    """只按名称查找已有公司；比赛包不再导入/自动创建公司。"""
     name = str(name).strip()
-    company, created = Company.objects.get_or_create(name=name, defaults={'industry_key': ''})
-    return company
+    if not name:
+        return None
+    return Company.objects.filter(name=name).first()
 
 
 def import_contract_instances(rows, contract_modules, *, user=None):
@@ -135,6 +137,9 @@ def import_contract_instances(rows, contract_modules, *, user=None):
                 continue
             company_name = p.get('companyName') or p.get('company') or ''
             company = _resolve_company(company_name, getattr(user, 'id', None))
+            if company is None:
+                row_errors.append(f'公司不存在：{company_name or "（空）"}')
+                continue
             party_entries.append({'role': role, 'companyId': company.id,
                                   'companyName': company.name, 'confirmOrder': order})
         bad_inputs = [k for k in (inputs or {}) if k not in known_inputs]

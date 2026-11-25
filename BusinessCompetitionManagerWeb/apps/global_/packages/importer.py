@@ -1,7 +1,8 @@
 """比赛包导入编排（§9.2、《比赛包格式规范》§8）。
 
-流程：解压 → manifest/SHA-256 校验 → AST 扫描插件 → 建库即迁移 → 产业字段迁移 → 合同注册
-→ 合同实例导入 → 导入报告（包只含产业/合同信息，基础数据改由「数据管理」页维护）。
+流程：解压 → manifest/SHA-256 校验 → AST 扫描插件 → 建库即迁移 → 产业字段迁移
+→ 基础数据（数据管理）导入 → 合同实例导入 → 导入报告。
+**公司数据不从比赛包导入**；公司由组队/分配产生。
 失败策略：任一阶段出错 → 全局库/比赛库整体回滚（新建的比赛库直接删除），并持久化 FAILED 报告。"""
 
 import json
@@ -14,6 +15,7 @@ from zipfile import BadZipFile, ZipFile
 
 import yaml
 
+from django.apps import apps as django_apps
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
@@ -407,11 +409,8 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user, man
             # 区域字段定义（比赛包 region-fields.json）
             _import_region_fields(root, manifest, report)
 
-            # 基础数据不再由比赛包提供：包内若携带旧版数据表格 → 忽略并提示，改由「数据管理」页维护
-            for sheet_key in parsers.BASEDATA_SPECS:
-                if _find_sheet(root, sheet_key) is not None:
-                    report['warnings'].append(
-                        f'{sheet_key}：基础数据不再由比赛包导入（已忽略），请在系统「数据管理」页维护')
+            # 基础数据（数据管理）导入：fuels/warehouses/vehicles/materials/...
+            _import_basedata(root, report)
 
             # 合同实例导入（规范 §7）
             contract_modules = {k: {'module': v['module'], 'version': v['version']}
@@ -430,6 +429,61 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user, man
                     raise ImportFailure(report)
     finally:
         ctx.clear_request_context()
+
+
+MAX_ROWS_PER_SHEET = 50_000
+
+
+def _normalize_entry(model, entry: dict) -> dict:
+    """空单元格 → 文本列 '' / JSON 列删除；其余字段保持 None。"""
+    from django.db import models as dj_models
+
+    for field in model._meta.fields:
+        if field.name not in entry or entry[field.name] is not None:
+            continue
+        if isinstance(field, (dj_models.CharField, dj_models.TextField)):
+            entry[field.name] = ''
+        elif isinstance(field, dj_models.JSONField):
+            del entry[field.name]
+    return entry
+
+
+def _import_basedata(root: Path, report: dict) -> None:
+    """把包内基础数据表导入「数据管理」（按 code update_or_create）。"""
+    all_entries: dict[str, list] = {}
+    all_codes: dict[str, set] = {}
+    for sheet_key in parsers.BASEDATA_SPECS:
+        path = _find_sheet(root, sheet_key)
+        if path is None:
+            continue
+        headers, rows = parsers.read_table(path)
+        if len(rows) > MAX_ROWS_PER_SHEET:
+            report['errors'].append(f'{sheet_key}：行数超过上限 {MAX_ROWS_PER_SHEET}')
+            continue
+        entries, errors, warnings = parsers.parse_basedata_sheet(sheet_key, headers, rows)
+        report['errors'] += [f'{sheet_key}：{e}' for e in errors]
+        report['warnings'] += [f'{sheet_key}：{w}' for w in warnings]
+        all_entries[sheet_key] = entries
+        all_codes[sheet_key] = {entry['code'] for entry in entries}
+
+    for sheet_key, entries in all_entries.items():
+        report['errors'] += [f'{sheet_key}：{e}' for e in
+                             parsers.check_refs(sheet_key, entries, all_codes)]
+    if report['errors']:
+        raise ImportFailure(report)
+
+    for sheet_key, entries in all_entries.items():
+        app_label, model_name = parsers.BASEDATA_SPECS[sheet_key]['model']
+        model = django_apps.get_model(app_label, model_name)
+        for entry in entries:
+            code = entry.pop('code')
+            model.objects.update_or_create(
+                code=code, defaults=_normalize_entry(model, entry))
+        report['basedataRows'][sheet_key] = len(entries)
+        report['files'].append({
+            'file': f'sheets/{sheet_key}', 'stage': 'basedata',
+            'rows': len(entries), 'errors': [], 'warnings': [],
+        })
 
 
 def _find_sheet(root: Path, sheet_key: str):

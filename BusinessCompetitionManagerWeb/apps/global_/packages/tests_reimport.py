@@ -120,6 +120,12 @@ class PackageReimportTests(TestCase):
             username='pkguser', password='x' * 12, email='pkguser@example.com')
         self._tmp = tempfile.TemporaryDirectory(prefix='pkg_test_')
         self.zip_path = _build_package(Path(self._tmp.name))
+        # 公司不再由包导入：预置参与方公司
+        ctx.set_competition_context(self.cid, ALIAS)
+        from apps.competition.companies.models import Company
+        Company.objects.create(name='买方公司', industry_key='')
+        Company.objects.create(name='卖方公司', industry_key='')
+        ctx.clear_request_context()
 
     def tearDown(self):
         ctx.clear_request_context()

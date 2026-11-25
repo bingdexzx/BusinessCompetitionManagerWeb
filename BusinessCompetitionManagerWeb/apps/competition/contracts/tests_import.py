@@ -31,6 +31,9 @@ class ContractImportDedupeTests(TestCase):
 
     def setUp(self):
         ctx.set_competition_context(1, ALIAS)
+        # 比赛包不再自动建公司：先准备参与方公司
+        Company.objects.create(name='买方公司', industry_key='')
+        Company.objects.create(name='卖方公司', industry_key='')
         self.rows = [{
             'contractTypeKey': 'purchase',
             'name': '首笔采购',
@@ -86,7 +89,7 @@ class ContractImportDedupeTests(TestCase):
         self.assertEqual(second['skipped'], 1)
         self.assertTrue(any('已存在' in note for note in second['skipNotes']))
         self.assertEqual(self._count(), 1)
-        # 公司按名称自动建档，也只建一次
+        # 比赛包不会新增公司，仍只有 setUp 里那一间
         ctx.set_competition_context(1, ALIAS)
         self.assertEqual(Company.objects.filter(name='买方公司').count(), 1)
 

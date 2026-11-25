@@ -254,7 +254,7 @@ def cmd_init(args) -> int:
     _write_xlsx(root / 'sheets' / 'contracts.xlsx', {
         'contracts': (
             ['contractTypeKey', 'name', 'partiesJSON', 'inputsJSON', 'fiscalYear', 'notes'],
-            [['example_purchase', '示例采购', '[]', '{}', '', '示例数据，可删除']],
+            [],
         ),
     })
 
