@@ -75,9 +75,18 @@ class ContractContext:
         self._item_detail_cache = {}
 
     def party(self, role: str) -> str:
+        """参与方角色 → 公司名；未分配返回空串。
+
+        ``role`` 是插件 ``PARTY_ROLES`` 里的 ``role``（也可直接传公司名）。
+        常用于 ``Effect(company=ctx.party("buyer"), ...)``。
+        """
         return self._parties.get(role)
 
     def company_field(self, role: str, field: str, default=0):
+        """按参与方角色读取该公司的字段值（字段键来自产业插件 FIELDS）。
+
+        ``role`` 也可直接写公司名；字段不存在/未赋值返回 ``default``。
+        """
         return self._fields.get((role, field), default)
 
     def company_industry(self, role: str):
@@ -141,6 +150,10 @@ class ContractContext:
         return default
 
     def basedata(self, table: str, code: str):
+        """按「基础数据表 + 编码」返回条目字典（查不到返回 None）。
+
+        用于 ``ctx.item`` 覆盖不到的表；``table`` 同 ``items`` 的表名。
+        """
         return self._basedata.get((table, code))
 
     # ------------------------------------------------------------ 地图节点
@@ -300,4 +313,8 @@ class IndustryContext:
         self._fields = fields or {}
 
     def field(self, key: str, default=None):
+        """读取本产业某字段的当前值（``key`` 来自插件 FIELDS）。
+
+        字段不存在/未赋值返回 ``default``。
+        """
         return self._fields.get(key, default)

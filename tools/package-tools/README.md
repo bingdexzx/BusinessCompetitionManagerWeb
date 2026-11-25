@@ -31,6 +31,8 @@ my_package/
 ├── sheets/
 │   ├── industries.xlsx         # industries + fields 两个工作表
 │   └── contracts.xlsx
+├── .vscode/settings.json        # 让编辑器解析 bcm_plugin_sdk（不进 zip）
+├── pyrightconfig.json           # pyright/Pylance 配置（不进 zip）
 └── README.md
 ```
 

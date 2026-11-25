@@ -216,6 +216,18 @@ def cmd_init(args) -> int:
     (root / 'dashboard.json').write_text(
         json.dumps(DASHBOARD_TEMPLATE, ensure_ascii=False, indent=2), encoding='utf-8')
 
+    sdk_path = str((Path(__file__).resolve().parents[2] / 'tools' / 'plugin-sdk'))
+    (root / '.vscode').mkdir(exist_ok=True)
+    (root / '.vscode' / 'settings.json').write_text(json.dumps({
+        'python.analysis.extraPaths': [sdk_path],
+        'python.analysis.typeCheckingMode': 'basic',
+    }, ensure_ascii=False, indent=2), encoding='utf-8')
+    (root / 'pyrightconfig.json').write_text(json.dumps({
+        'extraPaths': [sdk_path],
+        'typeCheckingMode': 'basic',
+        'pythonVersion': '3.12',
+    }, ensure_ascii=False, indent=2), encoding='utf-8')
+
     _write_xlsx(root / 'sheets' / 'industries.xlsx', {
         'industries': (
             ['industryKey', 'name', 'pluginFile', 'description'],
@@ -735,10 +747,14 @@ def cmd_build(args) -> int:
 
     out = Path(args.out).resolve() if args.out else root.parent / f'{root.name}.zip'
     out.parent.mkdir(parents=True, exist_ok=True)
+    exclude = {'.vscode', 'pyrightconfig.json'}
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(root.rglob('*')):
-            if path.is_file():
-                archive.write(path, path.relative_to(root))
+            if not path.is_file():
+                continue
+            if any(part in exclude for part in path.relative_to(root).parts):
+                continue
+            archive.write(path, path.relative_to(root))
     print(f'\n已打包：{out}')
     return 0
 
