@@ -97,6 +97,16 @@ def confirm(question: str, default: bool = True) -> bool:
     return value in ('y', 'yes', '是')
 
 
+def _is_ip(value: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def gen_token(length: int = 48) -> str:
     return secrets.token_urlsafe(length)
 
@@ -181,7 +191,8 @@ def print_detection(facts: dict) -> None:
 # ---------------------------------------------------------------- 配置
 @dataclass
 class Config:
-    domain: str = ''
+    domain: str = ''            # 域名或 IP（纯 IP 部署时就是 IP）
+    ip_mode: bool = False       # 纯 IP：不做 HTTPS 证书
     app_dir: str = '/opt/bcm'
     admin_user: str = 'admin'
     admin_email: str = ''
@@ -212,12 +223,26 @@ def collect(cli) -> Config:
     cfg = Config(dry_run=cli.dry_run, assume_yes=cli.yes)
 
     step('基础信息')
-    if cli.domain:
+    if cli.ip:
+        cfg.domain = cli.ip
+        cfg.ip_mode = True
+        if cli.domain:
+            die('--ip 与 --domain 只能二选一')
+    elif cli.domain:
         cfg.domain = cli.domain
+        cfg.ip_mode = _is_ip(cli.domain)
     elif cli.yes:
-        die('--yes 模式必须提供 --domain（域名无法自动生成）')
+        die('--yes 模式必须提供 --domain 或 --ip')
     else:
-        cfg.domain = ask('站点域名（如 bcm.example.com）', required=True)
+        cfg.domain = ask('站点域名或公网 IP（如 bcm.example.com / 203.0.113.10）',
+                         required=True)
+        cfg.ip_mode = _is_ip(cfg.domain)
+
+    if cfg.ip_mode:
+        cfg.tls = False
+        info(f'纯 IP 部署：{cfg.domain}（HTTP，不做 HTTPS 证书）')
+        info('提示：纯 IP 走 HTTP 时密码/令牌是明文传输，公网使用建议套 VPN/SSH 隧道，'
+             '或改用域名后开启 HTTPS。')
 
     cfg.app_dir = cli.app_dir or (ask('安装目录', '/opt/bcm') if not cli.yes else '/opt/bcm')
     cfg.admin_user = cli.admin_user or (ask('管理员用户名', 'admin') if not cli.yes else 'admin')
@@ -288,8 +313,12 @@ def collect(cli) -> Config:
     cfg.threads = int(cli.threads or (ask('每个 worker 的线程数', '8') if not cli.yes else 8))
 
     step('部署选项')
-    cfg.tls = cli.tls if cli.tls is not None else (
-        True if cli.yes else confirm('为域名申请 HTTPS 证书（Let\'s Encrypt，需 DNS 已解析到本机）？', True))
+    if cfg.ip_mode:
+        cfg.tls = False
+    else:
+        cfg.tls = cli.tls if cli.tls is not None else (
+            True if cli.yes else confirm(
+                '为域名申请 HTTPS 证书（Let\'s Encrypt，需 DNS 已解析到本机）？', True))
     cfg.build_frontend = cli.build_frontend if cli.build_frontend is not None else (
         True if cli.yes else confirm('在本机构建前端（需要 Node.js 20+）？', True))
     if cli.nginx_mode:
@@ -718,6 +747,10 @@ server {{
 
 def configure_tls(runner: Runner, cfg: Config) -> None:
     step('HTTPS 证书')
+    if cfg.ip_mode:
+        info('纯 IP 部署：跳过 Let\'s Encrypt（不给 IP 签长期证书）；'
+             '如必须 HTTPS，请改用域名或自签证书。')
+        return
     if not cfg.tls:
         info('跳过（未启用 HTTPS；manual 模式请在 1Panel 里申请证书）')
         return
@@ -779,8 +812,9 @@ def health_check(runner: Runner, cfg: Config) -> None:
 def print_summary(cfg: Config) -> None:
     step('部署完成')
     proto = 'https' if cfg.tls else 'http'
+    mode_note = '（纯 IP 模式，HTTP）' if cfg.ip_mode else ''
     lines = [
-        f'站点：        {proto}://{cfg.domain}',
+        f'站点：        {proto}://{cfg.domain}{mode_note}',
         f'安装目录：    {cfg.app_dir}',
         f'后端端口：    127.0.0.1:{BACKEND_PORT}（HTTP）/ {WS_PORT}（WS）',
         f'管理员账号：  {cfg.admin_user}',
@@ -807,7 +841,8 @@ def print_summary(cfg: Config) -> None:
 # ---------------------------------------------------------------- 入口
 def main() -> int:
     parser = argparse.ArgumentParser(description='Debian 一键部署')
-    parser.add_argument('--domain', help='站点域名')
+    parser.add_argument('--domain', help='站点域名（也可直接填 IP）')
+    parser.add_argument('--ip', help='纯 IP 部署的访问地址（等价于 --domain 传 IP）')
     parser.add_argument('--app-dir', help='安装目录（默认 /opt/bcm）')
     parser.add_argument('--admin-user', help='管理员用户名')
     parser.add_argument('--admin-email', help='管理员邮箱')

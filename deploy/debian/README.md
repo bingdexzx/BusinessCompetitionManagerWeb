@@ -91,6 +91,39 @@ sudo bash deploy/debian/install.sh \
 > 调试用：`--assume-detected nginx --assume-detected postgres --assume-detected onepanel`
 > 可在没有对应组件的机器上预演「已安装」分支（配合 `--dry-run`）。
 
+
+## 2.6 纯 IP 部署（没有域名）
+
+可以，直接把 IP 当访问地址即可，脚本会自动识别并关掉 HTTPS：
+
+```bash
+sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes
+# 或：--domain 203.0.113.10（脚本检测到是 IP，效果相同）
+```
+
+脚本会：
+
+- 跳过 certbot（Let's Encrypt 不给 IP 签长期证书），站点走 `http://IP`；
+- `.env` 写：`ALLOWED_HOSTS=IP`、`CORS_ALLOWED_ORIGINS=http://IP`、
+  `CSRF_TRUSTED_ORIGINS=http://IP`、`SECURE_SSL_REDIRECT=false`、`SECURE_HSTS_SECONDS=0`、
+  `SESSION_COOKIE_SECURE=false`、`CSRF_COOKIE_SECURE=false`；
+- nginx `server_name` 填 IP（1Panel 手动模式同样填 IP 或 `_`）。
+
+**已部署好的环境**（手工改 `/opt/bcm/.env` 后重启 `bcm`）：
+
+| 变量 | 值 |
+| --- | --- |
+| `ALLOWED_HOSTS` | `203.0.113.10` |
+| `CORS_ALLOWED_ORIGINS` | `http://203.0.113.10` |
+| `CSRF_TRUSTED_ORIGINS` | `http://203.0.113.10` |
+| `SECURE_SSL_REDIRECT` | `false` |
+| `SECURE_HSTS_SECONDS` | `0` |
+| `TRUST_X_FORWARDED_PROTO` | `false` |
+| `SESSION_COOKIE_SECURE` / `CSRF_COOKIE_SECURE` | `false` |
+
+> 安全提示：纯 IP + HTTP 时**密码和登录令牌是明文传输**，只适合内网 / VPN / 临时验收。
+> 公网长期使用建议：套 SSH 隧道/VPN，或绑一个域名后重新跑脚本申请 HTTPS。
+
 ## 3. 它会做什么
 
 1. `apt` 安装：python3、venv、nginx、rsync、postgresql（本地模式）、certbot；
