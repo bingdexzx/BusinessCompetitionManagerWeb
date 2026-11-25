@@ -672,11 +672,28 @@ def install_python_deps(runner: Runner, cfg: Config) -> None:
     runner.run([str(bootstrap / 'bin' / 'pip'), 'install', '-q', '--upgrade', 'pip', 'uv'])
     uv = str(bootstrap / 'bin' / 'uv')
     # 项目要求 Python >= 3.12；Debian 12 自带 3.11，用 uv 下载独立 Python 3.12
-    runner.run([uv, 'python', 'install', '3.12'])
-    runner.run([uv, 'sync', '--frozen', '--python', '3.12', '--project', str(app_dir)])
+    # 关键：uv 默认把 Python 装在 ~/.local/share/uv（root 家目录），
+    # 而 systemd 以 bcm 用户运行会因无法进入 /root 报 203/EXEC，所以固定到公共目录。
+    uv_env = {'UV_PYTHON_INSTALL_DIR': '/opt/uv-python'}
+    runner.run(['mkdir', '-p', '/opt/uv-python'])
     venv_python = app_dir / '.venv' / 'bin' / 'python'
-    if not runner.dry_run and not venv_python.exists():
-        die(f'虚拟环境创建失败：{venv_python} 不存在（请检查 uv sync 输出）')
+    if not runner.dry_run and venv_python.exists() and '/root/' in os.path.realpath(venv_python):
+        warn('检测到 .venv 指向 /root 下的 Python（bcm 用户不可执行），删除重建')
+        runner.run(['rm', '-rf', str(app_dir / '.venv')])
+    runner.run([uv, 'python', 'install', '3.12'], env=uv_env)
+    runner.run([uv, 'sync', '--frozen', '--python', '3.12', '--project', str(app_dir)],
+               env=uv_env)
+    runner.run(['chmod', '-R', 'a+rX', '/opt/uv-python'], check=False)
+    if not runner.dry_run:
+        if not venv_python.exists():
+            die(f'虚拟环境创建失败：{venv_python} 不存在（请检查 uv sync 输出）')
+        check = runner.run(
+            ['runuser', '-u', SERVICE_USER, '--', str(venv_python), '-V'],
+            check=False, capture=True)
+        if check.returncode != 0:
+            die(f'bcm 用户无法执行 {venv_python}：{(check.stdout or "").strip()}\n'
+                '  多半是 venv 指向了 /root 下的 uv Python；'
+                '请把 Python 装到 /opt/uv-python 后重建 .venv（本脚本会自动处理）。')
     ok(f'后端依赖安装完成（{venv_python}）')
 
 
