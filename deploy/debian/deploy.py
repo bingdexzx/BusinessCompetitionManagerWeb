@@ -725,6 +725,28 @@ def setup_pgbouncer(runner: Runner, cfg: Config) -> None:
         cfg.db_host, cfg.db_port = '127.0.0.1', '6432'
         return
 
+    # 先确认直连 PostgreSQL 的账号密码是通的，否则 PgBouncer 必然失败
+    direct_code = (
+        "import os, sys, psycopg2\n"
+        "try:\n"
+        "    psycopg2.connect(dbname=os.environ['BCM_DB_NAME'], user=os.environ['BCM_DB_USER'],\n"
+        "        password=os.environ['BCM_DB_PASSWORD'], host=os.environ['BCM_DB_HOST'],\n"
+        "        port=os.environ['BCM_DB_PORT'], connect_timeout=5).close()\n"
+        "except Exception as exc:\n"
+        "    print(str(exc).strip()); sys.exit(1)\n"
+    )
+    direct = runner.capture(
+        [str(Path(cfg.app_dir) / '.venv' / 'bin' / 'python'), '-c', direct_code],
+        env={'BCM_DB_NAME': cfg.db_name, 'BCM_DB_USER': cfg.db_user,
+             'BCM_DB_PASSWORD': cfg.db_password, 'BCM_DB_HOST': direct_host,
+             'BCM_DB_PORT': direct_port},
+    )
+    if direct.returncode != 0:
+        die(f'直连 PostgreSQL（{direct_host}:{direct_port}）认证失败：'
+            f'{(direct.stdout or "").strip()}\n'
+            '  说明 .env 里的 DATABASES_PASSWORD 与 PG 角色密码不一致，'
+            '请先修正（ALTER ROLE 或改 .env），再重跑。')
+
     ini = Path('/etc/pgbouncer/pgbouncer.ini')
     userlist = Path('/etc/pgbouncer/userlist.txt')
     ini.parent.mkdir(parents=True, exist_ok=True)
@@ -754,7 +776,9 @@ ignore_startup_parameters = extra_float_digits,options
     except KeyError:
         pass
 
-    runner.run(['systemctl', 'enable', '--now', 'pgbouncer'])
+    # 关键：pgbouncer 已在运行时 `enable --now` 不会重新读取 userlist/ini，必须 restart
+    runner.run(['systemctl', 'restart', 'pgbouncer'], check=False)
+    runner.run(['systemctl', 'enable', 'pgbouncer'], check=False)
     for _ in range(10):
         if port_open('127.0.0.1', 6432):
             break
@@ -783,7 +807,10 @@ ignore_startup_parameters = extra_float_digits,options
              'BCM_DB_PASSWORD': cfg.db_password},
     )
     if result.returncode != 0:
+        logs = runner.capture(['journalctl', '-u', 'pgbouncer', '-n', '15', '--no-pager'])
         UI.warn('经 PgBouncer 连接失败：' + (result.stdout or '').strip())
+        if (logs.stdout or '').strip():
+            UI.warn('pgbouncer 日志：\n' + logs.stdout.strip())
         UI.warn(f'已回退为直连 {direct_host}:{direct_port}（.env 会写成 5432 或实际端口）')
         cfg.pgbouncer = False
         cfg.db_host, cfg.db_port = direct_host, direct_port
