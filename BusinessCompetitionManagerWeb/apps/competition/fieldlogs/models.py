@@ -30,6 +30,10 @@ class FieldLog(models.Model):
         'companies.Company', on_delete=models.PROTECT, null=True, blank=True,
         related_name='field_logs',
     )  # 结构变更（SCHEMA_CHANGE）可不指向单个公司
+    region = models.ForeignKey(
+        'regions.Region', verbose_name='区域', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='field_logs',
+    )  # 区域字段（REGION）变更指向区域；普通公司字段为空
     field_key = models.CharField('字段键', max_length=64)
     data_table = models.CharField('数据表归属', max_length=16, blank=True)  # ENTITY / FINANCE
     event = models.CharField('事件类型', max_length=16, choices=Event.choices)

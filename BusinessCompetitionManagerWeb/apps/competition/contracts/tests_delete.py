@@ -38,10 +38,10 @@ class ContractDeleteTests(TestCase):
         self.cid = self.competition.pk
         ctx.set_competition_context(self.cid, ALIAS)
         self.manager = get_user_model().objects.create_user(
-            username='dmgr', password='x' * 12, email='dmgr@test.local')
+            username='dmgr', password='x' * 12, email='dmgr@test.local', is_superuser=True)
         CompetitionMembership.objects.create(
             user=self.manager, competition=self.competition,
-            identity=CompetitionMembership.Identity.COMP_SUPER_ADMIN)
+            identity=CompetitionMembership.Identity.ADMIN)
         self.player = get_user_model().objects.create_user(
             username='dplayer', password='x' * 12, email='dplayer@test.local')
         CompetitionMembership.objects.create(

@@ -2,7 +2,7 @@
 
 状态（§3.2）：DRAFT → PENDING_PARTY_1..N → PENDING_EXEC → EXECUTED → POSTED
 修改环：POSTED → MOD_APPLYING → MOD_EDITING → PENDING_EXEC（回滚旧落账后重新执行）
-补录：BACKFILL_REVIEW（超管审核，§3.4）→ DRAFT 确认链
+补录：BACKFILL_REVIEW（超级管理员审核，§3.4）→ DRAFT 确认链
 执行失败：EXEC_FAILED（§7.5，不落半账）
 
 业务引擎（M3/M4）在 plugins_runtime + ledger 中实现；本模块先落数据模型。
@@ -10,6 +10,8 @@
 
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
+
+from plugins_runtime import ops as effect_ops
 
 
 class Contract(models.Model):
@@ -53,6 +55,10 @@ class Contract(models.Model):
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
     deleted_at = models.DateTimeField('删除时间', null=True, blank=True)
+    cancelled_at = models.DateTimeField('终止时间', null=True, blank=True)
+    cancelled_by_username = models.CharField('终止人', max_length=150, blank=True)
+    cancel_reason = models.CharField('终止原因', max_length=200, blank=True)
+    overdue_notified_at = models.DateTimeField('超时催办时间', null=True, blank=True)
 
     class Meta:
         verbose_name = '合同'
@@ -65,6 +71,14 @@ class Contract(models.Model):
             # 可见性过滤（JSONB containment：parties @> [{"companyId": N}]），2000+ 合同必备
             GinIndex(fields=['parties'], name='idx_contract_parties_gin',
                      opclasses=['jsonb_path_ops']),
+        ]
+        constraints = [
+            # 统一编号在同一比赛内必须唯一（空串 = 还没编号，允许多张草稿共存）
+            models.UniqueConstraint(
+                fields=['unified_number'],
+                condition=~models.Q(unified_number=''),
+                name='uniq_contract_unified_number',
+            ),
         ]
 
     def __str__(self):
@@ -104,7 +118,7 @@ class ContractModRequest(models.Model):
     requested_by_username = models.CharField('申请人用户名', max_length=150, blank=True)
     reason = models.TextField('申请理由')  # 必填（T6 守卫）
     status = models.CharField('状态', max_length=16, choices=Status.choices, default=Status.APPLYING)
-    reviewed_by = models.BigIntegerField('审核人（超管，全局库用户 ID）', null=True, blank=True)
+    reviewed_by = models.BigIntegerField('审核人（超级管理员，全局库用户 ID）', null=True, blank=True)
     review_note = models.TextField('审核意见', blank=True)
     other_party_approvals = models.JSONField(
         '其他方确认', default=list, blank=True,
@@ -122,13 +136,17 @@ class ContractModRequest(models.Model):
 class ContractFieldEffect(models.Model):
     """不可变落账审计（§7.2）：回滚 = 逆序重放；修改合同时 roundNo+1 开新一轮。"""
 
+    # 算子词表唯一事实源：plugins_runtime.ops（api 校验 / 引擎计算 / 账本重演 / 中文名）
     class Op(models.TextChoices):
-        ADD = 'ADD', '增加'
-        SUB = 'SUB', '减少'
-        SET = 'SET', '设置'
+        ADD = effect_ops.ADD, effect_ops.label(effect_ops.ADD)
+        SUB = effect_ops.SUB, effect_ops.label(effect_ops.SUB)
+        SET = effect_ops.SET, effect_ops.label(effect_ops.SET)
 
     contract = models.ForeignKey(Contract, on_delete=models.CASCADE, related_name='effects')
     company = models.ForeignKey('companies.Company', on_delete=models.PROTECT, related_name='field_effects')
+    region = models.ForeignKey(
+        'regions.Region', verbose_name='区域（区域字段效果）', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='field_effects')
     field_key = models.CharField('字段键', max_length=64)
     op = models.CharField('操作', max_length=8, choices=Op.choices)
     value_raw = models.JSONField('效果值', null=True, blank=True)

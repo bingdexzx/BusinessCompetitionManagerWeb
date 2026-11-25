@@ -39,10 +39,10 @@ class RegionsApiTests(TestCase):
             name='区域测试赛', code='RG', db_name=ALIAS)
         self.cid = self.competition.pk
         self.manager = get_user_model().objects.create_user(
-            username='mgr', password='x' * 12, email='mgr@test.local')
+            username='mgr', password='x' * 12, email='mgr@test.local', is_superuser=True)
         CompetitionMembership.objects.create(
             user=self.manager, competition=self.competition,
-            identity=CompetitionMembership.Identity.COMP_SUPER_ADMIN)
+            identity=CompetitionMembership.Identity.ADMIN)
         self.player = get_user_model().objects.create_user(
             username='player', password='x' * 12, email='player@test.local')
         CompetitionMembership.objects.create(

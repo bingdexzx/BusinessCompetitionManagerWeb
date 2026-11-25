@@ -24,6 +24,38 @@ class FormulaTests(SimpleTestCase):
             evaluate_formula('__import__("os")', {})
         with self.assertRaises(FormulaError):
             evaluate_formula('a if a else b', {'a': 1, 'b': 2})
+        with self.assertRaises(FormulaError):
+            evaluate_formula('open("x")', {})
+
+    def test_legacy_functions(self):
+        # 旧系统 calcGraph 公式用到的函数都要能算
+        self.assertEqual(evaluate_formula('round(1.234, 2)', {}), 1.23)
+        self.assertEqual(evaluate_formula('roundTo(1.235, 2)', {}), 1.24)
+        self.assertEqual(evaluate_formula('min(3, 1, 2)', {}), 1)
+        self.assertEqual(evaluate_formula('max(3, 1, 2)', {}), 3)
+        self.assertEqual(evaluate_formula('abs(-5)', {}), 5)
+        self.assertEqual(evaluate_formula('sqrt(400)', {}), 20)
+        self.assertEqual(evaluate_formula('pow(100, 0.5)', {}), 10)
+        self.assertAlmostEqual(evaluate_formula('log(100, 10)', {}), 2.0)
+        self.assertAlmostEqual(evaluate_formula('log(1)', {}), 0.0)
+        self.assertEqual(evaluate_formula('floor(1.9)', {}), 1)
+        self.assertEqual(evaluate_formula('ceil(1.1)', {}), 2)
+        self.assertEqual(evaluate_formula('int(1.9)', {}), 1)
+
+    def test_if_and_comparisons(self):
+        self.assertEqual(evaluate_formula('IF(1 < 2, 5, 9)', {}), 5)
+        self.assertEqual(evaluate_formula('IF(a >= 10, 1, 0)', {'a': 5}), 0)
+        self.assertEqual(evaluate_formula('IF(a == 5 and b != 0, 7, 8)', {'a': 5, 'b': 1}), 7)
+        self.assertEqual(evaluate_formula('IF(a > 5 or b > 5, 1, 0)', {'a': 1, 'b': 9}), 1)
+
+    def test_domain_errors_return_zero(self):
+        self.assertEqual(evaluate_formula('sqrt(-1)', {}), 0)
+        self.assertEqual(evaluate_formula('log(0)', {}), 0)
+        self.assertEqual(evaluate_formula('1 / 0', {}), 0)
+
+    def test_unknown_function_rejected(self):
+        with self.assertRaises(FormulaError):
+            evaluate_formula('sum(1, 2)', {})
 
 
 class EffectMathTests(SimpleTestCase):

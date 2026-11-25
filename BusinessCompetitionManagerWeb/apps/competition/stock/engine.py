@@ -17,7 +17,7 @@ import math
 import random
 import threading
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
-from typing import Any, Iterable
+from typing import Iterable
 
 from django.db import connection, transaction
 
@@ -706,6 +706,14 @@ def write_field_value_in_tx(
             "[stock] write_field_value_in_tx 字段不存在 industry_field_id=%s", industry_field_id,
         )
         return
+    # 冻结守卫：公司有合同处于修改流程时，股票结算也不许改字段（与手工修改同口径）
+    from apps.competition.contracts.engine import ContractError, assert_field_writable
+
+    try:
+        assert_field_writable(company_id, field_key)
+    except ContractError as exc:
+        raise StockError(str(exc)) from exc
+
     fv = CompanyFieldValue.objects.filter(
         company_id=company_id, field_key=field_key, fiscal_year__isnull=True
     ).first()

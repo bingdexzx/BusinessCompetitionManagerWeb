@@ -32,7 +32,8 @@ def open_fiscal_year(*, user) -> FiscalYear:
         raise FiscalError('已有进行中的财年')
     last = FiscalYear.objects.order_by('-year').first()
     with comp_atomic():
-        fy = FiscalYear.objects.create(year=(last.year + 1) if last else 1)
+        # 财年从第 0 财年开始（2026-11 口径）：首个财年 year=0，之后 1、2…
+        fy = FiscalYear.objects.create(year=(last.year + 1) if last else 0)
         _run_timers(fy, trigger=IndustryField.TimerTrigger.FY_START, user=user)
     return fy
 

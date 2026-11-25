@@ -8,6 +8,8 @@ urlpatterns = [
          views.ScoringConfigDeleteView.as_view()),
     path('competitions/<int:cid>/settlement/candidates', views.AwardCandidateView.as_view()),
     path('competitions/<int:cid>/settlement/run', views.SettlementRunView.as_view()),
+    path('competitions/<int:cid>/settlement/preview', views.SettlementPreviewView.as_view()),
+    path('competitions/<int:cid>/settlement/export', views.SettlementExportView.as_view()),
     path('competitions/<int:cid>/settlement/result', views.SettlementResultView.as_view()),
     # 结算名次（只读）
     path('competitions/<int:cid>/awards', views.AwardListView.as_view()),

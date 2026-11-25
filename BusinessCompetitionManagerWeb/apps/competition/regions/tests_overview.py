@@ -41,10 +41,10 @@ class RegionOverviewTests(TestCase):
         ctx.set_competition_context(self.cid, ALIAS)
 
         self.manager = User.objects.create_user(
-            username='romgr', password='x' * 12, email='romgr@test.local')
+            username='romgr', password='x' * 12, email='romgr@test.local', is_superuser=True)
         CompetitionMembership.objects.create(
             user=self.manager, competition=self.competition,
-            identity=CompetitionMembership.Identity.COMP_SUPER_ADMIN)
+            identity=CompetitionMembership.Identity.ADMIN)
         self.player = User.objects.create_user(
             username='roplayer', password='x' * 12, email='roplayer@test.local')
         CompetitionMembership.objects.create(

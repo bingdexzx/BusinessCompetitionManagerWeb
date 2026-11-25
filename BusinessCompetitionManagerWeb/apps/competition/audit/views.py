@@ -13,13 +13,26 @@ class AuditLogListView(APIView):
 
     def get(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''}, status=403)
+            return Response({'code': 403, 'message': '仅超级管理员可操作', 'details': ''}, status=403)
         qs = AuditLog.objects.all()
-        if request.query_params.get('actorId'):
-            qs = qs.filter(actor_id=request.query_params['actorId'])
-        if request.query_params.get('action'):
-            qs = qs.filter(action__icontains=request.query_params['action'])
-        limit = min(int(request.query_params.get('limit', 50) or 50), 200)
+        params = request.query_params
+        if params.get('actorId'):
+            qs = qs.filter(actor_id=params['actorId'])
+        if params.get('actor'):
+            actor = params['actor'].strip()
+            if actor.isdigit():
+                qs = qs.filter(actor_id=int(actor))
+            elif actor:
+                qs = qs.filter(actor_username__icontains=actor)
+        if params.get('action'):
+            qs = qs.filter(action=params['action'])
+        if params.get('target'):
+            qs = qs.filter(target__icontains=params['target'])
+        if params.get('from'):
+            qs = qs.filter(occurred_at__gte=params['from'])
+        if params.get('to'):
+            qs = qs.filter(occurred_at__lte=params['to'])
+        limit = min(int(params.get('limit', 50) or 50), 200)
         return Response([
             {
                 'id': r.id, 'action': r.action, 'actorId': r.actor_id,

@@ -4,7 +4,7 @@
 权限（契约 §4；2026-10 决策：队员只读、操作仅队长）：
 - 读行情/持仓/委托/资金 = 任何比赛成员（本公司数据队长与队员都能看）；
 - 下单/撤单 = 可操作本公司者（COMPANY 账户 can_act_for_company，分配公司后仅队长；USER=本人）；
-- advance = 超管（apps.common.authority.can_manage_competition）。
+- advance = 超级管理员（apps.common.authority.can_manage_competition）。
 """
 
 from decimal import Decimal, InvalidOperation
@@ -99,7 +99,7 @@ class StockListView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         page, page_size, offset = _pagination(request)
         qs = Stock.objects.all().order_by('code')
         total = qs.count()
@@ -114,7 +114,7 @@ class StockListView(APIView):
         return Response(_page_envelope(items, total, page, page_size))
 
     def post(self, request, cid):
-        """新增股票（超管）：code/name 必填，价格与股本用 Decimal（旧「新增股票」语义）。"""
+        """新增股票（超级管理员）：code/name 必填，价格与股本用 Decimal（旧「新增股票」语义）。"""
         if not can_manage_competition(request.user, cid):
             return _error('没有权限执行此操作', 403)
         stock = Stock()
@@ -129,13 +129,13 @@ class StockListView(APIView):
 
 
 class StockDetailView(APIView):
-    """GET /stock/stocks/{code} —— 详情（含指标全字段）；PATCH/DELETE —— 维护（超管）。"""
+    """GET /stock/stocks/{code} —— 详情（含指标全字段）；PATCH/DELETE —— 维护（超级管理员）。"""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request, cid, code):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         stock = Stock.objects.filter(code=code).first()
         if stock is None:
             return _error('股票不存在', 404)
@@ -183,7 +183,7 @@ class StockCandlesView(APIView):
 
     def get(self, request, cid, code):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         stock = Stock.objects.filter(code=code).first()
         if stock is None:
             return _error('股票不存在', 404)
@@ -215,7 +215,7 @@ class MarketView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         from django.db.models import Max
 
         agg = Stock.objects.aggregate(m=Max('round'), u=Max('updated_at'))
@@ -238,7 +238,7 @@ class BookView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         owner_q = _visible_accounts_q(request.user, cid)
         accounts = list(StockFundsAccount.objects.filter(owner_q).order_by('id'))
         account_data = []
@@ -299,7 +299,7 @@ class OrderListCreateView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         owner_q, _ = owner_account_q(request.user, cid)
         qs = StockOrder.objects.select_related('stock').filter(
             funds_account__in=StockFundsAccount.objects.filter(owner_q),
@@ -315,7 +315,7 @@ class OrderListCreateView(APIView):
 
     def post(self, request, cid):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         code = (request.data.get('code') or '').strip()
         side = (request.data.get('side') or '').strip().upper()
         if side not in ('BUY', 'SELL'):
@@ -424,7 +424,7 @@ class OrderItemView(APIView):
 
     def delete(self, request, cid, pk):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         from .engine import comp_atomic
 
         with comp_atomic():
@@ -450,7 +450,7 @@ class OrderItemView(APIView):
 
 
 class AdvanceRoundView(APIView):
-    """POST /stock/round/advance —— 推进轮次（超管）：单事务撮合+定价+K线+做市商（§3），
+    """POST /stock/round/advance —— 推进轮次（超级管理员）：单事务撮合+定价+K线+做市商（§3），
     成功后由 engine 广播 stock-updated 信号（§4.3）。
     """
 
@@ -458,7 +458,7 @@ class AdvanceRoundView(APIView):
 
     def post(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return _error('需要超级管理员权限', 403)
+            return _error('仅超级管理员可操作', 403)
         data = request.data or {}
         stock_ids = data.get('stockIds')
         if stock_ids is not None:
@@ -491,7 +491,7 @@ class SyncView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         payload = build_sync_payload(
             user=request.user,
             since_raw=request.query_params.get('since'),
@@ -501,7 +501,7 @@ class SyncView(APIView):
         return Response(payload)
 
 
-# 管理端（超管）：旧系统「新增股票 / 新增资金账户」能力移植——行情/交易页只读。
+# 管理端（超级管理员）：旧系统「新增股票 / 新增资金账户」能力移植——行情/交易页只读。
 
 
 _STOCK_DECIMAL_FIELDS = {
@@ -591,7 +591,7 @@ def _serialize_account_admin(account) -> dict:
 
 
 class AccountListCreateView(APIView):
-    """GET/POST /stock/accounts —— 资金账户管理（超管）：新增资金账户（旧系统语义）。"""
+    """GET/POST /stock/accounts —— 资金账户管理（超级管理员）：新增资金账户（旧系统语义）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -631,7 +631,7 @@ class AccountListCreateView(APIView):
 
 
 class AccountItemView(APIView):
-    """PATCH/DELETE /stock/accounts/{id} —— 资金账户维护（超管）。"""
+    """PATCH/DELETE /stock/accounts/{id} —— 资金账户维护（超级管理员）。"""
 
     permission_classes = [IsAuthenticated]
 

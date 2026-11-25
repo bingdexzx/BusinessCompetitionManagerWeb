@@ -148,6 +148,8 @@ class PathType(models.Model):
 class MapNode(models.Model):
     name = models.CharField('名称', max_length=128)
     region = models.CharField('所属区域', max_length=128, default="")
+    # 所属城市（= 同名「城市点位」节点）；车站/机场/码头/矿点等按命名规律或就近城市归属
+    city = models.CharField('所属城市', max_length=128, default="", blank=True)
     node_type = models.ForeignKey(
         MapNodeType,
         verbose_name='节点类型',
@@ -163,9 +165,6 @@ class MapNode(models.Model):
         verbose_name = '地图节点'
         verbose_name_plural = '地图节点'
         db_table = 'map_nodes'
-        constraints = [
-            models.UniqueConstraint(fields=['name'], name='uniq_map_nodes_name'),
-        ]
         indexes = [
             models.Index(fields=['updated_at'], name='idx_map_nodes_updated'),
         ]
@@ -175,7 +174,11 @@ class MapNode(models.Model):
 
 
 class MapEdge(models.Model):
-    """地图边（db_table=map_edges）：起终点唯一。"""
+    """地图边（db_table=map_edges）。
+
+    同一对节点之间允许多条边（并行路段），也允许 from == to（回环）：
+    路网打断后这些都是真实路面，不能因为它们共用端点就被合并或丢掉。
+    """
 
     from_node = models.ForeignKey(
         MapNode,
@@ -190,6 +193,7 @@ class MapEdge(models.Model):
         related_name='edges_to',
     )
     distance = models.FloatField('距离', default=0)
+    path = models.JSONField('折线路径 [[lon,lat], ...]', default=list, blank=True)
     path_type = models.ForeignKey(
         PathType,
         verbose_name='路径类型',
@@ -203,11 +207,6 @@ class MapEdge(models.Model):
         verbose_name = '地图边'
         verbose_name_plural = '地图边'
         db_table = 'map_edges'
-        constraints = [
-            models.UniqueConstraint(
-                fields=['from_node', 'to_node'], name='uniq_map_edges_from_to',
-            ),
-        ]
         indexes = [
             models.Index(fields=['updated_at'], name='idx_map_edges_updated'),
         ]
@@ -217,14 +216,11 @@ class MapEdge(models.Model):
 
 
 class Material(models.Model):
-    TYPE_CHOICES = [("NORMAL", "NORMAL"), ("SPECIAL", "SPECIAL")]
-
     name = models.CharField('名称', max_length=255)
     origin = models.CharField('产地', max_length=255)
     carbon_emission_coefficient = models.FloatField('碳排系数')
     # 按地点（地图节点）价格：JSON 字符串 { [mapNodeId]: 价格 }（旧口径 TextField）
     node_prices = models.TextField('按地点价格', default="{}")
-    type = models.CharField('原料类型', max_length=16, default="NORMAL", choices=TYPE_CHOICES)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -436,7 +432,6 @@ class Infrastructure(models.Model):
 class TechNode(models.Model):
     name = models.CharField('名称', max_length=128)
     description = models.TextField('描述', null=True, blank=True)
-    tier = models.IntegerField('层级', default=0)
     research_cost = models.FloatField('研发成本', default=0)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -538,3 +533,50 @@ class VehiclePathType(models.Model):
 
     def __str__(self):
         return f"{self.vehicle_id}-{self.path_type_id}"
+
+
+class MapSettings(models.Model):
+    """比赛地图配置（单例）：坐标模式 + 地理范围（QGIS 导入时写入）。
+
+    - ``PIXEL``：``map_nodes.x/y`` 为画布像素坐标（手绘模式 / 历史数据）；
+    - ``GEO``  ：``map_nodes.x/y`` 为经纬度（WGS84，QGIS 导出 GeoJSON 常用坐标系），
+                  前端按 ``bounds`` 等比投影到画布渲染。
+    """
+
+    MODE_PIXEL = 'PIXEL'
+    MODE_GEO = 'GEO'
+    MODE_CHOICES = [
+        (MODE_PIXEL, '画布像素'),
+        (MODE_GEO, '经纬度'),
+    ]
+
+    mode = models.CharField('坐标模式', max_length=8, choices=MODE_CHOICES, default=MODE_PIXEL)
+    bounds = models.JSONField(
+        '经纬度范围 [minLon,minLat,maxLon,maxLat]', default=list, blank=True,
+    )
+    regions = models.JSONField(
+        '区域面（GeoJSON 环）', default=list, blank=True,
+        # [{"name": "华东", "rings": [[[lon, lat], ...], ...]}, ...]
+    )
+    layers = models.JSONField(
+        '多图层地图（面/装饰层）', default=list, blank=True,
+        # [{"name": "北安省", "kind": "POLYGON", "role": "REGION",
+        #   "color": "#...", "visible": true, "features": [...]}, ...]
+    )
+    source = models.CharField('来源', max_length=32, blank=True, default='')
+    imported_at = models.DateTimeField('导入时间', null=True, blank=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '地图配置'
+        verbose_name_plural = '地图配置'
+        db_table = 'map_settings'
+
+    def __str__(self):
+        return f'地图配置 [{self.mode}]'
+
+    @classmethod
+    def load(cls):
+        """单例（pk=1）：不存在则创建默认 PIXEL 配置。"""
+        instance, _created = cls.objects.get_or_create(pk=1)
+        return instance

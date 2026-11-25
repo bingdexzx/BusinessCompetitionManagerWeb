@@ -29,7 +29,7 @@ def _err(code: int, message: str) -> Response:
 
 
 def _require_member(user, cid) -> bool:
-    """读权限：本比赛成员（系统超管恒通过）——实现在 apps.common.authority。"""
+    """读权限：本比赛成员（系统超级管理员恒通过）——实现在 apps.common.authority。"""
     return can_read_competition(user, cid)
 
 
@@ -190,7 +190,7 @@ class RegionMapOverviewView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _err(403, '需要比赛成员身份')
+            return _err(403, '仅比赛成员可操作')
         return Response(_map_overview())
 
 
@@ -245,7 +245,7 @@ class RegionListView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _err(403, '需要比赛成员身份')
+            return _err(403, '仅比赛成员可操作')
         counts = {
             row['region_id']: row['n']
             for row in ConsumerDemand.objects.values('region_id').annotate(n=Count('id'))
@@ -276,7 +276,7 @@ class RegionDetailView(APIView):
 
     def get(self, request, cid, pk):
         if not _require_member(request.user, cid):
-            return _err(403, '需要比赛成员身份')
+            return _err(403, '仅比赛成员可操作')
         region = Region.objects.filter(pk=pk).first()
         if region is None:
             return _err(404, '区域不存在')
@@ -326,7 +326,7 @@ class RegionOverviewCardsView(APIView):
 
     def get(self, request, cid, pk):
         if not _require_member(request.user, cid):
-            return _err(403, '需要比赛成员身份')
+            return _err(403, '仅比赛成员可操作')
         region = Region.objects.filter(pk=pk).first()
         if region is None:
             return _err(404, '区域不存在')
@@ -390,7 +390,7 @@ class ConsumerDemandListView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return _err(403, '需要比赛成员身份')
+            return _err(403, '仅比赛成员可操作')
         qs = ConsumerDemand.objects.select_related('region', 'product').all()
         region_id = request.query_params.get('regionId')
         if region_id and str(region_id).isdigit():
@@ -423,7 +423,7 @@ class ConsumerDemandDetailView(APIView):
 
     def get(self, request, cid, pk):
         if not _require_member(request.user, cid):
-            return _err(403, '需要比赛成员身份')
+            return _err(403, '仅比赛成员可操作')
         demand = ConsumerDemand.objects.filter(pk=pk).first()
         if demand is None:
             return _err(404, '消费者需求不存在')
@@ -469,3 +469,87 @@ class ConsumerDemandDetailView(APIView):
         demand.delete()
         region_services.recompute_region_demands(region_id)
         return Response({'ok': True})
+
+
+# ---------------------------------------------------------------- 区域字段（2026-11）
+# 定义由比赛包提供（比赛级，所有区域共用一套）；值按区域存。
+
+def _region_field_data(field, value=None) -> dict:
+    return {
+        'id': field.id,
+        'key': field.field_key,
+        'name': field.name,
+        'fieldType': field.field_type,
+        'defaultValue': field.default_value,
+        'condition': field.condition or {},
+        'value': value,
+        'updatedAt': field.updated_at.isoformat(),
+    }
+
+
+class RegionFieldDefinitionListView(APIView):
+    """GET /competitions/{cid}/region-fields：本比赛区域字段定义（比赛包导入）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _err(403, '仅比赛成员可操作')
+        from apps.competition.regions.models import RegionField
+        rows = RegionField.objects.all().order_by('id')
+        return Response([_region_field_data(f) for f in rows])
+
+
+class RegionFieldValuesByNameView(APIView):
+    """GET /competitions/{cid}/regions/by-name/<name>/field-values：某区域的全部区域字段值。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid, name):
+        if not _require_member(request.user, cid):
+            return _err(403, '仅比赛成员可操作')
+        from apps.competition.regions.models import RegionField, RegionFieldValue
+
+        region = Region.objects.filter(name=name).first()
+        values = {}
+        if region is not None:
+            values = {
+                row.field_key: row.value
+                for row in RegionFieldValue.objects.filter(region=region)
+            }
+        rows = RegionField.objects.all().order_by('id')
+        return Response([
+            _region_field_data(f, values.get(f.field_key, f.default_value))
+            for f in rows
+        ])
+
+
+class RegionFieldValueByNameView(APIView):
+    """PATCH /competitions/{cid}/regions/by-name/<name>/field-values/<key>：超级管理员手工改值。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, cid, name, key):
+        if not can_manage_competition(request.user, cid):
+            return _err(403, '无权管理本比赛基础数据')
+        from apps.competition.fieldlogs.models import FieldLog
+        from apps.competition.regions.models import RegionField
+
+        field = RegionField.objects.filter(field_key=key).first()
+        if field is None:
+            return _err(404, '区域字段未定义（应由比赛包提供）')
+
+        value = request.data.get('value')
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _err(400, '字段值必填')
+
+        region, _created = Region.objects.get_or_create(name=name)
+        before = region_services.read_region_value(region.id, key, field.default_value)
+        row = region_services.write_region_value(region.id, key, value)
+        FieldLog.objects.create(
+            company=None, region=region, field_key=key, data_table='REGION',
+            event=FieldLog.Event.VALUE_CHANGE, op='SET',
+            before_raw=before, after_raw=value, source=FieldLog.Source.MANUAL,
+            operator_id=request.user.id, operator_username=request.user.username,
+        )
+        return Response({'key': key, 'value': row.value, 'version': row.version})

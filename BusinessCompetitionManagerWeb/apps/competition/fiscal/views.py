@@ -10,7 +10,7 @@ from apps.competition.fiscal.models import FiscalYear, FiscalYearBackup
 
 
 def _require_member(user, cid) -> bool:
-    """读权限：本比赛成员（系统超管恒通过）——实现在 apps.common.authority。"""
+    """读权限：本比赛成员（系统超级管理员恒通过）——实现在 apps.common.authority。"""
     return can_read_competition(user, cid)
 
 
@@ -19,7 +19,7 @@ class FiscalYearListView(APIView):
 
     def get(self, request, cid):
         if not _require_member(request.user, cid):
-            return Response({'code': 403, 'message': '需要比赛成员身份', 'details': ''}, status=403)
+            return Response({'code': 403, 'message': '仅比赛成员可操作', 'details': ''}, status=403)
         years = FiscalYear.objects.all().order_by('year')
         return Response([
             {
@@ -40,7 +40,7 @@ class FiscalYearOpenView(APIView):
 
     def post(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''}, status=403)
+            return Response({'code': 403, 'message': '仅超级管理员可操作', 'details': ''}, status=403)
         try:
             fy = fiscal_services.open_fiscal_year(user=request.user)
         except fiscal_services.FiscalError as exc:
@@ -55,7 +55,7 @@ class FiscalYearCloseView(APIView):
 
     def post(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return Response({'code': 403, 'message': '需要超级管理员权限', 'details': ''}, status=403)
+            return Response({'code': 403, 'message': '仅超级管理员可操作', 'details': ''}, status=403)
         try:
             fy = fiscal_services.close_fiscal_year(user=request.user)
         except fiscal_services.FiscalError as exc:
@@ -70,7 +70,7 @@ class FiscalYearBackupListView(APIView):
 
     def get(self, request, cid, fy_id):
         if not _require_member(request.user, cid):
-            return Response({'code': 403, 'message': '需要比赛成员身份', 'details': ''}, status=403)
+            return Response({'code': 403, 'message': '仅比赛成员可操作', 'details': ''}, status=403)
         backups = FiscalYearBackup.objects.filter(fiscal_year_id=fy_id).select_related('company')
         return Response([
             {

@@ -275,7 +275,7 @@ def owner_account_q(user, competition_id=None):
 
 
 def account_owned_by_user(account, user, company_ids) -> bool:
-    """单账户归属判定（纯函数可单测）：USER=本人（'*' 超管放行）、COMPANY=company_id ∈ 传入集合
+    """单账户归属判定（纯函数可单测）：USER=本人（'*' 超级管理员放行）、COMPANY=company_id ∈ 传入集合
     （读传可查看、写传可操作，仅队长）；未知 owner_type 恒拒绝。
     """
     if account.owner_type == 'USER':

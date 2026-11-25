@@ -7,7 +7,7 @@
   个人奖 → 一个人；集体奖 → 所选公司对应队伍全员；
 - 个人奖候选人：``GET .../settlement/candidates?q=``（本比赛全部成员）。
 
-权限口径（需求方确认）：**结算与获奖仅超管可见**（系统超管 / 比赛超管，含读取）；
+权限口径（需求方确认）：**结算与获奖仅超级管理员可见**（系统超级管理员 / 比赛超级管理员，含读取）；
 参赛代表与管理员的获奖记录与电子奖牌经 ``/api/me/awards``、``/api/me/medals`` 在个人档案查看。
 """
 
@@ -21,7 +21,7 @@ from apps.common.authority import can_manage_competition
 from apps.competition.companies.models import Company
 from apps.competition.settlement import services as settlement_services
 from apps.competition.settlement.models import (
-    AwardDefinition, AwardGrant, AwardResult, ScoringCriterion, SettlementRun,
+    AwardDefinition, AwardGrant, ScoringCriterion, SettlementRun,
 )
 
 
@@ -30,7 +30,7 @@ def _err(message: str, code: int = 400) -> Response:
 
 
 def _manager_only(request, cid):
-    """结算域统一守卫：仅超管可见（含读取）。"""
+    """结算域统一守卫：仅超级管理员可见（含读取）。"""
     if not can_manage_competition(request.user, cid):
         return _err('结算与获奖仅超级管理员可见', 403)
     return None
@@ -67,7 +67,7 @@ def _grant_data(g: AwardGrant) -> dict:
 
 
 class ScoringConfigView(APIView):
-    """评分准则 + 奖项定义（可配置；奖项由超管设定，人工发放）。"""
+    """评分准则 + 奖项定义（可配置；奖项由超级管理员设定，人工发放）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -89,7 +89,7 @@ class ScoringConfigView(APIView):
 
     def post(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return _err('需要超级管理员权限', 403)
+            return _err('仅超级管理员可操作', 403)
         kind = request.data.get('kind') or 'criterion'
         if kind == 'criterion':
             name = (request.data.get('name') or '').strip()
@@ -138,7 +138,7 @@ class ScoringConfigDeleteView(APIView):
 
     def delete(self, request, cid, kind, pk):
         if not can_manage_competition(request.user, cid):
-            return _err('需要超级管理员权限', 403)
+            return _err('仅超级管理员可操作', 403)
         if kind == 'criterion':
             ScoringCriterion.objects.filter(pk=pk).delete()
             return Response({'ok': True})
@@ -160,10 +160,59 @@ class SettlementRunView(APIView):
 
     def post(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return _err('需要超级管理员权限', 403)
+            return _err('仅超级管理员可操作', 403)
         run = settlement_services.run_settlement(
             competition=_competition(cid), user=request.user)
         return Response({'runId': run.id, 'status': run.status}, status=201)
+
+
+class SettlementPreviewView(APIView):
+    """结算试算：只算分排名、不落库（结算前预演）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, cid):
+        denied = _manager_only(request, cid)
+        if denied:
+            return denied
+        return Response(settlement_services.preview_settlement())
+
+
+class SettlementExportView(APIView):
+    """导出结算报告（Excel）：最近一次成功结算的名次、总分与各指标得分。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        denied = _manager_only(request, cid)
+        if denied:
+            return denied
+        run = SettlementRun.objects.filter(
+            status=SettlementRun.Status.SUCCESS).order_by('-id').first()
+        if run is None:
+            return _err('还没有结算结果，请先执行结算', 400)
+
+        from apps.common.xlsx import xlsx_response
+
+        criteria = run.criteria_snapshot or []
+        headers = ['名次', '公司', '总分'] + [
+            f"{c.get('name') or c.get('fieldKey')}（权重 {c.get('weight')}）" for c in criteria
+        ]
+        rows = []
+        for entry in (run.result or {}).get('entries') or []:
+            detail = entry.get('detail') or {}
+            rows.append([
+                entry.get('rank'),
+                entry.get('companyName'),
+                entry.get('score'),
+            ] + [
+                (detail.get(c.get('name')) or {}).get('score') for c in criteria
+            ])
+        return xlsx_response(
+            filename=f'结算报告-{run.id}.xlsx', sheet='结算',
+            headers=headers, rows=rows,
+            widths={'名次': 8, '公司': 20, '总分': 12},
+        )
 
 
 class SettlementResultView(APIView):
@@ -183,7 +232,7 @@ class SettlementResultView(APIView):
 
 
 class AwardListView(APIView):
-    """本比赛结算名次（仅超管；奖项改为人工发放，这里只给名次与得分）。"""
+    """本比赛结算名次（仅超级管理员；奖项改为人工发放，这里只给名次与得分）。"""
 
     permission_classes = [IsAuthenticated]
 
@@ -236,7 +285,7 @@ class AwardGrantView(APIView):
 
     def post(self, request, cid):
         if not can_manage_competition(request.user, cid):
-            return _err('需要超级管理员权限', 403)
+            return _err('仅超级管理员可操作', 403)
         award = AwardDefinition.objects.filter(pk=request.data.get('awardId')).first()
         if award is None:
             return _err('奖项不存在，请先在「奖项设置」中创建')
@@ -287,7 +336,7 @@ class AwardGrantDetailView(APIView):
 
     def delete(self, request, cid, pk):
         if not can_manage_competition(request.user, cid):
-            return _err('需要超级管理员权限', 403)
+            return _err('仅超级管理员可操作', 403)
         grant = AwardGrant.objects.filter(pk=pk).first()
         if grant is None:
             return Response({'ok': True, 'removed': 0})

@@ -36,10 +36,10 @@ class CompetitionSemanticsTests(TestCase):
 
         User = get_user_model()
         self.manager = User.objects.create_user(
-            username='smgr', password='x' * 12, email='smgr@test.local')
+            username='smgr', password='x' * 12, email='smgr@test.local', is_superuser=True)
         CompetitionMembership.objects.create(
             user=self.manager, competition=self.competition,
-            identity=CompetitionMembership.Identity.COMP_SUPER_ADMIN)
+            identity=CompetitionMembership.Identity.ADMIN)
         self.player = User.objects.create_user(
             username='splayer', password='x' * 12, email='splayer@test.local')
         CompetitionMembership.objects.create(

@@ -4,9 +4,14 @@ from apps.competition.contracts import views
 
 urlpatterns = [
     path('competitions/<int:cid>/contracts', views.ContractListCreateView.as_view()),
+    path('competitions/<int:cid>/contracts/plugins/<str:key>/dry-run',
+         views.ContractPluginDryRunView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>', views.ContractDetailView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/submit', views.ContractSubmitView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/confirm', views.ContractConfirmView.as_view()),
+    path('competitions/<int:cid>/contracts/<int:pk>/reject', views.ContractRejectView.as_view()),
+    path('competitions/<int:cid>/contracts/<int:pk>/terminate',
+         views.ContractTerminateView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/retry-execute',
          views.ContractRetryExecuteView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/effects', views.ContractEffectsView.as_view()),
@@ -15,8 +20,6 @@ urlpatterns = [
          views.ContractRequestModifyView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/modify/review',
          views.ContractModifyReviewView.as_view()),
-    path('competitions/<int:cid>/contracts/<int:pk>/modify/other-party',
-         views.ContractModifyOtherPartyView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/modify/submit',
          views.ContractModifySubmitView.as_view()),
     path('competitions/<int:cid>/contracts/<int:pk>/backfill/review',

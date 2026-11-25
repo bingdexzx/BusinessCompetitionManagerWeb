@@ -54,8 +54,7 @@ class SettlementAwardTests(TestCase):
         for user in (self.admin, self.player, self.mate):
             CompetitionMembership.objects.create(
                 user=user, competition=self.competition,
-                identity=(CompetitionMembership.Identity.COMP_SUPER_ADMIN
-                          if user is self.admin else CompetitionMembership.Identity.PLAYER))
+                identity=CompetitionMembership.Identity.PLAYER)
 
         # 公司 + 队伍（一队一公司）：甲公司 → 队伍，含队长 + 1 名队员
         self.company = Company.objects.create(name='甲公司')

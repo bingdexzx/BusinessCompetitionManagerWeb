@@ -47,8 +47,8 @@ def _company_metric(company: Company, field_key: str, aggregation: str):
     return sum(values)
 
 
-def run_settlement(*, competition, user=None) -> SettlementRun:
-    """执行结算（只计算得分与名次）；返回 SettlementRun。须在比赛上下文中。"""
+def _compute_settlement():
+    """结算计算（不落库）：返回 (criteria, scored)。试算与正式结算共用同一套算法。"""
     criteria = [c for c in ScoringCriterion.objects.all() if c.enabled]
     companies = list(Company.objects.filter(status=Company.Status.ACTIVE))
 
@@ -83,6 +83,34 @@ def run_settlement(*, competition, user=None) -> SettlementRun:
             rank = i
             prev_score = row['score']
         row['rank'] = rank
+    return criteria, scored
+
+
+def _entries_payload(scored) -> list:
+    return [
+        {'companyId': r['company'].id, 'companyName': r['company'].name,
+         'rank': r['rank'], 'score': r['score'], 'detail': r['detail']}
+        for r in scored
+    ]
+
+
+def preview_settlement() -> dict:
+    """试算（2026-11）：只算分排名、不写任何记录，供结算前预演。"""
+    criteria, scored = _compute_settlement()
+    return {
+        'criteria': [
+            {'id': c.id, 'name': c.name, 'fieldKey': c.field_key,
+             'aggregation': c.aggregation, 'direction': c.direction, 'weight': c.weight}
+            for c in criteria
+        ],
+        'entries': _entries_payload(scored),
+        'preview': True,
+    }
+
+
+def run_settlement(*, competition, user=None) -> SettlementRun:
+    """执行结算（只计算得分与名次）；返回 SettlementRun。须在比赛上下文中。"""
+    criteria, scored = _compute_settlement()
 
     run = SettlementRun.objects.create(
         status=SettlementRun.Status.SUCCESS,
@@ -91,11 +119,7 @@ def run_settlement(*, competition, user=None) -> SettlementRun:
              'direction': c.direction, 'weight': c.weight}
             for c in criteria
         ],
-        result={'entries': [
-            {'companyId': r['company'].id, 'companyName': r['company'].name,
-             'rank': r['rank'], 'score': r['score'], 'detail': r['detail']}
-            for r in scored
-        ]},
+        result={'entries': _entries_payload(scored)},
         created_by=getattr(user, 'id', None),
         created_by_username=getattr(user, 'username', ''),
         finished_at=timezone.now(),

@@ -7,9 +7,13 @@
 """
 
 import ast
+import logging
+import math
 
 from apps.competition.fieldlogs.models import FieldLog
 from apps.competition.industries.models import CompanyFieldValue, IndustryField
+
+logger = logging.getLogger('gipfel.formula')
 
 TYPE_MAP = {
     'NUMBER': IndustryField.FieldType.NUMBER,
@@ -26,6 +30,8 @@ TABLE_MAP = {
 
 def _field_defaults(spec: dict, plugin_key: str, plugin_version: str) -> dict:
     formula = spec.get('formula') or ''
+    # 插件可给字段指定展示分组（如「资产负债」「现金流」）；未指定则归入「其他」
+    group = (spec.get('group') or '').strip()
     return {
         'name': spec.get('name') or spec['key'],
         'field_type': TYPE_MAP.get(spec.get('type'), IndustryField.FieldType.NUMBER),
@@ -35,6 +41,7 @@ def _field_defaults(spec: dict, plugin_key: str, plugin_version: str) -> dict:
         'is_calculated': bool(spec.get('isCalculated')) or bool(formula),
         'timer_enabled': bool(spec.get('timerEnabled')),
         'timer_trigger': spec.get('timerTrigger') or '',
+        'meta': {'group': group} if group else {},
         'plugin_key': plugin_key,
         'plugin_version': plugin_version,
     }
@@ -110,7 +117,12 @@ def apply_industry_fields(specs, *, plugin_key, plugin_version, operator=None):
     # 旧系统口径：产业建好后必有「所在地」字段，区域总览据此把公司归入区域
     ensure_location_field(
         plugin_key=plugin_key, plugin_version=plugin_version, operator=operator)
-    return {'industryKey': plugin_key, 'added': added, 'updated': updated, 'total': len(specs)}
+    # 公式循环检测（导入即拒绝计算，不写进派生值）
+    cycles = flag_formula_cycles()
+    return {
+        'industryKey': plugin_key, 'added': added, 'updated': updated,
+        'total': len(specs), 'formulaCycles': cycles,
+    }
 
 
 def initialize_company_values(company, initial: dict):
@@ -179,15 +191,88 @@ _ALLOWED_BINOPS = {
     ast.Mult: lambda a, b: a * b,
     ast.Div: lambda a, b: a / b if b else 0,
     ast.Pow: lambda a, b: a ** b,
+    ast.Mod: lambda a, b: a % b if b else 0,
 }
 _ALLOWED_UNARY = {
     ast.UAdd: lambda a: +a,
     ast.USub: lambda a: -a,
+    ast.Not: lambda a: 0 if a else 1,
+}
+_ALLOWED_CMP = {
+    ast.Lt: lambda a, b: a < b,
+    ast.LtE: lambda a, b: a <= b,
+    ast.Gt: lambda a, b: a > b,
+    ast.GtE: lambda a, b: a >= b,
+    ast.Eq: lambda a, b: a == b,
+    ast.NotEq: lambda a, b: a != b,
+}
+
+
+def _num(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _round(value, digits=0):
+    return float(round(_num(value), int(_num(digits))))
+
+
+def _log(value, base=None):
+    """log(x) = 自然对数；log(x, 10) = 以 10 为底。非正数返回 0（不抛错）。"""
+    x = _num(value)
+    if x <= 0:
+        return 0.0
+    try:
+        if base is None:
+            return math.log(x)
+        b = _num(base)
+        if b <= 0 or b == 1:
+            return 0.0
+        return math.log(x, b)
+    except (ValueError, OverflowError):
+        return 0.0
+
+
+def _sqrt(value):
+    x = _num(value)
+    return math.sqrt(x) if x > 0 else 0.0
+
+
+def _pow_pair(a, b):
+    try:
+        result = _num(a) ** _num(b)
+        return float(result) if isinstance(result, (int, float)) else 0.0
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
+# IF 是旧系统公式里的三元函数；其余与旧 calcGraph 同名
+_FORMULA_FUNCS = {
+    'IF': lambda cond, a, b: _num(a) if cond else _num(b),
+    'round': _round,
+    'roundTo': _round,
+    'min': lambda *args: min((_num(x) for x in args), default=0.0),
+    'max': lambda *args: max((_num(x) for x in args), default=0.0),
+    'abs': lambda value: abs(_num(value)),
+    'sqrt': _sqrt,
+    'pow': _pow_pair,
+    'log': _log,
+    'ln': _log,
+    'floor': lambda value: float(math.floor(_num(value))),
+    'ceil': lambda value: float(math.ceil(_num(value))),
+    'int': lambda value: float(int(_num(value))),
 }
 
 
 def evaluate_formula(formula: str, values: dict):
-    """安全的公式求值（只允许 字段键/数字/四则运算，不使用 eval）。"""
+    """安全的公式求值（字段键 / 数字 / 四则 / 比较 / 白名单函数，不使用 eval）。
+
+    支持旧系统 calcGraph 同名函数：``IF`` / ``round`` / ``roundTo`` / ``min`` / ``max`` /
+    ``abs`` / ``sqrt`` / ``pow`` / ``log(x[, base])`` / ``ln`` / ``floor`` / ``ceil`` / ``int``。
+    未知函数、属性访问、下标等一律抛 :class:`FormulaError`。
+    """
     import ast as _ast
 
     try:
@@ -201,14 +286,66 @@ def evaluate_formula(formula: str, values: dict):
         if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
             return node.value
         if isinstance(node, _ast.Name):
-            return float(values.get(node.id, 0) or 0)
+            return _num(values.get(node.id, 0) or 0)
         if isinstance(node, _ast.BinOp) and type(node.op) in _ALLOWED_BINOPS:
-            return _ALLOWED_BINOPS[type(node.op)](_eval(node.left), _eval(node.right))
+            try:
+                return _ALLOWED_BINOPS[type(node.op)](_eval(node.left), _eval(node.right))
+            except ZeroDivisionError:
+                return 0.0
         if isinstance(node, _ast.UnaryOp) and type(node.op) in _ALLOWED_UNARY:
             return _ALLOWED_UNARY[type(node.op)](_eval(node.operand))
+        if isinstance(node, _ast.Compare):
+            left = _eval(node.left)
+            for op, comparator in zip(node.ops, node.comparators):
+                handler = _ALLOWED_CMP.get(type(op))
+                if handler is None:
+                    raise FormulaError(f'公式包含不支持的比较运算：{_ast.dump(node)}')
+                right = _eval(comparator)
+                if not handler(left, right):
+                    return 0.0
+                left = right
+            return 1.0
+        if isinstance(node, _ast.BoolOp):
+            results = [bool(_eval(value)) for value in node.values]
+            answer = all(results) if isinstance(node.op, _ast.And) else any(results)
+            return 1.0 if answer else 0.0
+        if isinstance(node, _ast.Call):
+            if not isinstance(node.func, _ast.Name) or node.keywords:
+                raise FormulaError(f'公式包含非法函数调用：{_ast.dump(node)}')
+            func = _FORMULA_FUNCS.get(node.func.id)
+            if func is None:
+                raise FormulaError(f'公式使用了不支持的函数：{node.func.id}')
+            args = [_eval(arg) for arg in node.args]
+            try:
+                return float(func(*args))
+            except TypeError as exc:
+                raise FormulaError(f'函数 {node.func.id} 参数不匹配：{exc}')
         raise FormulaError(f'公式包含非法表达式：{_ast.dump(node)}')
 
     return _eval(tree)
+
+
+def flag_formula_cycles() -> list:
+    """标记处于循环依赖的公式字段（meta.formulaCycle），返回环列表。
+
+    被标记的字段不再参与重算：导入时应当直接拒绝计算，而不是算出一个假值。
+    重复导入/修正公式后会重新判定并清除旧标记。
+    """
+    from .formula_graph import find_formula_cycles
+
+    rows = list(IndustryField.objects.filter(is_calculated=True).exclude(formula=''))
+    formulas = {row.field_key: row.formula for row in rows}
+    cycles = find_formula_cycles(formulas)
+    members = {key for cycle in cycles for key in cycle}
+    for row in rows:
+        meta = dict(row.meta or {})
+        flagged = row.field_key in members
+        if bool(meta.get('formulaCycle')) == flagged:
+            continue
+        meta['formulaCycle'] = flagged
+        row.meta = meta
+        row.save(update_fields=['meta'])
+    return cycles
 
 
 def _consumer_demand_total(company) -> float:
@@ -230,11 +367,20 @@ def _consumer_demand_total(company) -> float:
         return 0.0
 
 
-def recompute_company_fields(company, *, fiscal_year=None, only_keys=None):
-    """公式级联重算（插件 recompute / 字段 formula）：多轮传播至稳定。"""
+def recompute_company_fields(company, *, fiscal_year=None, only_keys=None,
+                             operator=None, log_source=None):
+    """公式级联重算（插件 recompute / 字段 formula）：多轮传播至稳定。
+
+    2026-11 强化：
+    - 轮数按公式字段数自适应（旧版固定 3 轮，链深 >3 会算错）；
+    - 状态重复即停止（循环公式不再空转到上限）；
+    - 单个公式出错只跳过该字段并记日志，不再让整次重算（乃至合同落账）失败。
+    """
     defs = {
         f.field_key: f for f in IndustryField.objects.filter(is_calculated=True)
-        if f.formula and (only_keys is None or f.field_key in only_keys)
+        if f.formula
+        and not (f.meta or {}).get('formulaCycle')   # 循环公式导入时已拒绝计算
+        and (only_keys is None or f.field_key in only_keys)
     }
     if not defs:
         return 0
@@ -253,24 +399,51 @@ def recompute_company_fields(company, *, fiscal_year=None, only_keys=None):
             return 0.0
 
     changed = 0
-    for _pass in range(3):  # 公式级联最多传播 3 轮
+    seen_states = set()
+    max_passes = min(max(len(defs) + 1, 3), 25)
+    for _pass in range(max_passes):
         values = {f.field_key: _get(f.field_key) for f in IndustryField.objects.all()}
         # 特殊键 consumerDemand：该区域消费者需求总量（旧 calcGraph 同名键语义，
         # 公式可直接引用；无区域/无需求时为 0）
         values['consumerDemand'] = _consumer_demand_total(company)
+
+        snapshot = tuple(sorted((key, round(value, 6)) for key, value in values.items()))
+        if snapshot in seen_states:
+            # 循环公式：值开始重复（振荡或已稳定），再算也不会收敛
+            logger.warning('公式重算出现循环依赖，已停止：company=%s', company.pk)
+            break
+        seen_states.add(snapshot)
+
         pass_changed = 0
         for key, definition in defs.items():
-            new_value = evaluate_formula(definition.formula, values)
+            try:
+                new_value = float(evaluate_formula(definition.formula, values))
+            except FormulaError as exc:
+                logger.warning('公式求值失败，跳过字段 %s：%s', definition.field_key, exc)
+                continue
             target_fy = fiscal_year if definition.data_table == IndustryField.DataTable.FINANCE else None
             row, _created = CompanyFieldValue.objects.get_or_create(
                 company=company, field_key=key, fiscal_year=target_fy,
                 defaults={'value': new_value, 'version': 1},
             )
-            if not _created and row.value != new_value:
+            if _created:
+                pass_changed += 1
+            elif row.value != new_value:
+                old_value = row.value
                 row.value = new_value
                 row.version += 1
                 row.save(update_fields=['value', 'version', 'updated_at'])
                 pass_changed += 1
+                if log_source:
+                    FieldLog.objects.create(
+                        company=company, field_key=key,
+                        data_table=definition.data_table,
+                        event=FieldLog.Event.VALUE_CHANGE, op='SET',
+                        before_raw=old_value, after_raw=new_value,
+                        source=log_source,
+                        operator_id=getattr(operator, 'id', None),
+                        operator_username=getattr(operator, 'username', ''),
+                    )
         changed += pass_changed
         if not pass_changed:
             break

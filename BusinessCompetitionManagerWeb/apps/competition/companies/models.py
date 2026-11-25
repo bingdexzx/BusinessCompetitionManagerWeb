@@ -16,7 +16,7 @@ class Company(models.Model):
     industry_key = models.CharField('产业类型', max_length=64, blank=True)  # 来自产业插件
     team_id = models.BigIntegerField('队伍 ID（全局库）', null=True, blank=True)
     region = models.ForeignKey(
-        'regions.Region', verbose_name='赛区', null=True, blank=True,
+        'regions.Region', verbose_name='区域', null=True, blank=True,
         on_delete=models.SET_NULL, related_name='companies')
     status = models.CharField('状态', max_length=16, choices=Status.choices, default=Status.ACTIVE)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)

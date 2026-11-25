@@ -43,13 +43,15 @@ class LedgerReplayTests(SimpleTestCase):
             FakeEffect(c1, 'SUB', 100, 1000, 900, 1),   # 合同一修改后的新效果（链位在前）
             FakeEffect(c2, 'SUB', 200, 800, 600, 0),    # 合同二当时效果（未改）
         ]
-        # 编号顺序 = 合同一 → 合同二（_chain_rows 由 ORM 排序，这里直接喂给重放逻辑）
-        original = ledger._chain_rows
-        ledger._chain_rows = self._patch_chain(rows)
+        # 直接喂假数据：field_chains 是批量入口，纯内存装配（SimpleTestCase 不建库）
+        original = ledger.field_chains
+        ledger.field_chains = lambda pairs: {
+            (1, 'cash'): ledger._assemble_chain(1, 'cash', rows, 700, []),
+        }
         try:
             chain = ledger.field_chain(1, 'cash')
         finally:
-            ledger._chain_rows = original
+            ledger.field_chains = original
 
         self.assertEqual(chain['initialValue'], 1000)
         self.assertEqual(len(chain['nodes']), 2)
@@ -67,11 +69,14 @@ class LedgerReplayTests(SimpleTestCase):
         c1 = SimpleNamespace(id=1, name='合同一', unified_number='PO-1', round_no=1)
         old = FakeEffect(c1, 'SUB', 200, 1000, 800, 0)   # 旧轮（已回滚）不应进链
         new = FakeEffect(c1, 'SUB', 100, 1000, 900, 1)   # 新轮
-        original = ledger._chain_rows
-        ledger._chain_rows = self._patch_chain([e for e in (old, new) if e.round_no == e.contract.round_no])
+        rows = [e for e in (old, new) if e.round_no == e.contract.round_no]
+        original = ledger.field_chains
+        ledger.field_chains = lambda pairs: {
+            (1, 'cash'): ledger._assemble_chain(1, 'cash', rows, 900, []),
+        }
         try:
             chain = ledger.field_chain(1, 'cash')
         finally:
-            ledger._chain_rows = original
+            ledger.field_chains = original
         self.assertEqual(len(chain['nodes']), 1)
         self.assertEqual(chain['nodes'][0]['replayAfter'], 900)
