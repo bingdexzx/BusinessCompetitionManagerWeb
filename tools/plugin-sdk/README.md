@@ -75,10 +75,16 @@ def apply(ctx: ContractContext) -> list[Effect]:
 | `list_field(key, label, table, item_label, fields=None, optional=False)` | 清单（LIST:\<表\>） | `fields=[]` 表示只登记条目 |
 | `list_sub_field(key, label, min=0, max=None)` | 清单行内数量 | — |
 | `party_role(role, label, optional=False)` | 参与方角色 | `role` 是 `ctx.party()` / `Effect` 的键 |
-| `industry_field(key, name, type='NUMBER', table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段 | 参数均可按顺序位置传；`formula` 非空即由引擎重算 |
+| `industry_number_field(key, name, table='entity', default=0, group='', timer_enabled=False, timer_trigger='FY_START')` | **产业**数值字段 | 写 `FIELDS` 用，等价 `industry_field(..., 'NUMBER', ...)` |
+| `industry_text_field(key, name, table='entity', default='', …)` | **产业**文本字段 | 写 `FIELDS` 用 |
+| `industry_bool_field(key, name, table='entity', default=False, …)` | **产业**开关字段 | 写 `FIELDS` 用 |
+| `industry_field(key, name, type='NUMBER', table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段（通用） | 参数均可按顺序位置传；`formula` 非空即由引擎重算 |
 
-> 以上所有构造器的可选参数都**支持按表格顺序位置传入**，也支持关键字传入；例如
-> `number_field("q", "数量", 1, 99)` 与 `number_field("q", "数量", min=1, max=99)` 等价。
+> **别混用两套构造器**：
+> - 合同的 `number_field/text_field/bool_field/ref_field/list_field` 返回 `InputField`，只能放 `INPUT_SCHEMA`；
+> - 产业的 `industry_*_field` / `industry_field` 返回 `IndustryFieldSpec`，只能放 `FIELDS`；
+> - 把 `bool_field(...)` 塞进 `FIELDS`，Pylance 会报
+>   `list[IndustryFieldSpec | InputField] 不可分配给 list[IndustryFieldSpec]`。
 
 ### 区域字段定义（`region-fields.json`）
 

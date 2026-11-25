@@ -35,7 +35,8 @@ from . import schema as _schema
 _BUILDERS = {
     name: getattr(_schema, name)
     for name in ('number_field', 'text_field', 'bool_field', 'ref_field',
-                 'list_field', 'list_sub_field', 'party_role', 'industry_field')
+                 'list_field', 'list_sub_field', 'party_role', 'industry_field',
+                 'industry_number_field', 'industry_text_field', 'industry_bool_field')
 }
 
 

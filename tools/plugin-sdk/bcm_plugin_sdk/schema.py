@@ -163,6 +163,33 @@ def party_role(role: str, label: str, optional: bool = False) -> PartyRole:
     return item
 
 
+def industry_number_field(key: str, name: str, table: str = 'entity',
+                          default: float | None = 0, group: str = '',
+                          timer_enabled: bool = False,
+                          timer_trigger: str = 'FY_START') -> IndustryFieldSpec:
+    """产业数值字段（NUMBER）——注意与合同输入项的 ``number_field`` 区分。"""
+    return industry_field(key, name, 'NUMBER', table, default, '', group,
+                          timer_enabled, timer_trigger)
+
+
+def industry_text_field(key: str, name: str, table: str = 'entity',
+                        default: str = '', group: str = '',
+                        timer_enabled: bool = False,
+                        timer_trigger: str = 'FY_START') -> IndustryFieldSpec:
+    """产业文本字段（TEXT）——注意与合同输入项的 ``text_field`` 区分。"""
+    return industry_field(key, name, 'TEXT', table, default, '', group,
+                          timer_enabled, timer_trigger)
+
+
+def industry_bool_field(key: str, name: str, table: str = 'entity',
+                        default: bool = False, group: str = '',
+                        timer_enabled: bool = False,
+                        timer_trigger: str = 'FY_START') -> IndustryFieldSpec:
+    """产业开关字段（BOOL）——注意与合同输入项的 ``bool_field`` 区分。"""
+    return industry_field(key, name, 'BOOL', table, default, '', group,
+                          timer_enabled, timer_trigger)
+
+
 def industry_field(key: str, name: str, type: str = 'NUMBER',
                    table: Literal['entity', 'finance'] = 'entity',
                    default: Any = None, formula: str = '', group: str = '',

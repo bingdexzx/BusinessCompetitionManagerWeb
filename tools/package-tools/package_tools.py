@@ -317,7 +317,8 @@ def scan_plugin(path: Path) -> ast.Module | None:
 
 try:
     from bcm_plugin_sdk import (
-        bool_field, industry_field, list_field, list_sub_field, number_field,
+        bool_field, industry_bool_field, industry_field, industry_number_field,
+        industry_text_field, list_field, list_sub_field, number_field,
         party_role, ref_field, text_field,
     )
 except ImportError:  # 允许在没装 SDK 的环境里校验纯 dict 写法的插件
@@ -328,6 +329,9 @@ else:
         'bool_field': bool_field, 'ref_field': ref_field,
         'list_field': list_field, 'list_sub_field': list_sub_field,
         'party_role': party_role, 'industry_field': industry_field,
+        'industry_number_field': industry_number_field,
+        'industry_text_field': industry_text_field,
+        'industry_bool_field': industry_bool_field,
     }
 
 
