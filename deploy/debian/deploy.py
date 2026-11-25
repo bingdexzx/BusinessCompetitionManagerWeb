@@ -203,6 +203,7 @@ def detect_system(assume: list[str]) -> dict:
     facts = {
         'onepanel': Path('/opt/1panel').exists() or bool(shutil.which('1pctl')),
         'nginx': bool(shutil.which('nginx')) or Path('/usr/sbin/nginx').exists(),
+        'nginx_bin': bool(shutil.which('nginx')) or Path('/usr/sbin/nginx').exists(),
         'openresty': bool(shutil.which('openresty')) or Path('/usr/local/openresty').exists(),
         'openresty_conf': str(
             Path('/opt/1panel/apps/openresty/openresty/conf/conf.d')),
@@ -266,6 +267,8 @@ class Config:
     nginx_mode: str = 'manage'      # manage=脚本写配置 | manual=用户自己在 1Panel 配
     facts: dict = field(default_factory=dict)
     site_dir: str = ''          # 1Panel 站点根目录（把 dist 同步进去，绕开面板的目录限制）
+    http_port: int = 80         # system 模式下 nginx 监听端口
+    stop_openresty: bool = False  # system 模式下是否停掉 1Panel 的 OpenResty 占用
     pg_detected: bool = False
     nginx_detected: bool = False
     onepanel: bool = False
@@ -308,6 +311,8 @@ def collect(cli) -> Config:
 
     cfg.app_dir = cli.app_dir or (ask('安装目录', '/opt/bcm') if not cli.yes else '/opt/bcm')
     cfg.site_dir = (cli.site_dir or '').rstrip('/')
+    cfg.http_port = int(cli.http_port or 80)
+    cfg.stop_openresty = bool(cli.stop_openresty)
     cfg.admin_user = cli.admin_user or (ask('管理员用户名', 'admin') if not cli.yes else 'admin')
     # 纯 IP 的 admin@203.0.113.10 过不了邮箱校验，默认用 example.com 占位
     default_email = 'admin@example.com' if cfg.ip_mode else f'admin@{cfg.domain}'
@@ -453,10 +458,12 @@ def install_packages(runner: Runner, cfg: Config, facts: dict) -> None:
         info('[dry-run] 只安装缺失的系统包（已存在的不动）')
         return
     packages = ['python3', 'python3-venv', 'python3-pip', 'rsync', 'curl', 'ca-certificates']
-    if not facts['nginx']:
+    need_nginx = (cfg.nginx_mode == 'system' and not facts.get('nginx_bin')) or (
+        cfg.nginx_mode != 'system' and not facts['nginx'])
+    if need_nginx:
         packages.append('nginx')
     else:
-        info('Nginx 已存在，跳过安装（1Panel 管理的保持不动）')
+        info('Nginx 已存在，跳过安装')
     if cfg.db_mode == 'local' and not facts['postgres_port']:
         packages += ['postgresql', 'postgresql-contrib']
     else:
@@ -809,10 +816,47 @@ WantedBy=multi-user.target
     ok(f'{SERVICE_NAME}.service 已启动')
 
 
+def _openresty_running() -> bool:
+    import subprocess
+
+    for cmd in (['systemctl', 'is-active', '--quiet', 'openresty'],
+                ['pgrep', '-f', 'openresty']):
+        try:
+            if subprocess.run(cmd, capture_output=True).returncode == 0:
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def write_nginx(runner: Runner, cfg: Config) -> None:
     step('配置 nginx')
     max_body_mb = 100
     web_root = cfg.site_dir or f'{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist'
+    port = cfg.http_port if cfg.nginx_mode == 'system' else 80
+    default_flag = ' default_server' if cfg.nginx_mode == 'system' else ''
+
+    if cfg.nginx_mode == 'system' and not runner.dry_run and port_open('0.0.0.0', port):
+        if port == 80 and _openresty_running():
+            if cfg.stop_openresty:
+                warn('80 被 1Panel OpenResty 占用：按 --stop-openresty 停掉它')
+                runner.run(['systemctl', 'stop', 'openresty'], check=False)
+                runner.run(['systemctl', 'disable', 'openresty'], check=False)
+                time.sleep(1)
+            elif not cfg.assume_yes and confirm(
+                    '80 端口被 1Panel OpenResty 占用，停掉它并改用系统 nginx？', True):
+                runner.run(['systemctl', 'stop', 'openresty'], check=False)
+                runner.run(['systemctl', 'disable', 'openresty'], check=False)
+                time.sleep(1)
+            else:
+                port = 8080
+                cfg.http_port = port
+                warn(f'80 被 OpenResty 占用且未授权停止，改用 http://{cfg.domain}:{port}')
+        else:
+            port = 8080
+            cfg.http_port = port
+            warn(f'{port or 80} 端口已被占用，改用 http://{cfg.domain}:{port}')
+
     conf = f"""upstream bcm_http {{
     server 127.0.0.1:{BACKEND_PORT};
     keepalive 32;
@@ -828,9 +872,9 @@ map $http_upgrade $connection_upgrade {{
 }}
 
 server {{
-    listen 80;
-    listen [::]:80;
-    server_name {cfg.domain};
+    listen {port}{default_flag};
+    listen [::]:{port}{default_flag};
+    server_name {cfg.domain} _;
 
     client_max_body_size {max_body_mb}m;
     add_header X-Content-Type-Options nosniff always;
@@ -882,7 +926,7 @@ server {{
 """
     export_path = Path(cfg.app_dir) / 'deploy' / 'nginx' / 'bcm.site.conf'
     if runner.dry_run:
-        info(f'[dry-run] 生成站点配置（模式：{cfg.nginx_mode}）')
+        info(f'[dry-run] 生成站点配置（模式：{cfg.nginx_mode}，端口：{port}，root：{web_root}）')
         return
 
     export_path.parent.mkdir(parents=True, exist_ok=True)
@@ -890,29 +934,17 @@ server {{
 
     if cfg.nginx_mode == 'manual':
         info(f'已导出站点配置：{export_path}')
-        if cfg.facts.get('openresty') or cfg.onepanel:
-            info('检测到 1Panel 的 OpenResty：脚本不会改 /etc/nginx，需在面板里配置：')
-            print('  1) 1Panel → 网站 → 创建网站（静态），域名填服务器 IP（或先填占位再改配置），')
-            print(f'     根目录填：{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist')
-            print('  2) 打开该站点 → 配置文件，用下面文件的内容覆盖（server_name 已写成 IP）：')
-            print(f'     {export_path}')
-            print('  3) 或者用「反向代理」加两条：/api → http://127.0.0.1:8000，'
-                  '/ws → http://127.0.0.1:8001（需支持 WebSocket）')
-            print('  4) 保存后 1Panel 会自动 reload；用 curl -H "Host: %s" http://127.0.0.1/api/health 验证'
-                  % cfg.domain)
-        else:
-            info('请在 1Panel 中配置该站点（任选其一）：')
-            print('  1) 1Panel → 网站 → 创建站点（PHP/静态），把上面的 server 内容替换进站点配置；')
-            print('  2) 1Panel → 网站 → 反向代理：/api 指向 http://127.0.0.1:8000、'
-                  '/ws 指向 http://127.0.0.1:8001（需开启 WebSocket）；')
-            print(f'  3) 前端根目录填：{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist')
+        info('请在 1Panel 中配置该站点（任选其一）：')
+        print('  1) 1Panel → 网站 → 创建站点（PHP/静态），把上面的 server 内容替换进站点配置；')
+        print('  2) 1Panel → 网站 → 反向代理：/api 指向 http://127.0.0.1:8000、'
+              '/ws 指向 http://127.0.0.1:8001（需开启 WebSocket）；')
+        print(f'  3) 前端根目录填：{web_root}')
         return
 
-    # manage 模式：优先 conf.d（1Panel/OpenResty 也常包含该目录），否则 sites-available
+    # system / manage：写入系统 nginx
     conf_d = Path('/etc/nginx/conf.d')
     if conf_d.is_dir():
-        target = conf_d / 'bcm.conf'
-        target.write_text(conf, encoding='utf-8')
+        (conf_d / 'bcm.conf').write_text(conf, encoding='utf-8')
     else:
         available = Path('/etc/nginx/sites-available/bcm.conf')
         enabled = Path('/etc/nginx/sites-enabled/bcm.conf')
@@ -921,14 +953,23 @@ server {{
             enabled.unlink()
         enabled.symlink_to(available)
 
+    if cfg.nginx_mode == 'system':
+        default_site = Path('/etc/nginx/sites-enabled/default')
+        if default_site.exists() or default_site.is_symlink():
+            default_site.unlink()
+
     runner.run(['nginx', '-t'])
     runner.run(['systemctl', 'enable', '--now', 'nginx'])
     runner.run(['systemctl', 'reload', 'nginx'])
-    ok('nginx 已配置并重载')
+    ok(f'nginx 已配置并重载（端口 {port}）')
+
 
 
 def configure_tls(runner: Runner, cfg: Config) -> None:
     step('HTTPS 证书')
+    if cfg.nginx_mode == 'system' and cfg.http_port != 80:
+        warn(f'nginx 监听在 {cfg.http_port}，certbot 的 HTTP 验证需要 80 端口，跳过证书申请')
+        return
     if cfg.ip_mode:
         info('纯 IP 部署：跳过 Let\'s Encrypt（不给 IP 签长期证书）；'
              '如必须 HTTPS，请改用域名或自签证书。')
@@ -962,6 +1003,8 @@ def setup_firewall(runner: Runner, cfg: Config) -> None:
         runner.run(['apt-get', 'install', '-y', 'ufw'])
     runner.run(['ufw', 'allow', 'OpenSSH'])
     runner.run(['ufw', 'allow', 'Nginx Full'])
+    if cfg.http_port != 80:
+        runner.run(['ufw', 'allow', f'{cfg.http_port}/tcp'])
     runner.run(['ufw', '--force', 'enable'])
     ok('ufw 已启用（放行 SSH / 80 / 443）')
 
@@ -995,8 +1038,9 @@ def print_summary(cfg: Config) -> None:
     step('部署完成')
     proto = 'https' if cfg.tls else 'http'
     mode_note = '（纯 IP 模式，HTTP）' if cfg.ip_mode else ''
+    port_suffix = '' if cfg.http_port == 80 or cfg.tls else f':{cfg.http_port}'
     lines = [
-        f'站点：        {proto}://{cfg.domain}{mode_note}',
+        f'站点：        {proto}://{cfg.domain}{port_suffix}{mode_note}',
         f'安装目录：    {cfg.app_dir}',
         f'后端端口：    127.0.0.1:{BACKEND_PORT}（HTTP）/ {WS_PORT}（WS）',
         *([f'站点目录：    {cfg.site_dir}'] if cfg.site_dir else []),
@@ -1032,8 +1076,13 @@ def main() -> int:
     parser.add_argument('--admin-user', help='管理员用户名')
     parser.add_argument('--admin-email', help='管理员邮箱')
     parser.add_argument('--db-mode', choices=['local', 'existing'], help='数据库模式')
-    parser.add_argument('--nginx-mode', choices=['manage', 'manual'],
-                        help='manage=脚本写 nginx 配置；manual=跳过（1Panel 里配）')
+    parser.add_argument('--nginx-mode', choices=['system', 'manage', 'manual'],
+                        help='system=用系统 nginx（不走面板）；manage=脚本写现有 nginx；'
+                             'manual=跳过（1Panel 里配）')
+    parser.add_argument('--http-port', type=int, default=80,
+                        help='system 模式下 nginx 监听端口（默认 80，被占用会自动改 8080）')
+    parser.add_argument('--stop-openresty', action='store_true',
+                        help='system 模式下若 80 被 1Panel OpenResty 占用，停掉它')
     parser.add_argument('--assume-detected', action='append', default=[],
                         choices=['nginx', 'openresty', 'postgres', 'onepanel', 'node', 'certbot'],
                         help='调试用：假设这些组件已存在（配合 --dry-run）')

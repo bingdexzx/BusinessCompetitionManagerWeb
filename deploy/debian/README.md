@@ -171,6 +171,33 @@ sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes
 > 安全提示：纯 IP + HTTP 时**密码和登录令牌是明文传输**，只适合内网 / VPN / 临时验收。
 > 公网长期使用建议：套 SSH 隧道/VPN，或绑一个域名后重新跑脚本申请 HTTPS。
 
+
+## 2.7 不用 1Panel 的 nginx（用系统 nginx，推荐）
+
+不想被 1Panel 的站点目录/OpenResty 限制时，让脚本直接装并配置系统 nginx：
+
+```bash
+sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes --nginx-mode system
+```
+
+脚本会：
+
+1. `apt install nginx`（已装则跳过）；
+2. 写 `/etc/nginx/conf.d/bcm.conf`：`listen 80 default_server`、`server_name <IP> _`、
+   `root <dist 或 --site-dir>`、SPA 回退、`/api`、`/ws`；
+3. 删掉 `sites-enabled/default`，`nginx -t` 后 `enable --now nginx`；
+4. 不经过 1Panel，也不需要建站点。
+
+**80 被 1Panel OpenResty 占用时**（执行 `ss -ltnp | grep :80` 看到 openresty）：
+
+- 想用系统 nginx 接管 80：加 `--stop-openresty`，脚本会 `systemctl stop/disable openresty`；
+  注意这会停掉 1Panel 里**所有** OpenResty 站点；
+- 不想动 OpenResty：去掉该参数，脚本自动改用 **8080**，访问 `http://<IP>:8080`，
+  并自动在 ufw 放行 8080。
+
+> 之后想切回 1Panel：`sudo systemctl enable --now openresty`，再删掉
+> `/etc/nginx/conf.d/bcm.conf` 并 `systemctl reload nginx`。
+
 ## 3. 它会做什么
 
 1. `apt` 安装：python3、venv、nginx、rsync、postgresql（本地模式）、certbot；

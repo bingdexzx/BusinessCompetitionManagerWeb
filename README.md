@@ -122,6 +122,7 @@ npx vue-tsc --build ; npx eslint src ; npm run build
 sudo bash deploy/debian/install.sh
 # 没有域名、纯 IP 部署（不写 --ip 会自动检测本机 IP）：
 # sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes
+# 不想用 1Panel 的 nginx：加 --nginx-mode system（80 被占用时再加 --stop-openresty）
 ```
 
 **已用 1Panel 装好 PostgreSQL / Nginx**
