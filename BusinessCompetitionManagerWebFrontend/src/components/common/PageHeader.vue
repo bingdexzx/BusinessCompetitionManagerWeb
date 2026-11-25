@@ -48,4 +48,15 @@ withDefaults(
   color: var(--color-text-tertiary);
   font-size: var(--font-xs);
 }
+
+/* 右侧动作区：global.scss 已把相邻按钮的 margin-left 归零，
+   这里必须用 gap 提供间距，否则按钮会贴在一起。 */
+.page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
 </style>
