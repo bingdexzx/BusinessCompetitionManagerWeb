@@ -249,6 +249,7 @@ class Config:
     admin_email: str = 'admin@example.com'
     admin_password: str = ''
     reset_admin: bool = False
+    force_cert: bool = False
     db_mode: str = 'auto'          # auto | local | existing
     db_name: str = 'business_competition_manager'
     db_user: str = 'bcm_app'
@@ -358,6 +359,7 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
         else:
             cfg.admin_password = ask('管理员密码', secret=True, required=True)
     cfg.reset_admin = bool(args.reset_admin_password)
+    cfg.force_cert = bool(args.force_cert)
 
     # ---- 数据库
     reuse = bool(existing.get('DATABASES_PASSWORD')) and not args.db_password
@@ -412,9 +414,10 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
     if cfg.nginx_mode == 'manual':
         cfg.tls = False
     else:
-        cfg.tls = args.tls if args.tls is not None else (
-            False if cfg.ip_mode else (True if cfg.yes else confirm(
-                '为域名申请 HTTPS 证书（Let\'s Encrypt）？', True)))
+        # 域名模式默认自动申请证书；--no-tls 可关闭
+        cfg.tls = args.tls if args.tls is not None else (False if cfg.ip_mode else True)
+        if cfg.tls:
+            UI.info('将自动申请 Let\'s Encrypt 证书（失败会回退 HTTP 并提示）')
     cfg.http_port = int(args.http_port or (80 if cfg.yes else ask('nginx 监听端口', '80')))
     cfg.stop_openresty = bool(args.stop_openresty)
 
@@ -959,23 +962,86 @@ def _openresty_running() -> bool:
     return False
 
 
+def _resolve_domain(domain: str) -> list[str]:
+    try:
+        infos = socket.getaddrinfo(domain, 80, proto=socket.IPPROTO_TCP)
+        return sorted({item[4][0] for item in infos})
+    except OSError:
+        return []
+
+
+def _downgrade_env_to_http(runner: Runner, cfg: Config) -> None:
+    """证书失败时把 .env 的安全项改回 HTTP，避免 Cookie Secure 导致登录失效。"""
+    if runner.dry_run:
+        return
+    path = Path(cfg.app_dir) / '.env'
+    if not path.exists():
+        return
+    text = path.read_text(encoding='utf-8')
+    replacements = {
+        'SECURE_SSL_REDIRECT': 'false',
+        'SECURE_HSTS_SECONDS': '0',
+        'TRUST_X_FORWARDED_PROTO': 'false',
+        'SESSION_COOKIE_SECURE': 'false',
+        'CSRF_COOKIE_SECURE': 'false',
+    }
+    for key, value in replacements.items():
+        text = re.sub(rf'^{key}\s*=.*$', f"{key} = '{value}'", text, flags=re.M)
+    path.write_text(text, encoding='utf-8')
+    path.chmod(0o600)
+    runner.run(['systemctl', 'restart', SERVICE], check=False)
+    UI.warn('已回退为 HTTP 配置（.env 中的 Secure/HSTS 已关闭）')
+
+
 def configure_tls(runner: Runner, cfg: Config) -> None:
     if not cfg.tls or cfg.ip_mode or cfg.nginx_mode in ('manual', 'skip'):
         return
     if cfg.http_port != 80:
-        UI.warn(f'nginx 监听 {cfg.http_port}，certbot 需要 80 端口，跳过证书')
+        UI.warn(f'nginx 监听 {cfg.http_port}，certbot 的 HTTP 验证需要 80 端口，跳过证书')
         return
-    UI.step('HTTPS 证书')
+
+    UI.step('HTTPS 证书（自动申请）')
     if runner.dry_run:
-        UI.info(f'[dry-run] certbot --nginx -d {cfg.domain}')
+        UI.info(f'[dry-run] certbot --nginx -d {cfg.domain}（含自动续期 timer）')
         return
-    result = runner.run(['certbot', '--nginx', '-d', cfg.domain, '--non-interactive',
-                         '--agree-tos', '-m', cfg.admin_email, '--redirect'], check=False)
-    if result.returncode == 0:
-        UI.ok(f'HTTPS 已启用：https://{cfg.domain}')
-    else:
-        UI.warn('证书申请失败（通常是 DNS 未解析或 80 不通），稍后可手动 certbot --nginx -d '
-                + cfg.domain)
+
+    resolved = _resolve_domain(cfg.domain)
+    if not resolved:
+        UI.warn(f'域名 {cfg.domain} 当前无法解析，跳过证书申请（站点仍走 HTTP）')
+        _downgrade_env_to_http(runner, cfg)
+        return
+    if cfg.facts.local_ip and cfg.facts.local_ip not in resolved and not cfg.force_cert:
+        UI.warn(f'域名解析到 {", ".join(resolved)}，本机 IP 是 {cfg.facts.local_ip}；'
+                '如确认解析无误可加 --force-cert 仍尝试申请')
+
+    result = runner.run(
+        ['certbot', '--nginx', '-d', cfg.domain, '--non-interactive', '--agree-tos',
+         '-m', cfg.admin_email, '--redirect', '--keep-until-expiring',
+         '--deploy-hook', f'systemctl reload {SERVICE}'],
+        check=False,
+    )
+    if result.returncode != 0:
+        UI.warn('certbot 申请失败（常见：DNS 未解析到本机、80 端口不通、'
+                '域名已被其他站点占用）。站点仍可用 HTTP。')
+        _downgrade_env_to_http(runner, cfg)
+        return
+
+    # 自动续期：certbot 包自带 timer；确保开启
+    runner.run(['systemctl', 'enable', '--now', 'certbot.timer'], check=False)
+
+    # 验证 443 握手（不校验证书，避免 NAT 回环问题）
+    try:
+        import ssl
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection(('127.0.0.1', 443), timeout=5) as raw:
+            with context.wrap_socket(raw, server_hostname=cfg.domain):
+                pass
+        UI.ok(f'HTTPS 已启用：https://{cfg.domain}（证书自动续期已开启）')
+    except OSError as exc:
+        UI.warn(f'证书已申请，但 443 握手检查失败：{exc}（可稍后 nginx -t 检查）')
+
 
 
 def setup_firewall(runner: Runner, cfg: Config) -> None:
@@ -1114,6 +1180,9 @@ def run_doctor(cfg: Config) -> int:
             check('/api/health', False, str(exc))
     check('8000 监听', port_open('127.0.0.1', HTTP_PORT))
     check('8001 监听', port_open('127.0.0.1', WS_PORT))
+    env_data = read_env(env_path) if env_path.exists() else {}
+    if env_data.get('SECURE_SSL_REDIRECT') == 'true':
+        check('443 监听（HTTPS 已启用）', port_open('127.0.0.1', 443))
     if facts.system_nginx:
         conf = Path('/etc/nginx/conf.d/bcm.conf')
         check('nginx 站点配置', conf.exists(), str(conf))
@@ -1207,6 +1276,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='nginx 模式（默认自动判断）')
     parser.add_argument('--stop-openresty', action='store_true',
                         help='80 被 1Panel OpenResty 占用时停掉它')
+    parser.add_argument('--force-cert', action='store_true',
+                        help='域名解析与本机 IP 不一致时仍尝试申请证书')
     tls_group = parser.add_mutually_exclusive_group()
     tls_group.add_argument('--tls', dest='tls', action='store_true', default=None)
     tls_group.add_argument('--no-tls', dest='tls', action='store_false')

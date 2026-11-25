@@ -39,7 +39,7 @@ python3 deploy/debian/deploy.py status
 | 数据库不存在 | 自动建库；无权限时提示去 1Panel 建库或 `ALTER ROLE ... CREATEDB` |
 | 数据库连不上 | 迁移前单独校验，报错直接给出当前 `用户@主机:端口/库` 与修复命令 |
 | 管理员不存在 | 自动创建并**校验确实存在**；`--reset-admin-password` 可重置已有账号 |
-| 证书申请失败 | 只警告，不影响 HTTP 站点；可稍后手动 certbot |
+| 证书申请失败 | 自动回退 HTTP（关闭 Cookie Secure/HSTS）并给出原因；修好 DNS/80 后重跑即可 |
 | 重复执行 | 安装/升级都是幂等的：已存在则跳过，`.env`/media/日志保留 |
 
 ## 常用参数
@@ -54,7 +54,8 @@ python3 deploy/debian/deploy.py status
 | `--nginx-mode system\|manage\|manual` | **默认 system（系统 nginx）**；manage=写现有 nginx；manual=只导出配置（1Panel） |
 | `--http-port` | nginx 端口，默认 80；被占用自动换 8080 |
 | `--stop-openresty` | 80 被 1Panel OpenResty 占用时停掉它 |
-| `--tls` / `--no-tls` | 是否申请 Let's Encrypt 证书 |
+| `--tls` / `--no-tls` | 是否申请 Let's Encrypt 证书（**域名默认自动申请**；`--no-tls` 关闭） |
+| `--force-cert` | 域名解析与本机 IP 不一致时仍尝试申请 |
 | `--workers/--threads` | waitress 进程数/线程数 |
 | `--admin-user/--admin-email/--admin-password` | 管理员账号 |
 | `--reset-admin-password` | 已存在时重置密码为本次密码 |
@@ -77,7 +78,8 @@ python3 deploy/debian/deploy.py status
 9. 构建前端（可选同步到 `--site-dir`）；
 10. 写 systemd 服务并启动（waitress :8000 + daphne :8001，仅监听 127.0.0.1）；
 11. 写 nginx 站点（SPA 回退、`/api`、`/ws`、上传上限、安全头）；
-12. 可选 HTTPS / ufw；
+12. **自动申请 HTTPS 证书**（域名模式默认开启：certbot + 自动续期 timer，失败回退 HTTP）
+    与可选 ufw；
 13. 健康检查，输出摘要到 `/opt/bcm/DEPLOY_SUMMARY.txt`（600）。
 
 ## 升级流程
