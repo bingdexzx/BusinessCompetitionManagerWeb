@@ -302,8 +302,6 @@ def build(out_dir: Path) -> Path:
         'competition': {
             'name': '2025 商业对抗赛（示例）',
             'coverImage': '',
-            'hostSchool': '示例大学',
-            'location': '北京',
             'staffingInfo': '主席团 5 人',
         },
         'plugins': [

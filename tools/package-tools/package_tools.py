@@ -250,7 +250,7 @@ def cmd_init(args) -> int:
     manifest = {
         'packageVersion': '1.0',
         'dashboard': 'dashboard.json',
-        'competition': {'name': '新的比赛', 'hostSchool': '', 'location': ''},
+        'competition': {'name': '新的比赛'},
         'plugins': [
             {'file': 'plugins/contract_example.py', 'kind': 'CONTRACT',
              'key': 'example_purchase', 'name': '示例采购合同', 'version': '1.0.0',
