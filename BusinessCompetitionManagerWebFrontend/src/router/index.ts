@@ -35,6 +35,8 @@ const router = createRouter({
       name: 'competition-teams',
       component: () => import('../views/TeamsView.vue'),
       props: true,
+      // 组队管理仅系统超级管理员可见（主席团/参赛选手不可进入）
+      meta: { manager: true },
     },
     {
       path: '/competitions/:cid/companies',

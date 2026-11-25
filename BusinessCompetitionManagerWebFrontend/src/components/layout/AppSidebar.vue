@@ -48,7 +48,7 @@
           <el-icon><Odometer /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
-        <el-menu-item :index="`/competitions/${activeCid}/teams`">
+        <el-menu-item v-if="canManageComp" :index="`/competitions/${activeCid}/teams`">
           <el-icon><User /></el-icon>
           <span>组队管理</span>
         </el-menu-item>

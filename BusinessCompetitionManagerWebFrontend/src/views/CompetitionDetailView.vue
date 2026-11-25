@@ -615,7 +615,7 @@ onMounted(() => {
       </div>
     </el-card>
     <div class="quick-links anim-fade-in-up" style="--anim-delay: 100ms">
-      <el-button @click="quickLink('/teams')">
+      <el-button v-if="canManage" @click="quickLink('/teams')">
         <el-icon><User /></el-icon><span>组队管理</span>
       </el-button>
       <el-button @click="quickLink('/contracts')">
