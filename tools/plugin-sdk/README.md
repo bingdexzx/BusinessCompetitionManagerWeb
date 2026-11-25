@@ -111,6 +111,7 @@ python tools/plugin-sdk/check_sync.py    # 校验是否一致（CI 用，退出�
 | 现象 | 处理 |
 | --- | --- |
 | `ctx.` 没有补全 | 确认 `ctx` 参数有注解、SDK 装在**当前解释器**（或配了 `extraPaths`）、已 `TYPE_CHECKING` 导入 |
+| Pylance 报 `无法解析导入 "bcm_plugin_sdk"` | 仓库根目录已带 `.vscode/settings.json` 和 `pyrightconfig.json`（`extraPaths` 指向 `tools/plugin-sdk`）；若仍报错：① 把 VS Code 解释器切到 `.venv`；② 或执行 `uv pip install -e tools/plugin-sdk --python .venv/Scripts/python.exe`；③ 或在设置里手动加 `"python.analysis.extraPaths": ["tools/plugin-sdk"]` |
 | 运行时 `ModuleNotFoundError: bcm_plugin_sdk` | 说明 import 不在 `TYPE_CHECKING` 里；插件运行时不需要这个包 |
 | 类型检查报 `Effect` 未定义（函数体内） | 确认 `if TYPE_CHECKING:` 块里有 `Effect`；运行时由引擎注入 |
 | 补全的方法与最新代码不一致 | 跑 `sync_runtime.py` 重新同步 |

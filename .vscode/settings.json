@@ -1,0 +1,10 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": [
+    "tools/plugin-sdk"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "files.associations": {
+    "manifest.yaml": "yaml"
+  }
+}
