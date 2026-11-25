@@ -575,24 +575,6 @@ watch(
           </el-select>
         </el-form-item>
 
-        <div v-if="selectedType" class="type-summary">
-          <div>
-            <b>参与方角色：</b>
-            {{
-              selectedType.partyRoles
-                .map((p) => `${p.label || p.role}${p.optional ? '（可选）' : ''}`)
-                .join('、') || '—'
-            }}
-          </div>
-          <div>
-            <b>数据字段：</b>
-            {{
-              selectedType.inputSchema.map((f) => `${f.label || f.key}（${f.type}）`).join('、') ||
-              '无'
-            }}
-          </div>
-        </div>
-
         <el-form-item label="合同名称">
           <el-input v-model="createName" placeholder="可留空，由系统按类型生成" />
         </el-form-item>
@@ -910,20 +892,6 @@ watch(
   justify-content: flex-end;
 }
 
-.type-summary {
-  background: var(--surface-sunken);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  margin-bottom: 12px;
-  font-size: var(--font-sm);
-  color: var(--el-text-color-regular);
-  line-height: 1.9;
-
-  b {
-    color: var(--color-text-secondary);
-  }
-}
 
 @media (max-width: 1024px) {
   .filter-search {
