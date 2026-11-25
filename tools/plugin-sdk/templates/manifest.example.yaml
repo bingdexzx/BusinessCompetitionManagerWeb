@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../bcm_plugin_sdk/schemas/manifest.schema.json
+packageVersion: "1.0"
+
+plugins:
+  - file: plugins/contract_purchase.py
+    kind: CONTRACT
+    key: purchase
+    name: 采购合同
+    version: 1.0.0
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+  - file: plugins/industry_manufacture.py
+    kind: INDUSTRY
+    key: manufacture
+    name: 制造业
+    version: 1.0.0
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+sheets:
+  - file: contracts.xlsx
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"

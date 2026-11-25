@@ -1,0 +1,17 @@
+[project]
+name = "bcm-plugin-sdk"
+version = "1.0.0"
+description = "比赛包插件开发类型提示（ctx 方法/参数说明、INPUT_SCHEMA 键补全、manifest JSON Schema）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bcm_plugin_sdk*"]
+
+[tool.setuptools.package-data]
+bcm_plugin_sdk = ["py.typed", "schemas/*.json"]

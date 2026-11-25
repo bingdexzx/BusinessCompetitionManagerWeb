@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "比赛包 manifest.yaml",
+  "type": "object",
+  "required": ["packageVersion", "plugins"],
+  "properties": {
+    "packageVersion": {
+      "type": "string",
+      "description": "比赛包格式版本，当前固定 \"1.0\"",
+      "pattern": "^1\\."
+    },
+    "plugins": {
+      "type": "array",
+      "description": "包内插件文件（合同/产业）",
+      "items": {
+        "type": "object",
+        "required": ["file", "kind", "key", "version", "sha256"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "插件文件在包内的相对路径，如 plugins/contract_purchase.py"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["CONTRACT", "INDUSTRY"],
+            "description": "CONTRACT=合同类型插件；INDUSTRY=产业类型插件"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$",
+            "description": "插件唯一键（小写字母/数字/下划线），如 purchase"
+          },
+          "name": {
+            "type": "string",
+            "description": "插件中文显示名（界面展示；缺失会回退为 key）"
+          },
+          "version": {
+            "type": "string",
+            "description": "插件版本，如 1.0.0"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "插件文件的 SHA-256（导入时校验，防篡改）"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sheets": {
+      "type": "array",
+      "description": "附加数据表（contracts.xlsx / industries.xlsx 等）",
+      "items": {
+        "type": "object",
+        "required": ["file", "sha256"],
+        "properties": {
+          "file": {"type": "string", "description": "xlsx 在包内的相对路径"},
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "文件 SHA-256"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}
