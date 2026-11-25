@@ -499,13 +499,25 @@ def copy_project(runner: Runner, cfg: Config) -> None:
         'BusinessCompetitionManagerWeb/media/packages',
         'BusinessCompetitionManagerWeb/media/map_backgrounds',
         'BusinessCompetitionManagerWeb/media/messages',
-        'reports', 'logs', '.env',
+        # 只排除仓库根目录的运行时目录（以 / 锚定）；否则会误伤
+        # apps/global_/logs 这类同名的 Python 包，导致 ModuleNotFoundError
+        '/logs', '/reports', '/.env',
     ]
     cmd = ['rsync', '-a']
     for pattern in excludes:
         cmd += ['--exclude', pattern]
     cmd += [f'{REPO_ROOT}/', f'{cfg.app_dir}/']
     runner.run(cmd)
+    if not runner.dry_run:
+        required = [
+            'BusinessCompetitionManagerWeb/manage.py',
+            'BusinessCompetitionManagerWeb/apps/global_/logs/__init__.py',
+            'BusinessCompetitionManagerWeb/apps/competition/contracts/__init__.py',
+        ]
+        missing = [rel for rel in required if not (target / rel).exists()]
+        if missing:
+            die('代码同步不完整，缺少：' + '、'.join(missing)
+                + '（请检查 rsync 排除规则）')
     ok('代码已同步（保留 .env / media 运行数据）')
 
 
