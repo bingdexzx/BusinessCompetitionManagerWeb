@@ -1,17 +1,19 @@
 <template>
-  <div class="techtree-manager">
-    <div class="tt-toolbar">
-      <h2 class="tt-title">{{ canManage ? "科技树管理" : "科技树" }}</h2>
-      <div class="tt-actions">
+  <div class="techtree-manager page">
+    <PageHeader :title="canManage ? '科技树管理' : '科技树'">
+      <template #actions>
+      <div class="dm-actions">
         <el-button @click="viewMode = viewMode === 'tree' ? 'table' : 'tree'">
           {{ viewMode === "tree" ? "表格模式" : "可视化模式" }}
         </el-button>
-        <el-button v-if="canManage" type="primary" @click="openCreate">+ 新建节点</el-button>
+        <el-button v-if="canManage" type="primary" @click="openCreate">新建节点</el-button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
 
+    <el-card shadow="never" class="dm-card">
     <div v-if="!cid" class="notice notice--warning">
-      请先在「比赛管理」中选择一个比赛
+      请先在「比赛列表」中选择一个比赛
     </div>
 
     <div v-if="viewMode === 'tree'" class="tt-tree-container">
@@ -22,9 +24,6 @@
         <h4>{{ selectedNode.name }}</h4>
         <div class="tt-info-row">
           <span class="tt-info-label">描述</span>{{ selectedNode.description || "-" }}
-        </div>
-        <div class="tt-info-row">
-          <span class="tt-info-label">层级</span><span class="value-num">{{ selectedNode.tier }}</span>
         </div>
         <div class="tt-info-row">
           <span class="tt-info-label">研发费用</span
@@ -39,13 +38,7 @@
         </div>
         <div class="tt-info-actions">
           <el-button v-if="canManage" size="small" @click="editNode(selectedNode)">编辑</el-button>
-          <el-button
-            v-if="canManage"
-            size="small"
-            type="danger"
-            plain
-            @click="handleDelete(selectedNode)"
-            >删除</el-button
+          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(selectedNode)" link>删除</el-button
           >
         </div>
       </div>
@@ -60,14 +53,9 @@
         stripe
         class="anim-fade-in-up"
         style="width: 100%"
-      >
+       size="small">
         <el-table-column prop="name" label="名称" min-width="160" />
         <el-table-column prop="description" label="描述" min-width="180" />
-        <el-table-column prop="tier" label="层级" align="right" min-width="90">
-          <template #default="{ row }">
-            <span class="value-num">{{ row.tier }}</span>
-          </template>
-        </el-table-column>
         <el-table-column prop="researchCost" label="研发费用" align="right" min-width="120">
           <template #default="{ row }">
             <span class="value-num">{{ row.researchCost }}</span>
@@ -90,10 +78,9 @@
         </el-table-column>
         <el-table-column v-if="canManage" label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" @click="showDetail(row)">详情</el-button>
-            <el-button v-if="canManage" size="small" @click="editNode(row)">编辑</el-button>
-            <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
-              >删除</el-button
+            <el-button size="small" @click="showDetail(row)" link type="primary">详情</el-button>
+            <el-button v-if="canManage" size="small" @click="editNode(row)" link type="primary">编辑</el-button>
+            <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)" link>删除</el-button
             >
           </template>
         </el-table-column>
@@ -126,20 +113,16 @@
         <template #actions="{ row }">
           <el-button size="small" @click="showDetail(row)">详情</el-button>
           <el-button v-if="canManage" size="small" @click="editNode(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
-            >删除</el-button
+          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)" link>删除</el-button
           >
         </template>
       </MobileCards>
     </div>
 
-    <el-dialog append-to-body v-model="detailVisible" title="科技节点详情" width="560px">
+    <el-drawer direction="rtl" append-to-body v-model="detailVisible" title="科技节点详情" size="480px">
       <el-descriptions v-if="detailData" :column="1" border>
         <el-descriptions-item label="名称">{{ detailData.name }}</el-descriptions-item>
         <el-descriptions-item label="描述">{{ detailData.description || "-" }}</el-descriptions-item>
-        <el-descriptions-item label="层级">
-          <span class="value-num">{{ detailData.tier }}</span>
-        </el-descriptions-item>
         <el-descriptions-item label="研发费用">
           <span class="value-num">{{ detailData.researchCost ?? 0 }}</span>
         </el-descriptions-item>
@@ -159,15 +142,14 @@
         <el-descriptions-item label="创建时间">{{ formatDateTime(detailData.createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime(detailData.updatedAt) }}</el-descriptions-item>
       </el-descriptions>
-    </el-dialog>
+    </el-drawer>
 
     <el-dialog append-to-body v-model="showDialog" :title="isEdit ? '编辑节点' : '新建节点'" width="560px">
-      <el-form :model="form" label-width="100px">
+      <el-form :model="form" label-width="96px">
         <el-form-item label="名称" required><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="描述"
           ><el-input v-model="form.description" type="textarea" :rows="2"
         /></el-form-item>
-        <el-form-item label="层级"><el-input-number v-model="form.tier" :min="0" /></el-form-item>
         <el-form-item label="研发费用" required
           ><BigNumberInput v-model="form.researchCost" :min="0" style="width: 100%"
         /></el-form-item>
@@ -176,7 +158,7 @@
             <el-option
               v-for="n in nodes.filter((x) => x.id !== editId)"
               :key="n.id"
-              :label="`[T${n.tier}] ${n.name}`"
+              :label="n.name"
               :value="n.id"
             />
           </el-select>
@@ -184,14 +166,17 @@
       </el-form>
       <template #footer>
         <el-button @click="showDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleSubmit">确定</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleSubmit">保存</el-button>
       </template>
     </el-dialog>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+/* eslint-disable @typescript-eslint/no-explicit-any -- 基础数据行/画布事件字段动态变化，逐字段建模收益低 */
 import { ref, reactive, onMounted, onBeforeUnmount, watch, nextTick, computed } from "vue";
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts";
 import { techNodesApi, type BasedataRow } from "@/api/basedataApi";
@@ -211,19 +196,12 @@ const nodes = ref<any[]>([]);
 const loading = ref(false);
 const viewMode = ref<"table" | "tree">("tree");
 
-/** 系统超管或本比赛超管：可新建/编辑/删除（其余只读） */
-const canManage = computed(
-  () =>
-    authStore.isSuperuser ||
-    authStore.memberships.some(
-      (m) => String(m.id) === props.cid && m.identity === "COMP_SUPER_ADMIN",
-    ),
-);
+/** 系统超级管理员或本比赛超级管理员：可新建/编辑/删除（其余只读） */
+const canManage = computed(() => authStore.isSuperuser);
 
 const techColumns = [
   { prop: "name", label: "名称" },
   { prop: "description", label: "描述" },
-  { prop: "tier", label: "层级" },
   { prop: "researchCost", label: "研发费用" },
   { label: "前置依赖", slot: "prereqs" },
 ];
@@ -246,13 +224,11 @@ let wheelHandler: ((e: WheelEvent) => void) | null = null;
 const form = reactive<{
   name: string;
   description: string;
-  tier: number;
   researchCost: number | string;
   prerequisiteIds: number[];
 }>({
   name: "",
   description: "",
-  tier: 0,
   researchCost: 0,
   prerequisiteIds: [],
 });
@@ -367,10 +343,9 @@ function buildTreeData() {
   for (const n of nodes.value) {
     nodeMap.set(n.id, {
       id: n.id,
-      name: `[T${n.tier}] ${n.name}`,
+      name: n.name,
       value: n.name,
       description: n.description,
-      tier: n.tier,
       _raw: n,
       children: [] as any[],
     });
@@ -528,14 +503,13 @@ function showDetail(row: any) {
 
 function openCreate() {
   if (!props.cid) {
-    ElMessage.warning("请先在「比赛管理」中选择一个比赛");
+    ElMessage.warning("请先在「比赛列表」中选择一个比赛");
     return;
   }
   isEdit.value = false;
   editId.value = 0;
   form.name = "";
   form.description = "";
-  form.tier = 0;
   form.researchCost = 0;
   form.prerequisiteIds = [];
   showDialog.value = true;
@@ -547,7 +521,6 @@ async function editNode(row: any) {
   editId.value = full.id;
   form.name = full.name;
   form.description = full.description || "";
-  form.tier = full.tier;
   form.researchCost = full.researchCost || 0;
   form.prerequisiteIds = (full.prerequisites || []).map((p: any) => p.prerequisiteNodeId);
   showDialog.value = true;
@@ -560,7 +533,6 @@ async function handleSubmit() {
     const payload = {
       name: form.name,
       description: form.description,
-      tier: form.tier,
       researchCost: form.researchCost,
       relations: {
         prerequisites: form.prerequisiteIds.map((id) => ({ prerequisiteNodeId: id })),
@@ -571,7 +543,7 @@ async function handleSubmit() {
     } else {
       await techNodesApi.create(props.cid, payload);
     }
-    ElMessage.success(isEdit.value ? "已更新" : "已创建");
+    ElMessage.success(isEdit.value ? "科技节点已更新" : "科技节点已创建");
     showDialog.value = false;
     loadData();
   } catch (e) {
@@ -595,7 +567,7 @@ async function handleDelete(row: any) {
   }
   try {
     await techNodesApi.remove(props.cid, row.id);
-    ElMessage.success("已删除");
+    ElMessage.success("科技节点已删除");
     loadData();
   } catch (e) {
     ElMessage.error(errorMessage(e, "操作失败"));
@@ -621,14 +593,15 @@ async function handleDelete(row: any) {
   margin: 0;
 }
 .tt-title {
-  font-size: 20px;
-  font-weight: 500;
-  color: #1f1f1f;
   margin: 0;
 }
 .tt-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 /* 关系列为空时的占位「无」：统一弱化色 */
 .cell-empty {
@@ -652,14 +625,14 @@ async function handleDelete(row: any) {
   position: relative;
   min-height: 500px;
   /* 白色背景/边框固定在视口卡片上，不被平移拖动；平移只作用于内部 .tt-chart 图谱内容 */
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   background: #fff;
 }
 .tt-tree-info {
   width: 260px;
   background: #fff;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 16px;
   display: flex;
@@ -669,18 +642,18 @@ async function handleDelete(row: any) {
 .tt-tree-info h4 {
   font-size: 16px;
   font-weight: 500;
-  color: #1f1f1f;
+  color: var(--color-text-primary);
   margin: 0 0 12px;
 }
 .tt-info-row {
   font-size: 13px;
-  color: #5c5c5c;
+  color: var(--color-text-secondary);
   margin-bottom: 6px;
 }
 .tt-info-label {
   display: inline-block;
   width: 64px;
-  color: #8c8c8c;
+  color: var(--color-text-tertiary);
   font-size: 12px;
 }
 .tt-info-actions {

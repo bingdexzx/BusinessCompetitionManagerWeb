@@ -27,12 +27,22 @@ const router = createRouter({
       name: 'competition-detail',
       component: () => import('../views/CompetitionDetailView.vue'),
       props: true,
+      // 比赛详情仅系统超级管理员可见；普通用户进入比赛统一落到仪表盘
+      meta: { superuser: true },
     },
     {
       path: '/competitions/:cid/teams',
       name: 'competition-teams',
       component: () => import('../views/TeamsView.vue'),
       props: true,
+    },
+    {
+      path: '/competitions/:cid/companies',
+      name: 'competition-companies',
+      component: () => import('../views/CompanyManagementView.vue'),
+      props: true,
+      // 公司字段值（现金/库存等）敏感：仅系统超级管理员可见
+      meta: { manager: true },
     },
     {
       path: '/competitions/:cid/contracts',
@@ -78,6 +88,36 @@ const router = createRouter({
       props: true,
     },
     {
+      path: '/competitions/:cid/tools/material-price',
+      name: 'tool-material-price',
+      component: () => import('../views/tools/MaterialPriceTool.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/tools/part-materials',
+      name: 'tool-part-materials',
+      component: () => import('../views/tools/PartMaterialTool.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/tools/product-parts',
+      name: 'tool-product-parts',
+      component: () => import('../views/tools/ProductPartTool.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/tools/navigation',
+      name: 'tool-navigation',
+      component: () => import('../views/tools/NavigationTool.vue'),
+      props: true,
+    },
+    {
+      path: '/competitions/:cid/tools/timers',
+      name: 'tool-timers',
+      component: () => import('../views/tools/TimerTool.vue'),
+      props: true,
+    },
+    {
       path: '/competitions/:cid/maps',
       // 地图管理已挂回数据管理枢纽（页内切换，顶部数据域菜单常驻）；旧链接/深链转发
       redirect: (to) => ({
@@ -97,7 +137,7 @@ const router = createRouter({
       name: 'competition-logs',
       component: () => import('../views/FieldLogsView.vue'),
       props: true,
-      // 字段日志只给超管看：会暴露各公司成本/利润等敏感数据，参赛代表与主席团不可见
+      // 字段日志只给超级管理员看：会暴露各公司成本/利润等敏感数据，参赛代表不可见
       meta: { manager: true },
     },
     {
@@ -118,6 +158,7 @@ const router = createRouter({
       name: 'competition-dashboard',
       component: () => import('../views/DashboardView.vue'),
       props: true,
+      meta: { participant: true },
     },
     {
       path: '/messages',
@@ -136,15 +177,28 @@ const router = createRouter({
       meta: { superuser: true },
     },
     {
-      path: '/plugins',
-      name: 'plugins',
+      path: '/competitions/:cid/plugins',
+      name: 'competition-plugins',
       component: () => import('../views/PluginsView.vue'),
-      meta: { superuser: true },
+      props: true,
+      // 插件按比赛隔离：仅系统超级管理员可看本比赛导入的合同/产业插件
+      meta: { manager: true },
+    },
+    {
+      path: '/plugins',
+      // 旧链接：插件管理已归到当前比赛分组下
+      redirect: '/competitions',
     },
     {
       path: '/users',
       name: 'users',
       component: () => import('../views/UserManagementView.vue'),
+      meta: { superuser: true },
+    },
+    {
+      path: '/update-logs',
+      name: 'update-logs',
+      component: () => import('../views/UpdateLogsView.vue'),
       meta: { superuser: true },
     },
     {
@@ -163,7 +217,7 @@ const router = createRouter({
   ],
 })
 
-// 路由守卫：未登录跳 /login；系统页仅系统超管；已登录不进登录/注册页
+// 路由守卫：未登录跳 /login；系统页仅系统超级管理员；已登录不进登录/注册页
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
@@ -176,13 +230,17 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
 
-  // 刷新/深链进来时用户资料可能还没加载：先补齐会话再判权限，否则系统超管会被误判成无权限
+  // 刷新/深链进来时用户资料可能还没加载：先补齐会话再判权限，否则系统超级管理员会被误判成无权限
   await auth.ensureSession()
   if (!auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
 
   if (to.meta.superuser && !auth.isSuperuser) {
+    // 比赛详情仅超级管理员可见；普通用户进入比赛看到仪表盘
+    if (to.name === 'competition-detail' && to.params.cid) {
+      return { name: 'competition-dashboard', params: { cid: to.params.cid } }
+    }
     return { name: 'competitions' }
   }
 
@@ -193,11 +251,8 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.manager) {
-    const cid = String(to.params.cid ?? '')
-    const isCompSuperAdmin = auth.memberships.some(
-      (m) => String(m.id) === cid && m.identity === 'COMP_SUPER_ADMIN',
-    )
-    if (!auth.isSuperuser && !isCompSuperAdmin) {
+    // 比赛超级管理员身份已取消（2026-11）：比赛管理页仅系统超级管理员可见
+    if (!auth.isSuperuser) {
       return { name: 'competitions' }
     }
   }

@@ -54,7 +54,7 @@ const emit = defineEmits<{
 // 平板/手機(≤1024)下侧栏为抽屉模式，顶栏空间紧张：搜索收成按钮，避免挤压标题
 const { isCompact } = useBreakpoint();
 const expanded = ref(false);
-const inputRef = ref<any>();
+const inputRef = ref<{ focus?: () => void } | null>(null);
 
 function onInput(v: string) {
   emit("update:modelValue", v ?? "");
@@ -88,6 +88,6 @@ function onBlur() {
   margin-left: 0;
 }
 .st-input :deep(.el-input__prefix) {
-  color: var(--color-text-tertiary, #92969e);
+  color: var(--color-text-tertiary);
 }
 </style>

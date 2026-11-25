@@ -1,18 +1,15 @@
 <template>
-  <div class="region-overview">
-    <div class="page-header">
-      <h2 class="page-title">区域总览</h2>
-      <el-button
-        size="small"
-        :loading="loading"
-        @click="refreshAll"
-      >
-        <el-icon v-if="!loading"><Refresh /></el-icon>
-        刷新
-      </el-button>
-    </div>
+  <div class="region-overview page">
+    <PageHeader title="区域总览">
+      <template #actions>
+        <el-button :loading="loading" @click="refreshAll">
+          <el-icon v-if="!loading"><Refresh /></el-icon>
+          刷新
+        </el-button>
+      </template>
+    </PageHeader>
 
-    <el-empty v-if="regions.length === 0 && !loading" description="地图中暂无区域，请在地图管理中为节点设置所属区域" />
+    <el-empty v-if="regions.length === 0 && !loading" description="地图中暂无区域，请在地图管理中为节点设置所属区域"  :image-size="72" />
     <div v-else-if="regions.length === 0 && loading" class="ro-loading">
       <div class="ro-skeleton">
         <div v-for="i in 2" :key="i" class="skeleton ro-skeleton-band" />
@@ -30,7 +27,7 @@
 
         <div class="band-section">
           <div class="section-head">
-            <span class="section-title">消费者需求</span>
+            <span class="section-title section-title--compact">消费者需求</span>
             <div class="section-actions">
               <el-button v-if="canEdit" size="small" type="success" plain @click="openAddDemand(region)">
                 + 添加需求
@@ -73,13 +70,13 @@
 
         <div class="band-section">
           <div class="section-head">
-            <span class="section-title">区域数据</span>
-            <el-button v-if="canEdit" size="small" type="primary" plain @click="openAddFrame(region, 'bottom')">
-              + 添加数据框
-            </el-button>
+            <span class="section-title section-title--compact">区域数据</span>
           </div>
 
-          <div v-if="bottomCards(region).length === 0" class="band-empty">暂无数据</div>
+          <div
+            v-if="bottomCards(region).length === 0 && regionFieldValuesOf(region).length === 0"
+            class="band-empty"
+          >暂无记录</div>
 
           <div class="band-frames">
             <div v-for="card in bottomCards(region)" :key="card.id" class="frame hover-lift" :class="{ invalid: card.valid === false }">
@@ -93,13 +90,27 @@
               <div class="frame-value value-num">{{ formatValue(card) }}</div>
               <div class="frame-meta" v-if="card.valid === false">字段已失效</div>
             </div>
+            <div
+              v-for="f in regionFieldValuesOf(region)"
+              :key="`rf-${f.key}`"
+              class="frame hover-lift"
+            >
+              <div class="frame-top">
+                <span class="frame-name" :title="f.name">{{ f.name }}</span>
+                <div v-if="canEdit" class="frame-actions">
+                  <el-icon class="fa-edit" title="修改值" @click="openRegionFieldValue(region, f)"><Edit /></el-icon>
+                </div>
+              </div>
+              <div class="frame-value value-num">{{ formatRegionFieldValue(f.value) }}</div>
+              <div class="frame-meta">区域字段</div>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <el-dialog append-to-body v-model="showFrame" :title="editingCard ? '编辑数据框' : '添加数据框'" width="480px">
-      <el-form label-width="92px">
+    <el-dialog append-to-body v-model="showFrame" :title="editingCard ? '编辑数据框' : '添加数据框'" width="560px">
+      <el-form label-width="96px">
         <el-form-item label="数据来源公司" required>
           <el-select
             v-model="frameCompanyId"
@@ -143,8 +154,8 @@
       </template>
     </el-dialog>
 
-    <el-dialog append-to-body v-model="showDemand" :title="editingDemand ? '编辑需求' : '添加需求'" width="480px">
-      <el-form label-width="92px">
+    <el-dialog append-to-body v-model="showDemand" :title="editingDemand ? '编辑需求' : '添加需求'" width="560px">
+      <el-form label-width="96px">
         <el-form-item label="产品" required>
           <el-select
             v-model="demandForm.productId"
@@ -172,12 +183,47 @@
         <el-button type="success" :loading="savingDemand" @click="saveDemand">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog append-to-body v-model="showRegionValue" title="修改区域字段值" width="420px">
+      <div class="region-value-meta">
+        <b>{{ valueFieldName }}</b>
+        <span class="field-key">{{ valueFieldKey }}</span>
+      </div>
+      <el-form label-width="96px">
+        <el-form-item label="字段值" required :error="regionValueError">
+          <el-input-number
+            v-if="valueFieldType === 'NUMBER'"
+            v-model="regionValueNumber"
+            :controls="false"
+            style="width: 100%"
+            placeholder="请输入数值"
+          />
+          <el-switch v-else-if="valueFieldType === 'BOOL'" v-model="regionValueBool" />
+          <el-date-picker
+            v-else-if="valueFieldType === 'DATE'"
+            v-model="regionValueDate"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="请选择日期"
+            style="width: 100%"
+          />
+          <el-input v-else v-model="regionValueText" placeholder="请输入字段值" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRegionValue = false">取消</el-button>
+        <el-button type="primary" :loading="savingRegionValue" @click="saveRegionFieldValue">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 // 区域来自地图节点 region；本页只展示/配置消费者需求与数据框，不增删区域。
 import { ref, computed, watch } from "vue";
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Edit, Close, Refresh } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
@@ -187,8 +233,10 @@ import {
   getBasedata,
   getCompanyIndustryFields,
   getConsumerDemands,
+  getRegionFieldValues,
   getRegionMapOverview,
   saveRegionCardsByName,
+  setRegionFieldValue,
   updateConsumerDemand,
 } from "@/api";
 import type {
@@ -197,6 +245,7 @@ import type {
   RegionMapOverview,
   RegionOverviewCard,
 } from "@/api";
+import type { RegionField } from "@/api/types";
 import BigNumberInput from "@/components/common/BigNumberInput.vue";
 import { useResourceRefresh } from "@/composables/useNotifications";
 import { errorMessage } from "@/utils/errors";
@@ -204,16 +253,32 @@ import { errorMessage } from "@/utils/errors";
 const props = defineProps<{ cid: string }>();
 const auth = useAuthStore();
 
-// 权限：系统超管 / 本比赛超管
-const canEdit = computed(
-  () =>
-    auth.isSuperuser ||
-    auth.memberships.some((m) => String(m.id) === props.cid && m.identity === "COMP_SUPER_ADMIN"),
-);
+// 权限：系统超级管理员（比赛超级管理员身份已取消，2026-11）
+const canEdit = computed(() => auth.isSuperuser);
 
 const regions = ref<RegionMapOverview[]>([]);
 const demands = ref<ConsumerDemandItem[]>([]);
 const loading = ref(false);
+
+// 区域字段值：按区域名缓存（字段定义由比赛包提供）
+const regionFieldValues = ref<Record<string, RegionField[]>>({});
+
+function regionFieldValuesOf(region: RegionMapOverview): RegionField[] {
+  return regionFieldValues.value[region.region] || [];
+}
+
+async function loadRegionValuesFor(names: string[]): Promise<void> {
+  const entries = await Promise.all(
+    names.map(async (name) => {
+      try {
+        return [name, await getRegionFieldValues(props.cid, name)] as const;
+      } catch {
+        return [name, [] as RegionField[]] as const;
+      }
+    }),
+  );
+  regionFieldValues.value = Object.fromEntries(entries);
+}
 
 const productOptions = ref<{ id: number; name: string }[]>([]);
 
@@ -264,6 +329,7 @@ async function loadRegions() {
   try {
     const list = (await getRegionMapOverview(props.cid)) || [];
     regions.value = list.map((r) => ({ ...r }));
+    await loadRegionValuesFor(regions.value.map((r) => r.region));
   } catch (err) {
     ElMessage.error(errorMessage(err, "区域数据加载失败"));
   } finally {
@@ -299,6 +365,89 @@ async function loadProducts() {
   } catch (err) {
     productOptions.value = [];
     ElMessage.error(errorMessage(err, "产品列表加载失败"));
+  }
+}
+
+// ---------------------------------------------------------------- 区域字段
+
+const showRegionValue = ref(false);
+const savingRegionValue = ref(false);
+const regionValueRegionName = ref("");
+const valueFieldKey = ref("");
+const valueFieldName = ref("");
+const valueFieldType = ref("NUMBER");
+const regionValueNumber = ref<number | null>(null);
+const regionValueBool = ref(false);
+const regionValueText = ref("");
+const regionValueDate = ref<string | null>(null);
+const regionValueError = ref("");
+
+function formatRegionFieldValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+async function reloadRegionValues(name: string): Promise<void> {
+  regionFieldValues.value[name] = await getRegionFieldValues(props.cid, name);
+}
+
+function openRegionFieldValue(region: RegionMapOverview, field: RegionField): void {
+  regionValueRegionName.value = region.region;
+  valueFieldKey.value = field.key;
+  valueFieldName.value = field.name;
+  valueFieldType.value = field.fieldType;
+  regionValueError.value = "";
+  const raw = field.value;
+  const num = typeof raw === "number" ? raw : Number(raw);
+  regionValueNumber.value = Number.isFinite(num) ? num : null;
+  regionValueBool.value =
+    raw === true || raw === 1 || raw === "1" || raw === "true";
+  regionValueText.value = raw === null || raw === undefined ? "" : String(raw);
+  regionValueDate.value = typeof raw === "string" && raw ? raw : null;
+  showRegionValue.value = true;
+}
+
+async function saveRegionFieldValue(): Promise<void> {
+  regionValueError.value = "";
+  let value: unknown;
+  if (valueFieldType.value === "NUMBER") {
+    if (regionValueNumber.value === null) {
+      regionValueError.value = "请输入字段值";
+      return;
+    }
+    value = regionValueNumber.value;
+  } else if (valueFieldType.value === "BOOL") {
+    value = regionValueBool.value;
+  } else if (valueFieldType.value === "DATE") {
+    if (!regionValueDate.value) {
+      regionValueError.value = "请选择日期";
+      return;
+    }
+    value = regionValueDate.value;
+  } else {
+    if (!regionValueText.value.trim()) {
+      regionValueError.value = "请输入字段值";
+      return;
+    }
+    value = regionValueText.value;
+  }
+  savingRegionValue.value = true;
+  try {
+    await setRegionFieldValue(
+      props.cid,
+      regionValueRegionName.value,
+      valueFieldKey.value,
+      value,
+    );
+    ElMessage.success("区域字段值已更新");
+    showRegionValue.value = false;
+    await reloadRegionValues(regionValueRegionName.value);
+  } catch (err) {
+    ElMessage.error(errorMessage(err, "保存失败"));
+  } finally {
+    savingRegionValue.value = false;
   }
 }
 
@@ -392,7 +541,7 @@ async function saveFrame() {
     await saveRegionCardsByName(props.cid, activeRegion.value.region, next);
     // 实时值需服务端重算，保存后重拉
     await loadRegions();
-    ElMessage.success("已保存");
+    ElMessage.success("数据框已保存");
     showFrame.value = false;
   } catch (err) {
     ElMessage.error(errorMessage(err, "保存失败"));
@@ -403,7 +552,11 @@ async function saveFrame() {
 
 async function removeFrame(region: RegionMapOverview, card: RegionOverviewCard) {
   try {
-    await ElMessageBox.confirm(`移除数据框「${card.displayName}」？`, { type: "warning" });
+    await ElMessageBox.confirm(`确定移除数据框「${card.displayName}」？`, "移除数据框", {
+      type: "warning",
+      confirmButtonText: "移除",
+      cancelButtonText: "取消",
+    });
   } catch {
     return;
   }
@@ -413,7 +566,7 @@ async function removeFrame(region: RegionMapOverview, card: RegionOverviewCard) 
       .map((c) => toCardPayload(c));
     await saveRegionCardsByName(props.cid, region.region, next);
     await loadRegions();
-    ElMessage.success("已移除");
+    ElMessage.success("数据框已移除");
   } catch (err) {
     ElMessage.error(errorMessage(err, "移除失败"));
   }
@@ -460,7 +613,7 @@ async function saveDemand() {
       await createConsumerDemand(props.cid, payload);
     }
     await loadDemands();
-    ElMessage.success("已保存");
+    ElMessage.success("需求已保存");
     showDemand.value = false;
   } catch (err) {
     ElMessage.error(errorMessage(err, "保存失败"));
@@ -471,8 +624,10 @@ async function saveDemand() {
 
 async function removeDemand(_region: RegionMapOverview, d: ConsumerDemandItem) {
   try {
-    await ElMessageBox.confirm(`删除需求「${d.productName}（${d.quantity} 件）」？`, {
+    await ElMessageBox.confirm(`确定删除需求「${d.productName}（${d.quantity} 件）」？`, "删除需求", {
       type: "warning",
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
     });
   } catch {
     return;
@@ -480,7 +635,7 @@ async function removeDemand(_region: RegionMapOverview, d: ConsumerDemandItem) {
   try {
     await deleteConsumerDemand(props.cid, d.id);
     await loadDemands();
-    ElMessage.success("已删除");
+    ElMessage.success("需求已删除");
   } catch (err) {
     ElMessage.error(errorMessage(err, "删除失败"));
   }
@@ -556,12 +711,19 @@ useResourceRefresh(
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 16px;
 }
+.page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
 .page-title {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--color-text-primary, #1f1f1f);
   margin: 0;
 }
 .no-comp-warning {
@@ -634,16 +796,12 @@ useResourceRefresh(
   gap: 8px;
   flex-shrink: 0;
 }
-.section-title {
+.section-title--compact {
   display: flex;
   align-items: center;
   margin-bottom: 0;
-  font-size: var(--font-sm);
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.3px;
 }
-.section-title::before {
+.section-title--compact::before {
   content: "";
   display: inline-block;
   width: 3px;
@@ -653,10 +811,10 @@ useResourceRefresh(
   margin-right: 7px;
 }
 /* 绿=消费者需求，蓝=区域数据，与卡片配色一致 */
-.band-header + .band-section .section-title::before {
+.band-header + .band-section .section-title--compact::before {
   background: var(--color-success);
 }
-.band-section + .band-section .section-title::before {
+.band-section + .band-section .section-title--compact::before {
   background: rgb(var(--color-info-soft-rgb));
 }
 .band-empty {
@@ -695,7 +853,7 @@ useResourceRefresh(
   min-width: 180px;
   flex: 0 0 auto;
   background: linear-gradient(180deg, #f7f9ff 0%, #eef3ff 100%);
-  border: 1px solid #d6e2ff;
+  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
   padding: 12px 14px;
   display: flex;
@@ -704,30 +862,30 @@ useResourceRefresh(
   box-shadow: var(--shadow-xs);
 }
 .frame.invalid {
-  background: #fafafa;
-  border-color: #e4e7ed;
+  background: var(--surface-sunken);
+  border-color: var(--color-border-strong);
 }
 /* 保留语义边框（hover-lift 默认会改灰） */
 .frame.hover-lift:hover {
-  border-color: #d6e2ff;
+  border-color: var(--color-border-strong);
 }
 .frame.invalid.hover-lift:hover {
-  border-color: #e4e7ed;
+  border-color: var(--color-border-strong);
 }
 
 .demand-frame {
   background: linear-gradient(180deg, #f0faf5 0%, #e6f7ef 100%);
-  border-color: #c8ecd9;
+  border-color: var(--color-border-strong);
 }
 .demand-frame .frame-value {
-  color: #1a7f4f;
+  color: var(--color-success-soft-fg);
 }
 .demand-frame.hover-lift:hover {
-  border-color: #c8ecd9;
+  border-color: var(--color-border-strong);
 }
 .demand-frame.invalid {
-  background: #fafafa;
-  border-color: #e4e7ed;
+  background: var(--surface-sunken);
+  border-color: var(--color-border-strong);
 }
 
 .frame-top {
@@ -739,7 +897,7 @@ useResourceRefresh(
 .frame-name {
   font-size: 13px;
   font-weight: 600;
-  color: #303133;
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -796,5 +954,17 @@ useResourceRefresh(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.field-key {
+  margin-left: 6px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-xs);
+}
+.region-value-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 12px;
 }
 </style>

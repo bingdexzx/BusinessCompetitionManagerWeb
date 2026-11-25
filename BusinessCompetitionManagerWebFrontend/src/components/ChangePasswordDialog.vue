@@ -13,7 +13,7 @@
     :close-on-click-modal="false"
     append-to-body
   >
-    <el-form ref="formRef" :model="form" :rules="rules" label-width="88px" @submit.prevent>
+    <el-form ref="formRef" :model="form" :rules="rules" label-width="96px" @submit.prevent>
       <el-form-item label="原密码" prop="oldPassword">
         <el-input
           v-model="form.oldPassword"
@@ -75,7 +75,7 @@ const rules: FormRules = {
   oldPassword: [{ required: true, message: '请输入原密码', trigger: 'blur' }],
   newPassword: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 8, max: 128, message: '密码长度 8-128 位', trigger: 'blur' },
+    { min: 8, max: 128, message: '密码长度需为 8-64 位', trigger: 'blur' },
   ],
   confirmPassword: [
     // 必填（表单会显示红星）：为空时给出「请再次输入新密码」而不是"不一致"

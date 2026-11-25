@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createContract, getCompanies, getContractTypes, getContracts, getFiscalYears, syncContracts } from '@/api'
+import { useListOptions } from '@/composables/useListOptions'
+import {
+  createContract,
+  getCompanies,
+  getContractTypes,
+  getContracts,
+  getFiscalYears,
+  syncContracts,
+} from '@/api'
 import { subscribeCompetition, useNotifications, useResourceRefresh } from '@/composables/useNotifications'
 import type { Company, Contract, ContractType, FiscalYear } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
@@ -64,7 +73,19 @@ const syncing = ref(false)
 
 function partiesSummary(row: Contract): string {
   if (!row.parties || row.parties.length === 0) return '—'
-  return row.parties.map((p) => `${p.role}:${p.companyName || '—'}`).join('、')
+  return row.parties
+    .map((p) => `${partyRoleLabel(row.contractTypeKey, p.role)}：${p.companyName || '—'}`)
+    .join('、')
+}
+
+/** 参与方角色 → 中文名（插件 PARTY_ROLES[].label，未知回退角色键） */
+function partyRoleLabel(typeKey: string | null | undefined, role: string | null | undefined): string {
+  const raw = String(role ?? '')
+  if (!raw) return ''
+  const row = contractTypes.value
+    .find((t) => t.key === typeKey)
+    ?.partyRoles?.find((item) => item.role === raw)
+  return row?.label || raw
 }
 
 async function loadPage(nextPage = page.value): Promise<void> {
@@ -127,6 +148,8 @@ watch(keyword, () => {
   if (keywordTimer) clearTimeout(keywordTimer)
   keywordTimer = setTimeout(() => void loadPage(1), 300)
 })
+
+
 function onPageChange(next: number): void {
   void loadPage(next)
 }
@@ -139,14 +162,16 @@ useNotifications((message) => {
   const payload = message.payload || {}
   const isContractEvent = typeof message.kind === 'string' && message.kind.startsWith('CONTRACT')
   if (isContractEvent || payload.contractId != null) {
-    void loadContracts(false)
+    // 整页重拉：合同状态变化/删除都要反映出来（增量同步只 upsert，删不掉行）
+    void loadPage(page.value)
   }
 })
 
 // 合同/公司/财年等变更后 400ms 去抖增量刷新
 const REFRESH_RESOURCES = ['contracts', 'companies', 'fiscal-years', 'basedata', 'packages']
 useResourceRefresh(REFRESH_RESOURCES, () => {
-  void loadContracts(false)
+  // 资源变更（含别处删除合同）→ 重拉当前页，保证删除也能同步到界面
+  void loadPage(page.value)
   void loadBaseData()
 })
 
@@ -165,6 +190,58 @@ const createName = ref('')
 const createParties = ref<Record<string, number | null>>({})
 const createTexts = ref<Record<string, string>>({})
 const createNumbers = ref<Record<string, number | undefined>>({})
+const createBools = ref<Record<string, boolean>>({})
+/** LIST 类型输入（如原料清单）：key → 行数组；行内除 item 外的键由 schema.fields 决定 */
+interface ListRow {
+  item: string
+  [key: string]: unknown
+}
+const createLists = ref<Record<string, ListRow[]>>({})
+// 清单行选项按引用表取（原料/零件/产品/地图节点），不再写死原料
+const { optionsFor, ensure: ensureListOptions } = useListOptions(Number(props.cid))
+
+function isListField(type: string | undefined): boolean {
+  return String(type ?? '').toUpperCase().startsWith('LIST')
+}
+
+/** REF:<表> 输入项：用下拉选条目（公司 / 产品 / 地点 / 城市 / 区域…） */
+function isRefField(type: string | undefined): boolean {
+  return String(type ?? '').toUpperCase().startsWith('REF')
+}
+
+function listTable(type: string | undefined): string {
+  return String(type ?? '').split(':')[1]?.trim().toLowerCase() || 'materials'
+}
+
+function refTable(type: string | undefined): string {
+  return (String(type ?? '').split(':')[1] ?? '').trim().toLowerCase()
+}
+
+function emptyListRow(): ListRow {
+  return { item: '' }
+}
+
+function addListRow(key: string): void {
+  const rows = createLists.value[key] ?? []
+  rows.push(emptyListRow())
+  createLists.value = { ...createLists.value, [key]: rows }
+}
+
+/** 行内数值字段（数量、单价…） */
+function listRowNumber(row: ListRow, fieldKey: string): number | undefined {
+  const value = row[fieldKey]
+  return typeof value === 'number' ? value : undefined
+}
+
+function setListRowNumber(row: ListRow, fieldKey: string, value: unknown): void {
+  row[fieldKey] = typeof value === 'number' ? value : undefined
+}
+
+function removeListRow(key: string, index: number): void {
+  const rows = createLists.value[key] ?? []
+  rows.splice(index, 1)
+  createLists.value = { ...createLists.value, [key]: rows }
+}
 const createIsBackfill = ref(false)
 const createFiscalYearId = ref<number | null>(null)
 
@@ -186,10 +263,23 @@ function isNumberField(type: string | undefined): boolean {
   return (type ?? '').toUpperCase() === 'NUMBER'
 }
 
+/** BOOLEAN / BOOL：用开关录入 */
+function isBoolField(type: string | undefined): boolean {
+  const t = (type ?? '').toUpperCase()
+  return t === 'BOOLEAN' || t === 'BOOL'
+}
+
 function onTypeChange(): void {
   createParties.value = {}
   createTexts.value = {}
   createNumbers.value = {}
+  createBools.value = {}
+  createLists.value = {}
+  // 按所选类型的引用表预加载选项（清单与 REF 下拉都用同一套）
+  for (const f of selectedType.value?.inputSchema ?? []) {
+    if (isListField(f.type)) void ensureListOptions(listTable(f.type))
+    else if (isRefField(f.type)) void ensureListOptions(refTable(f.type))
+  }
 }
 
 function openCreate(): void {
@@ -204,32 +294,71 @@ function openCreate(): void {
 async function submitCreate(): Promise<void> {
   const type = selectedType.value
   if (!type) {
-    ElMessage.error('请选择合同类型')
+    ElMessage.warning('请选择合同类型')
     return
   }
   for (const p of type.partyRoles) {
     if (!p.optional && !createParties.value[p.role]) {
-      ElMessage.error(`请选择「${p.label || p.role}」对应的公司`)
+      ElMessage.warning(`请选择「${p.label || p.role}」对应的公司`)
       return
     }
   }
+  // 2026-11 决策：合同输入项一律必填（`optional: true` 的清单除外，但整张合同至少要一行）
+  let listRowsTotal = 0
   for (const f of type.inputSchema) {
+    if (isListField(f.type)) {
+      const rows = createLists.value[f.key] ?? []
+      listRowsTotal += rows.filter((row) => row.item).length
+      if (!rows.length) {
+        if (f.optional) continue
+        ElMessage.warning(`请添加「${f.label || f.key}」`)
+        return
+      }
+      for (const row of rows) {
+        if (!row.item) {
+          ElMessage.warning(`「${f.label || f.key}」有未选择${f.itemLabel || '明细'}的行`)
+          return
+        }
+        for (const sub of f.fields ?? []) {
+          if (listRowNumber(row, sub.key) === undefined) {
+            ElMessage.warning(`「${f.label || f.key}」有未填写${sub.label || sub.key}的行`)
+            return
+          }
+        }
+      }
+      continue
+    }
+    if (isBoolField(f.type)) continue
     const empty = isNumberField(f.type)
       ? createNumbers.value[f.key] === undefined
       : !(createTexts.value[f.key] ?? '').trim()
-    if (f.required && empty) {
-      ElMessage.error(`请填写「${f.label || f.key}」`)
+    if (empty) {
+      ElMessage.warning(`请输入「${f.label || f.key}」`)
       return
     }
   }
+  if (type.inputSchema.some((f) => f.optional && isListField(f.type)) && listRowsTotal === 0) {
+    ElMessage.warning('至少填写一项采购清单')
+    return
+  }
   if (createIsBackfill.value && !createFiscalYearId.value) {
-    ElMessage.error('补录合同必须选择财年')
+    ElMessage.warning('补录合同必须选择财年')
     return
   }
 
   const inputs: Record<string, unknown> = {}
   for (const f of type.inputSchema) {
-    if (isNumberField(f.type)) {
+    if (isListField(f.type)) {
+      inputs[f.key] = (createLists.value[f.key] ?? []).map((row) => {
+        const record: Record<string, unknown> = { item: row.item }
+        for (const sub of f.fields ?? []) record[sub.key] = row[sub.key]
+        return record
+      })
+      continue
+    }
+    if (isBoolField(f.type)) {
+      inputs[f.key] = createBools.value[f.key] === true
+    } else if (isNumberField(f.type)) {
       if (createNumbers.value[f.key] !== undefined) inputs[f.key] = createNumbers.value[f.key]
     } else {
       const v = (createTexts.value[f.key] ?? '').trim()
@@ -252,11 +381,11 @@ async function submitCreate(): Promise<void> {
       fiscalYearId: createIsBackfill.value ? (createFiscalYearId.value as number) : undefined,
     })
     showCreate.value = false
-    ElMessage.success(createIsBackfill.value ? '补录合同已创建，待超管审核' : '合同已创建（草稿）')
+    ElMessage.success(createIsBackfill.value ? '补录合同已创建，待超级管理员审核' : '合同已创建（草稿）')
     await loadContracts()
     if (created?.id) openDetail(created)
   } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '保存失败'))
   } finally {
     creating.value = false
   }
@@ -273,7 +402,7 @@ async function loadBaseData(): Promise<void> {
     companies.value = comps
     fiscalYears.value = fys
   } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '加载失败'))
   }
 }
 
@@ -298,10 +427,11 @@ watch(
 </script>
 
 <template>
-  <div class="contracts-page">
+  <div class="contracts-page page">
     <div class="page-toolbar">
-      <h1 class="page-title">合同工作台</h1>
-      <div class="page-actions filters-bar">
+      <PageHeader title="合同工作台">
+        <template #actions>
+      <div class="page-actions">
         <el-input
           v-model="keyword"
           clearable
@@ -325,6 +455,8 @@ watch(
         <el-button :loading="syncing" @click="loadContracts(false)">同步</el-button>
         <el-button type="primary" @click="openCreate">创建合同</el-button>
       </div>
+        </template>
+      </PageHeader>
     </div>
 
     <div v-if="loadError" class="notice notice--danger contracts-error">
@@ -346,9 +478,9 @@ watch(
           class="clickable-table"
           style="width: 100%"
           @row-click="openDetail"
-        >
+         size="small">
           <template #empty>
-            <el-empty description="暂无合同" />
+            <el-empty description="暂无合同"  :image-size="72" />
           </template>
           <el-table-column prop="name" label="合同名称" min-width="160">
             <template #default="{ row }">
@@ -366,11 +498,20 @@ watch(
               <span v-else class="num-empty">未编号</span>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="126" align="center">
+          <el-table-column label="状态" width="150" align="center">
             <template #default="{ row }">
               <span class="status-pill" :class="`tone-${statusTone(row.status)}`">
                 {{ statusMeta(row.status).label }}
               </span>
+              <el-tag
+                v-if="row.overdue"
+                size="small"
+                type="danger"
+                effect="plain"
+                class="overdue-tag"
+              >
+                超时
+              </el-tag>
             </template>
           </el-table-column>
           <el-table-column label="轮次" width="70" align="right">
@@ -415,8 +556,8 @@ watch(
       </div>
     </template>
 
-    <el-dialog v-model="showCreate" title="创建合同" width="640px" append-to-body>
-      <el-form label-position="top">
+    <el-dialog v-model="showCreate" title="创建合同" width="720px" append-to-body>
+      <el-form>
         <el-form-item label="合同类型" required>
           <el-select
             v-model="createTypeKey"
@@ -428,16 +569,13 @@ watch(
             <el-option
               v-for="t in contractTypes"
               :key="t.key"
-              :label="`${t.name}${t.numberPrefix ? `（${t.numberPrefix}）` : ''}`"
+              :label="t.name"
               :value="t.key"
             />
           </el-select>
         </el-form-item>
 
         <div v-if="selectedType" class="type-summary">
-          <div>
-            <b>编号前缀：</b>{{ selectedType.numberPrefix || '—' }}
-          </div>
           <div>
             <b>参与方角色：</b>
             {{
@@ -471,7 +609,7 @@ watch(
               v-model="createParties[p.role]"
               clearable
               filterable
-              placeholder="选择公司"
+              placeholder="请选择公司"
               style="width: 100%"
             >
               <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
@@ -482,8 +620,8 @@ watch(
           <el-form-item
             v-for="f in selectedType.inputSchema"
             :key="f.key"
-            :required="Boolean(f.required)"
-            :label="`${f.label || f.key}${f.min !== undefined ? `（最小值 ${f.min}）` : ''}`"
+            :required="!f.optional"
+            :label="`${f.label || f.key}${f.optional ? '（选填）' : ''}${f.min !== undefined ? `（最小值 ${f.min}）` : ''}`"
           >
             <el-input-number
               v-if="isNumberField(f.type)"
@@ -493,12 +631,69 @@ watch(
               style="width: 100%"
               @update:model-value="(v: unknown) => (createNumbers[f.key] = typeof v === 'number' ? v : undefined)"
             />
+            <div v-else-if="isListField(f.type)" class="list-editor">
+              <div
+                v-for="(row, index) in createLists[f.key] ?? []"
+                :key="index"
+                class="list-row"
+              >
+                <el-select
+                  v-model="row.item"
+                  filterable
+                  clearable
+                  :placeholder="`选择${f.itemLabel || '明细'}`"
+                  class="list-item-select"
+                >
+                  <el-option
+                    v-for="option in optionsFor(f.type)"
+                    :key="option.id"
+                    :label="option.label || option.name || `${f.itemLabel || '明细'} #${option.id}`"
+                    :value="option.name || `${f.itemLabel || '明细'} #${option.id}`"
+                  />
+                </el-select>
+                <el-input-number
+                  v-for="sub in f.fields ?? []"
+                  :key="sub.key"
+                  :model-value="listRowNumber(row, sub.key)"
+                  :min="sub.min ?? 0"
+                  :controls="false"
+                  :placeholder="sub.label || sub.key"
+                  class="list-qty"
+                  @update:model-value="(v: unknown) => setListRowNumber(row, sub.key, v)"
+                />
+                <el-button link type="danger" @click="removeListRow(f.key, index)">
+                  删除
+                </el-button>
+              </div>
+              <el-button size="small" @click="addListRow(f.key)">
+                + 添加{{ f.itemLabel || '明细' }}
+              </el-button>
+            </div>
+            <el-switch
+              v-else-if="isBoolField(f.type)"
+              v-model="createBools[f.key]"
+            />
+            <el-select
+              v-else-if="isRefField(f.type)"
+              v-model="createTexts[f.key]"
+              filterable
+              clearable
+              :placeholder="`选择${f.label || f.key}`"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="option in optionsFor(f.type)"
+                :key="option.id"
+                :label="option.label || option.name"
+                :value="option.name"
+              />
+            </el-select>
             <el-input v-else v-model="createTexts[f.key]" :placeholder="`请输入${f.label || f.key}`" />
           </el-form-item>
 
           <el-divider>补录</el-divider>
           <el-form-item>
-            <el-checkbox v-model="createIsBackfill">补录合同（需超管审核）</el-checkbox>
+            <el-checkbox v-model="createIsBackfill">补录合同（需超级管理员审核）</el-checkbox>
           </el-form-item>
           <el-form-item v-if="createIsBackfill" label="补录财年" required>
             <el-select
@@ -525,6 +720,27 @@ watch(
 </template>
 
 <style scoped lang="scss">
+.list-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.list-item-select {
+  flex: 1;
+}
+.list-qty {
+  width: 120px;
+}
+.overdue-tag {
+  margin-left: 6px;
+}
+
 .contracts-page {
   display: flex;
   flex-direction: column;
@@ -542,16 +758,13 @@ watch(
   margin-bottom: 0;
 }
 
-.filters-bar {
+.page-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 8px 10px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-xs);
+  flex-shrink: 0;
 }
 
 .filter-search {
@@ -723,8 +936,9 @@ watch(
 }
 
 @media (max-width: 640px) {
-  .filters-bar {
+  .page-actions {
     width: 100%;
+    justify-content: flex-start;
   }
 
   .filter-search,

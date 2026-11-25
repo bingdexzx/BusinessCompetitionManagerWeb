@@ -54,7 +54,7 @@ async function handleLogin(): Promise<void> {
       <!-- 品牌渐变头部 -->
       <div class="login-header">
         <img class="login-logo" src="@/assets/logo.svg" alt="logo" />
-        <h1 class="login-title">商赛办赛管理系统</h1>
+        <h1 class="login-title">商赛辅助办赛系统</h1>
         <p class="login-subtitle">Business Competition Manager</p>
       </div>
 
@@ -73,7 +73,7 @@ async function handleLogin(): Promise<void> {
               v-model="form.username"
               placeholder="用户名"
               :prefix-icon="User"
-              size="large"
+             
               autocomplete="username"
               @input="errorText = ''"
             />
@@ -84,7 +84,7 @@ async function handleLogin(): Promise<void> {
               type="password"
               placeholder="密码"
               :prefix-icon="Lock"
-              size="large"
+             
               show-password
               autocomplete="current-password"
               @input="errorText = ''"
@@ -101,7 +101,7 @@ async function handleLogin(): Promise<void> {
         <el-form-item>
           <el-button
             type="primary"
-            size="large"
+           
             class="login-btn"
             :loading="loading"
             @click="handleLogin"

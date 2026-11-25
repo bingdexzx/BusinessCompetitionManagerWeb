@@ -7,7 +7,7 @@
 //   PATCH  /api/competitions/{cid}/basedata/{table}/{id}       → 行
 //   DELETE /api/competitions/{cid}/basedata/{table}/{id}       → {ok:true}
 //   GET    /api/competitions/{cid}/basedata/{table}/{id}/impact → {removable, refs:[{kind,label,count}]}
-// 写操作仅超管（系统超管或本比赛 COMP_SUPER_ADMIN）。
+// 写操作仅系统超级管理员（比赛超级管理员身份已取消，2026-11）。
 import { http } from './client'
 import type {
   MapEdgePayload,
@@ -79,3 +79,52 @@ export const mapNodeApi = tableApi<MapNodeRow, MapNodePayload>('map_nodes')
 
 /** 地图边（MapEdge：distance + nodeAId/nodeBId/pathTypeId） */
 export const mapEdgeApi = tableApi<MapEdgeRow, MapEdgePayload>('map_edges')
+
+// ---------- QGIS 地图（.qgz 工程导入 + 经纬度坐标模式） ----------
+
+/** 地图坐标模式：PIXEL=画布像素（手绘），GEO=经纬度（QGIS 导入） */
+export type MapMode = 'PIXEL' | 'GEO'
+
+/** 地图配置（GET .../basedata/map-settings） */
+export interface MapSettings {
+  mode: MapMode
+  /** 经纬度范围 [minLon, minLat, maxLon, maxLat]，GEO 模式下用于投影 */
+  bounds: number[]
+  /** 区域面（GeoJSON 环）：[{name, rings: [[[lon,lat], ...], ...]}] */
+  regions: Array<{ name: string; rings: number[][][] }>
+  /** 多图层地图（.qgz 导入）：点/线图层 + 面图层 */
+  layers?: import('./mapTypes').MapLayerSetting[]
+  source: string
+  importedAt: string | null
+}
+
+/** QGIS 工程导入报告（POST .../basedata/map-import） */
+export interface MapImportReport {
+  nodesCreated: number
+  nodesReused: number
+  edgesCreated: number
+  edgesSkipped: number
+  nodeTypesCreated: number
+  pathTypesCreated: number
+  layers?: number
+  regionPolygons?: number
+  missingLayers?: string[]
+  regions: number
+  bounds: number[]
+}
+
+export function getMapSettings(cid: number | string): Promise<MapSettings> {
+  return http.get<MapSettings>(`/competitions/${cid}/basedata/map-settings`)
+}
+
+/** 导入 QGIS 工程文件 .qgz（点→节点、线→边、面→区域） */
+export function importQGISMap(
+  cid: number | string,
+  file: File,
+  options: { replace?: boolean } = {},
+): Promise<MapImportReport> {
+  const form = new FormData()
+  form.append('file', file)
+  if (options.replace) form.append('replace', 'true')
+  return http.post<MapImportReport>(`/competitions/${cid}/basedata/map-import`, form)
+}

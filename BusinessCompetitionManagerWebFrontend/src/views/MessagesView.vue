@@ -2,6 +2,7 @@
 // 站内信（系统级，独立于比赛）：收件箱 / 发件箱 / 写站内信（收件人=比赛+个人混合多选）
 // 口径：个人发送自由；「按比赛（全员）」批量=公告，仅超级管理员可发。
 import { computed, onMounted, ref } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Check, EditPen, Refresh } from '@element-plus/icons-vue'
@@ -70,29 +71,37 @@ async function markRead(item: InmailMessage & { recipientId?: number }): Promise
 async function markAllRead(): Promise<void> {
   try {
     const result = await readAllInmails()
-    ElMessage.success(`已标记 ${result.updated} 条为已读`)
+    ElMessage.success(`消息已标记 ${result.updated} 条为已读`)
     await loadInbox()
   } catch (e) {
     ElMessage.error(errorMessage(e, '操作失败'))
   }
 }
 
-function openSource(item: InmailMessage): void {
+/** 消息来源链接：优先用后端给的 link，其次按 payload 里的业务对象拼出页面地址 */
+function sourceLink(item: InmailMessage): string {
   const payload = item.payload || {}
-  const link = typeof payload.link === 'string' ? payload.link : ''
-  if (link) {
-    void router.push(link)
-    return
-  }
+  const raw = typeof payload.link === 'string' ? payload.link.trim() : ''
+  if (raw.startsWith('/')) return raw
+
   // 只接受有效数字 id（系统通知的 competitionId 可能为空，防 /competitions/undefined）
   const cid = Number(item.competitionId)
-  if (Number.isInteger(cid) && cid > 0) {
-    void router.push(`/competitions/${cid}`)
+  if (!Number.isInteger(cid) || cid <= 0) return ''
+
+  // 合同类通知：直接落到那张合同的详情页，而不是比赛仪表盘
+  const contractId = Number(payload.contractId)
+  if (Number.isInteger(contractId) && contractId > 0) {
+    return `/competitions/${cid}/contracts/${contractId}`
   }
+  return `/competitions/${cid}/dashboard`
 }
 
-const hasSource = (item: InmailMessage): boolean =>
-  Boolean(typeof item.payload?.link === 'string' && item.payload.link) || Boolean(item.competitionId)
+function openSource(item: InmailMessage): void {
+  const link = sourceLink(item)
+  if (link) void router.push(link)
+}
+
+const hasSource = (item: InmailMessage): boolean => Boolean(sourceLink(item))
 
 // ---------- 消息详情（抽屉：正文不再被列表的 2 行截断） ----------
 const detailVisible = ref(false)
@@ -194,18 +203,9 @@ async function openCompose(): Promise<void> {
   }
 }
 
-const selectionSummary = computed(() => {
-  const compIds = selected.value.filter((v) => v.startsWith('comp-'))
-  const userIds = selected.value.filter((v) => v.startsWith('user-'))
-  const parts: string[] = []
-  if (compIds.length) parts.push(`${compIds.length} 个比赛（全员）`)
-  if (userIds.length) parts.push(`${userIds.length} 位个人`)
-  return parts.join(' + ') || '未选择'
-})
-
 async function submitCompose(): Promise<void> {
   if (!form.value.title.trim()) {
-    ElMessage.warning('请填写标题')
+    ElMessage.warning('请输入标题')
     return
   }
   const competitionIds = selected.value
@@ -221,11 +221,11 @@ async function submitCompose(): Promise<void> {
   if (competitionIds.length && !auth.isSuperuser) {
     const allowed = new Set(
       auth.memberships
-        .filter((m) => m.identity === 'COMP_SUPER_ADMIN')
+        .filter((m) => m.identity === 'ADMIN')
         .map((m) => m.id),
     )
     if (competitionIds.some((cid) => !allowed.has(cid))) {
-      ElMessage.error('按比赛发送（公告）需要你是该比赛的超级管理员（或系统超管）')
+      ElMessage.warning('按比赛发送公告需要你是该比赛的管理员或超级管理员')
       return
     }
   }
@@ -240,7 +240,7 @@ async function submitCompose(): Promise<void> {
   submitting.value = true
   try {
     await sendInmail(payload)
-    ElMessage.success('发送成功')
+    ElMessage.success('消息已发送')
     composeVisible.value = false
     form.value = { title: '', body: '' }
     selected.value = []
@@ -274,15 +274,16 @@ useResourceRefresh(['messages'], () => {
 </script>
 
 <template>
-  <div class="messages-page">
+  <div class="messages-page page">
     <div class="page-head">
-      <h1 class="page-title">站内信</h1>
-      <div class="head-actions">
-        <el-button :icon="Refresh" @click="activeTab === 'inbox' ? loadInbox() : loadSent()">
-          刷新
-        </el-button>
-        <el-button type="primary" :icon="EditPen" @click="openCompose">写站内信</el-button>
-      </div>
+      <PageHeader title="消息中心">
+        <template #actions>
+          <el-button :icon="Refresh" @click="activeTab === 'inbox' ? loadInbox() : loadSent()">
+            刷新
+          </el-button>
+          <el-button type="primary" :icon="EditPen" @click="openCompose">写消息</el-button>
+        </template>
+      </PageHeader>
     </div>
 
     <el-tabs :model-value="activeTab" @tab-change="(v: string) => switchTab(v as 'inbox' | 'sent')">
@@ -348,7 +349,7 @@ useResourceRefresh(['messages'], () => {
             </div>
           </article>
         </div>
-        <el-empty v-else description="暂无消息" />
+        <el-empty v-else description="暂无消息"  :image-size="72" />
       </el-tab-pane>
 
       <!-- ===== 发件箱 ===== -->
@@ -388,13 +389,13 @@ useResourceRefresh(['messages'], () => {
             </div>
           </article>
         </div>
-        <el-empty v-else description="暂无发送记录" />
+        <el-empty v-else description="暂无发送记录"  :image-size="72" />
       </el-tab-pane>
     </el-tabs>
 
     <!-- ===== 写站内信 ===== -->
-    <el-dialog v-model="composeVisible" title="写站内信" width="640px">
-      <el-form label-width="80px">
+    <el-dialog v-model="composeVisible" title="写站内信" width="720px">
+      <el-form label-width="96px">
         <el-form-item label="标题" required>
           <el-input v-model="form.title" maxlength="200" placeholder="消息标题" />
         </el-form-item>
@@ -457,7 +458,7 @@ useResourceRefresh(['messages'], () => {
             </el-option-group>
           </el-select>
           <div class="recipient-tip">
-            选中比赛＝发全员（仅超管）
+            选中比赛＝发全员（仅超级管理员）
             <span v-if="!canBulkSend">；当前身份仅可发个人</span>
           </div>
         </el-form-item>
@@ -506,7 +507,11 @@ useResourceRefresh(['messages'], () => {
 }
 .head-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .inbox-badge {
   margin-left: 6px;
@@ -629,7 +634,7 @@ useResourceRefresh(['messages'], () => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--color-danger, #ef4444);
+  background: var(--color-danger);
   display: inline-block;
 }
 .mail-body {
@@ -675,7 +680,7 @@ useResourceRefresh(['messages'], () => {
   position: relative;
   width: 72px;
   height: 72px;
-  border: 1px solid var(--color-border, #e5e6eb);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -703,20 +708,20 @@ useResourceRefresh(['messages'], () => {
 .image-add {
   width: 72px;
   height: 72px;
-  border: 1px dashed var(--color-border, #d0d4dc);
+  border: 1px dashed var(--color-border);
   border-radius: 6px;
   background: transparent;
-  color: var(--color-text-tertiary, #909399);
+  color: var(--color-text-tertiary, var(--color-text-tertiary));
   font-size: 20px;
   cursor: pointer;
 }
 .image-add:hover {
-  color: var(--color-primary, #409eff);
-  border-color: var(--color-primary, #409eff);
+  color: var(--color-primary, var(--color-primary));
+  border-color: var(--color-primary, var(--color-primary));
 }
 .image-tip {
   width: 100%;
-  color: var(--color-text-tertiary, #909399);
+  color: var(--color-text-tertiary, var(--color-text-tertiary));
   font-size: 12px;
   margin-top: 4px;
 }

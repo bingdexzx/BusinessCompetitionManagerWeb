@@ -1,4 +1,4 @@
-// 用户管理接口（仅系统超管可用）：/api/users 账号列表/新建/详情/修改/删除/重置密码
+// 用户管理接口（仅系统超级管理员可用）：/api/users 账号列表/新建/详情/修改/删除/重置密码
 // 契约：字段全部 camelCase；错误响应 { code, message, details }（message 中文）
 import { http } from './client'
 
@@ -92,7 +92,7 @@ export function updateUser(id: number, payload: UpdateUserPayload): Promise<User
   return http.patch<UserAdminItem>(`/users/${id}`, payload)
 }
 
-/** DELETE /api/users/<id> 删除账号（不能删自己 / 最后一个系统超管，后端拒绝） */
+/** DELETE /api/users/<id> 删除账号（不能删自己 / 最后一个系统超级管理员，后端拒绝） */
 export function deleteUser(id: number): Promise<{ ok: boolean }> {
   return http.delete<{ ok: boolean }>(`/users/${id}`)
 }

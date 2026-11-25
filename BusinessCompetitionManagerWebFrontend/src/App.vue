@@ -27,7 +27,7 @@
         当前页面版本 <b>{{ APP_VERSION }}</b> 与服务端版本 <b>{{ serverVersion }}</b> 不一致，
         为避免数据错误已暂停操作。
       </p>
-      <el-button type="primary" @click="reload">刷新页面</el-button>
+      <el-button type="primary" @click="reload">刷新</el-button>
     </div>
   </div>
 </template>
@@ -97,7 +97,7 @@ onBeforeUnmount(() => {
 
 .boot-skeleton__card {
   height: 84px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 
 .boot-skeleton__panel {
@@ -120,9 +120,9 @@ onBeforeUnmount(() => {
   max-width: 420px;
   padding: 32px 36px;
   text-align: center;
-  background: #fff;
+  background: var(--color-surface);
   border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-xl);
 }
 
 .version-block__box h2 {

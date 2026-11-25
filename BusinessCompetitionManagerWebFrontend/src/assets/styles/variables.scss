@@ -27,7 +27,8 @@
   --color-danger: #ef4444;
 
   // ===== Radius =====
-  --radius-xs: 6px;
+  --radius-2xs: 4px;
+  --radius-xs: 8px;
   --radius-sm: 10px;
   --radius-md: 14px;
   --radius-lg: 18px;
@@ -89,6 +90,11 @@
   --color-danger-soft-rgb: 239, 68, 68;
   --color-info-soft: rgba(59, 130, 246, 0.1);
   --color-info-soft-rgb: 59, 130, 246;
+  // 软背景上的文字色（此前散落 8 处硬编码）
+  --color-success-soft-fg: #15803d;
+  --color-warning-soft-fg: #b45309;
+  --color-danger-soft-fg: #b91c1c;
+  --color-info-soft-fg: #1d4ed8;
 
   // ===== Glassmorphism =====
   --glass-bg: rgba(255, 255, 255, 0.72);
@@ -99,6 +105,21 @@
   // ===== Raised / sunken surfaces =====
   --surface-raised: #ffffff;
   --surface-sunken: #f3f4f8;
+  // 刻意反色的面板（地图左栏、行情图表底），与暗色模式无关
+  --surface-inverse: #2c3544;
+  --surface-inverse-fg: rgba(255, 255, 255, 0.92);
+  --surface-inverse-fg-muted: rgba(255, 255, 255, 0.55);
+  --surface-inverse-border: rgba(255, 255, 255, 0.12);
+
+  // ===== 涨跌 / 买卖（A 股口径：红涨绿跌）=====
+  --color-up: #ec0000;
+  --color-up-hover: #d40000;
+  --color-down: #00a800;
+  --color-down-hover: #009000;
+
+  // ===== 遮罩（两档：普通弹层 / 全屏阻断）=====
+  --overlay-bg: rgba(15, 23, 42, 0.35);
+  --overlay-bg-strong: rgba(15, 23, 42, 0.72);
 
   // ===== Element Plus theme overrides =====
   --el-color-primary: #4f46e5;

@@ -27,11 +27,11 @@ const form = reactive({
 const rules: FormRules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
-    { min: 3, max: 32, message: '用户名长度为 3-32 个字符', trigger: 'blur' },
+    { min: 3, max: 32, message: '用户名长度需为 3-32 个字符', trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 8, max: 64, message: '密码至少 8 位', trigger: 'blur' },
+    { min: 8, max: 64, message: '密码长度需为 8-64 位', trigger: 'blur' },
   ],
   email: [
     { required: true, message: '请输入邮箱', trigger: 'blur' },
@@ -102,7 +102,7 @@ async function onSubmit(): Promise<void> {
       <div class="login-header">
         <img class="login-logo" src="@/assets/logo.svg" alt="logo" />
         <h1 class="login-title">创建账号</h1>
-        <p class="login-subtitle">注册后自动登录商赛办赛管理系统</p>
+        <p class="login-subtitle">注册后自动登录商赛辅助办赛系统</p>
       </div>
 
       <el-form
@@ -120,7 +120,7 @@ async function onSubmit(): Promise<void> {
             <el-input
               v-model="form.username"
               placeholder="用户名（3-32 位）"
-              size="large"
+             
               autocomplete="username"
               @input="errorText = ''"
             />
@@ -130,7 +130,7 @@ async function onSubmit(): Promise<void> {
               v-model="form.password"
               type="password"
               placeholder="密码（至少 8 位）"
-              size="large"
+             
               show-password
               autocomplete="new-password"
               @input="errorText = ''"
@@ -145,7 +145,7 @@ async function onSubmit(): Promise<void> {
               v-model="form.email"
               type="email"
               placeholder="邮箱"
-              size="large"
+             
               autocomplete="email"
               @input="errorText = ''"
             />
@@ -154,7 +154,7 @@ async function onSubmit(): Promise<void> {
             <el-input
               v-model="form.displayName"
               placeholder="真实姓名"
-              size="large"
+             
               maxlength="100"
               autocomplete="name"
               @input="errorText = ''"
@@ -165,7 +165,7 @@ async function onSubmit(): Promise<void> {
               v-model="form.schoolId"
               class="school-select"
               placeholder="所在学校（可选，输入搜索）"
-              size="large"
+             
               filterable
               remote
               clearable
@@ -189,7 +189,7 @@ async function onSubmit(): Promise<void> {
         </div>
 
         <el-form-item>
-          <el-button type="primary" size="large" class="login-btn" :loading="loading" @click="onSubmit">
+          <el-button type="primary" class="login-btn" :loading="loading" @click="onSubmit">
             注册并登录
           </el-button>
         </el-form-item>

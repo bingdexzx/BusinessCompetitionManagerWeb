@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 行情看板：数据走 useStockSync 快照+增量，WS 信号只触发去抖增量，不轮询。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 // echarts 按需注册，避免全量打包
 import * as echarts from 'echarts/core'
@@ -20,6 +21,7 @@ import { useNotifications, useResourceRefresh } from '@/composables/useNotificat
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
+import { CHART_THEME } from '@/utils/chartTheme'
 
 echarts.use([
   CandlestickChart,
@@ -35,10 +37,8 @@ echarts.use([
 const props = defineProps<{ cid: string }>()
 
 const auth = useAuthStore()
-// 推进轮次仅系统超管/本比赛超管
-const canManage = computed(
-  () => auth.isSuperuser || auth.currentMembership?.identity === 'COMP_SUPER_ADMIN',
-)
+// 推进轮次仅系统超级管理员/本比赛超级管理员
+const canManage = computed(() => auth.isSuperuser)
 
 const {
   stocks,
@@ -66,7 +66,7 @@ async function loadMarket(): Promise<void> {
   try {
     market.value = await getStockMarket(props.cid)
   } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '加载失败'))
   }
 }
 
@@ -188,7 +188,7 @@ async function loadCandles(code: string): Promise<void> {
       renderChart()
     }
   } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     if (loadingCode === code) loadingCandles.value = false
   }
@@ -253,11 +253,11 @@ function renderChart(): void {
   const defaultStart = total > maxVisible ? Math.round((1 - maxVisible / total) * 100) : 0
 
   // 暗色主题配色（沿用旧系统行情图视觉）
-  const bg = '#1a1a2e'
-  const gridColor = '#2a2a3e'
-  const textColor = '#8a8a9a'
-  const upColor = '#ec0000'
-  const downColor = '#00a800'
+  const bg = CHART_THEME.bg
+  const gridColor = CHART_THEME.grid
+  const textColor = CHART_THEME.axisText
+  const upColor = CHART_THEME.up
+  const downColor = CHART_THEME.down
 
   chart.setOption(
     {
@@ -469,7 +469,7 @@ const advancing = ref(false)
 async function onAdvanceRound(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '推进轮次将撮合挂单、生成 K 线并推进股票轮次，确认继续？',
+      '确定推进轮次？将撮合挂单、生成 K 线并推进股票轮次。',
       '推进轮次',
       { type: 'warning', confirmButtonText: '推进', cancelButtonText: '取消' },
     )
@@ -521,10 +521,10 @@ watch(
 </script>
 
 <template>
-  <div class="stock-market-page">
+  <div class="stock-market-page page">
     <el-alert
       v-if="missing"
-      type="warning"
+      type="error"
       show-icon
       :closable="false"
       title="比赛不存在或已删除"
@@ -548,33 +548,8 @@ watch(
       class="sync-error"
     />
 
-    <!-- 尚未发行股票：轮次/行情都不会有数据，给出明确指引而不是让人看「—」 -->
-    <el-alert
-      v-if="noStocks"
-      type="info"
-      show-icon
-      :closable="false"
-      title="本比赛尚未发行股票"
-      :description="
-        canManage
-          ? '请先在「股票管理」中新建股票并设定发行价，之后即可在此查看行情、推进轮次。'
-          : '行情尚未开始，请联系比赛管理员发行股票。'
-      "
-      class="no-stocks-alert"
-    >
-      <template v-if="canManage" #default>
-        <el-button
-          type="primary"
-          size="small"
-          @click="$router.push(`/competitions/${props.cid}/stocks/admin`)"
-        >
-          去发行股票
-        </el-button>
-      </template>
-    </el-alert>
-
-    <div class="mm-toolbar">
-      <h2 class="mm-title">股票行情</h2>
+    <PageHeader title="股票行情">
+      <template #actions>
       <div class="mm-actions">
         <el-tag type="info" effect="plain">
           轮次：{{ roundReady ? overviewRound : '—' }}
@@ -585,7 +560,7 @@ watch(
         </el-button>
         <el-button
           v-if="canManage"
-          type="warning"
+          type="primary"
           :loading="advancing"
           :disabled="noStocks"
           :title="noStocks ? '尚未发行股票，无法推进轮次' : ''"
@@ -595,7 +570,8 @@ watch(
           <span>推进轮次</span>
         </el-button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div
       class="metric-grid overview-grid anim-fade-in-up"
@@ -649,9 +625,9 @@ watch(
         style="width: 100%"
         :row-class-name="rowClassName"
         @row-click="selectStock"
-      >
+       size="small">
         <template #empty>
-          <el-empty description="暂无股票数据" />
+          <el-empty description="暂无股票数据"  :image-size="72" />
         </template>
         <el-table-column prop="code" label="代码" width="110" />
         <el-table-column prop="name" label="名称" min-width="150" />
@@ -731,17 +707,16 @@ watch(
 .mm-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .overview-grid {
   margin-bottom: 16px;
 }
 .sync-error {
-  margin-bottom: 16px;
-}
-.no-stocks-alert {
   margin-bottom: 16px;
 }
 .ov-time {

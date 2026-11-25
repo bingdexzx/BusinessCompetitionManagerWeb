@@ -1,26 +1,30 @@
 <template>
-  <div class="products-manager">
-    <div class="prm-toolbar">
-      <h2 class="prm-title">{{ canManage ? "产品管理" : "产品" }}</h2>
-      <div class="prm-actions">
+  <div class="products-manager page">
+    <PageHeader :title="canManage ? '产品管理' : '产品'">
+      <template #actions>
+      <div class="dm-actions">
         <SearchToggle v-model="searchText" placeholder="搜索产品" />
-        <el-button v-if="canManage" type="primary" @click="openCreate">+ 新建</el-button>
+        <el-button v-if="canManage" type="primary" @click="openCreate">新建</el-button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
+
+    <el-card shadow="never" class="dm-card">
 
     <div v-if="!cid" class="notice notice--warning">
-      请先在「比赛管理」中选择一个比赛
+      请先在「比赛列表」中选择一个比赛
     </div>
 
-    <el-table
+        <TableSkeleton v-if="loading && !hasLoaded" :rows="6" />
+<el-table
       v-if="!isPhone"
-      v-loading="loading"
-      :data="filteredData"
+      v-loading="loading && hasLoaded"
+      :data="pagedRows"
       border
       stripe
       class="anim-fade-in-up"
       style="width: 100%"
-    >
+     size="small">
       <el-table-column prop="name" label="名称" min-width="160" />
       <el-table-column label="零件配比" min-width="200">
         <template #default="{ row }">
@@ -37,10 +41,9 @@
       </el-table-column>
       <el-table-column v-if="canManage" label="操作" width="200" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="showDetail(row)">详情</el-button>
-          <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
-            >删除</el-button
+          <el-button size="small" @click="showDetail(row)" link type="primary">详情</el-button>
+          <el-button v-if="canManage" size="small" @click="openEdit(row)" link type="primary">编辑</el-button>
+          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)" link>删除</el-button
           >
         </template>
       </el-table-column>
@@ -48,18 +51,19 @@
         <el-empty
           v-if="!loading"
           :image-size="72"
-          :description="searchText ? '没有匹配的记录' : '暂无产品数据'"
+          :description="searchText ? '暂无匹配记录' : '暂无产品数据'"
         />
       </template>
     </el-table>
 
+
     <MobileCards
       v-else
-      :data="filteredData"
+      :data="pagedRows"
       :columns="productColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
-      :empty-text="searchText ? '没有匹配的记录' : '暂无产品数据'"
+      :empty-text="searchText ? '暂无匹配记录' : '暂无产品数据'"
       class="anim-fade-in-up"
     >
       <template #parts="{ row }">
@@ -76,13 +80,13 @@
       <template #actions="{ row }">
         <el-button size="small" @click="showDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
-          >删除</el-button
+        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)" link>删除</el-button
         >
       </template>
     </MobileCards>
+    <TablePager v-model:page="page" v-model:page-size="pageSize" :total="totalRows" />
 
-    <el-dialog append-to-body v-model="detailVisible" title="产品详情" width="560px">
+    <el-drawer direction="rtl" append-to-body v-model="detailVisible" title="产品详情" size="480px">
       <el-descriptions v-if="detailData" :column="1" border>
         <el-descriptions-item label="名称">{{ detailData.name }}</el-descriptions-item>
         <el-descriptions-item label="零件配比">
@@ -103,17 +107,17 @@
         <el-descriptions-item label="创建时间">{{ formatDateTime(detailData.createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime(detailData.updatedAt) }}</el-descriptions-item>
       </el-descriptions>
-    </el-dialog>
+    </el-drawer>
 
     <el-dialog
       append-to-body
       v-model="dialogVisible"
       :title="isEdit ? '编辑产品管理' : '新建产品管理'"
-      width="640px"
+      width="720px"
       destroy-on-close
       @closed="resetForm"
     >
-      <el-form ref="formRef" :model="form" :rules="formRules" label-width="100px">
+      <el-form ref="formRef" :model="form" :rules="formRules" label-width="96px">
         <el-form-item label="名称" prop="name">
           <el-input v-model="form.name" placeholder="请输入产品名称" />
         </el-form-item>
@@ -144,7 +148,7 @@
                 v-model="item.ratio"
                 :min="0"
                 :precision="2"
-                placeholder="比率"
+                placeholder="请输入比率"
                 style="width: 130px"
                 size="default"
               />
@@ -168,7 +172,7 @@
             v-model="form.techRequirements"
             multiple
             filterable
-            placeholder="选择科技节点"
+            placeholder="请选择科技节点"
             style="width: 100%"
           >
             <el-option v-for="t in techOptions" :key="t.value" :label="t.label" :value="t.value" />
@@ -177,14 +181,19 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleSubmit">确定</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleSubmit">保存</el-button>
       </template>
     </el-dialog>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import TablePager from '@/components/common/TablePager.vue'
+/* eslint-disable @typescript-eslint/no-explicit-any -- 基础数据行/画布事件字段动态变化，逐字段建模收益低 */
 import { ref, reactive, computed, onMounted } from "vue";
+import TableSkeleton from '@/components/common/TableSkeleton.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 import { Delete } from "@element-plus/icons-vue";
@@ -232,16 +241,12 @@ const authStore = useAuthStore();
 const { isPhone } = useBreakpoint();
 const data = ref<ProductItem[]>([]);
 const loading = ref(false);
+/** 首屏骨架 → 之后刷新用 v-loading */
+const hasLoaded = ref(false);
 const searchText = ref("");
 
-/** 系统超管或本比赛超管：可新建/编辑/删除（其余只读） */
-const canManage = computed(
-  () =>
-    authStore.isSuperuser ||
-    authStore.memberships.some(
-      (m) => String(m.id) === props.cid && m.identity === "COMP_SUPER_ADMIN",
-    ),
-);
+/** 系统超级管理员或本比赛超级管理员：可新建/编辑/删除（其余只读） */
+const canManage = computed(() => authStore.isSuperuser);
 
 const productColumns = [
   { prop: "name", label: "名称" },
@@ -297,6 +302,18 @@ onMounted(() => {
 });
 
 // 资源变更实时刷新：basedata 变更时自动重拉当前列表（保留搜索/选中状态）
+
+// 分页（客户端分页：数据量 ≤ 数百行，服务端分页留给合同/日志等大表）
+const page = ref(1)
+const pageSize = ref(20)
+const totalRows = computed(() => filteredData.value.length)
+const pagedRows = computed(() => {
+  const maxPage = Math.max(1, Math.ceil(totalRows.value / pageSize.value))
+  const current = Math.min(page.value, maxPage)
+  const start = (current - 1) * pageSize.value
+  return filteredData.value.slice(start, start + pageSize.value)
+})
+
 useResourceRefresh(["basedata"], loadData);
 
 /**
@@ -362,6 +379,7 @@ async function loadData() {
     ElMessage.error(errorMessage(e, "操作失败"));
   } finally {
     loading.value = false;
+  hasLoaded.value = true;
   }
 }
 
@@ -396,7 +414,7 @@ function showDetail(row: ProductItem) {
 
 function openCreate() {
   if (!props.cid) {
-    ElMessage.warning("请先在「比赛管理」中选择一个比赛");
+    ElMessage.warning("请先在「比赛列表」中选择一个比赛");
     return;
   }
   isEdit.value = false;
@@ -441,14 +459,14 @@ async function handleDelete(row: ProductItem) {
   }
   try {
     await confirmDeleteWithImpact(row.name, impact, {
-      baseMessage: "确定删除该产品吗？此操作不可恢复。删除后将一并清除其配比与科技需求关联。",
+      baseMessage: "确定删除该产品？此操作不可恢复。删除后将一并清除其配比与科技需求关联。",
     });
   } catch {
     return; // 用户取消
   }
   try {
     await productsApi.remove(props.cid, row.id);
-    ElMessage.success("已删除");
+    ElMessage.success("产品已删除");
     loadData();
   } catch (e) {
     ElMessage.error(errorMessage(e, "操作失败"));
@@ -476,7 +494,7 @@ async function handleSubmit() {
     } else {
       await productsApi.create(props.cid, body);
     }
-    ElMessage.success(isEdit.value ? "已更新" : "已创建");
+    ElMessage.success(isEdit.value ? "产品已更新" : "产品已创建");
     dialogVisible.value = false;
     loadData();
   } catch (e) {
@@ -511,14 +529,15 @@ function resetForm() {
   margin: 0;
 }
 .prm-title {
-  font-size: 20px;
-  font-weight: 500;
-  color: #1f1f1f;
   margin: 0;
 }
 .prm-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 /* 关系列为空时的占位「-」/「无」：统一弱化色（不再写死 #c0c4cc） */
 .cell-empty {
@@ -534,9 +553,9 @@ function resetForm() {
   display: flex;
   align-items: center;
   padding: 8px 12px;
-  background: #f5f7fa;
+  background: var(--surface-sunken);
   font-size: 13px;
-  color: #606266;
+  color: var(--color-text-secondary);
   font-weight: 500;
 }
 .sub-table-col {

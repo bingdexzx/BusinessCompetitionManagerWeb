@@ -1,30 +1,36 @@
 <script setup lang="ts">
 // 字段日志检索：多条件过滤 + 分页 + 选中导出（JSON 下载）
 import { computed, onMounted, reactive, ref } from 'vue'
+import TableSkeleton from '@/components/common/TableSkeleton.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh, Search } from '@element-plus/icons-vue'
-import { exportFieldLogs, getFieldLogs } from '@/api'
-import type { FieldLogItem, FieldLogQuery } from '@/api/types'
+import {
+  exportFieldLogs,
+  exportFieldLogsXlsx,
+  getFieldLogCompanyOptions,
+  getFieldLogs,
+  saveBlob,
+} from '@/api'
+import type { FieldLogCompanyOption, FieldLogItem, FieldLogQuery } from '@/api/types'
 import { useResourceRefresh } from '@/composables/useNotifications'
 import { useCatalog } from '@/composables/useCatalog'
 import { formatDateTime, toDisplay, truncate } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
 import { opLabel } from '@/utils/fieldOps'
-
 const props = defineProps<{ cid: string }>()
-
 // 字段键 → 中文名（筛选与列表都不显示 cash 这类键）
 const { fieldLabel, fieldOptions } = useCatalog(() => props.cid)
-
 const PAGE_SIZE = 20
-
 const items = ref<FieldLogItem[]>([])
 const total = ref(0)
 const offset = ref(0)
 const loading = ref(false)
-
+/** 首屏骨架 → 之后刷新用 v-loading */
+const hasLoaded = ref(false);
 // ---------- 过滤条件 ----------
 const filters = reactive({
+  companyId: '' as number | '' | undefined,
   fieldKey: '',
   contractId: '',
   operatorId: '',
@@ -33,7 +39,20 @@ const filters = reactive({
   traceId: '',
 })
 const dateRange = ref<[Date, Date] | null>(null)
-
+// 公司下拉：来自「字段日志公司选项」接口——只含本比赛（且有字段日志）的公司，
+// 避免比赛包导入产生的外部公司出现在筛选里（比赛级隔离）。
+const companies = ref<FieldLogCompanyOption[]>([])
+const companiesLoading = ref(false)
+async function loadCompanies(): Promise<void> {
+  companiesLoading.value = true
+  try {
+    companies.value = await getFieldLogCompanyOptions(props.cid)
+  } catch {
+    companies.value = [] // 公司列表为筛选辅助数据，失败不打断日志检索
+  } finally {
+    companiesLoading.value = false
+  }
+}
 const SOURCE_OPTIONS = [
   { value: 'CONTRACT_POST', label: '合同落账' },
   { value: 'CONTRACT_ROLLBACK', label: '合同回滚' },
@@ -48,9 +67,9 @@ const EVENT_OPTIONS = [
   { value: 'VALUE_CHANGE', label: '值变更' },
   { value: 'SCHEMA_CHANGE', label: '结构变更' },
 ]
-
 function buildQuery(): FieldLogQuery {
   const query: FieldLogQuery = { limit: PAGE_SIZE, offset: offset.value }
+  if (typeof filters.companyId === 'number') query.companyId = filters.companyId
   if (filters.fieldKey.trim()) query.fieldKey = filters.fieldKey.trim()
   if (filters.contractId.trim()) query.contractId = Number(filters.contractId.trim())
   if (filters.operatorId.trim()) query.operatorId = Number(filters.operatorId.trim())
@@ -63,7 +82,6 @@ function buildQuery(): FieldLogQuery {
   }
   return query
 }
-
 async function load(): Promise<void> {
   loading.value = true
   try {
@@ -72,18 +90,18 @@ async function load(): Promise<void> {
     total.value = page.total
     selectedRows.value = []
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
-    loading.value = false
+    loading.value = false;
+  hasLoaded.value = true;
   }
 }
-
 function search(): void {
   offset.value = 0
   void load()
 }
-
 function resetFilters(): void {
+  filters.companyId = ''
   filters.fieldKey = ''
   filters.contractId = ''
   filters.operatorId = ''
@@ -93,18 +111,27 @@ function resetFilters(): void {
   dateRange.value = null
   search()
 }
-
 const page = computed(() => Math.floor(offset.value / PAGE_SIZE) + 1)
-
 function onPageChange(next: number): void {
   offset.value = (next - 1) * PAGE_SIZE
   void load()
 }
-
 // ---------- 导出 ----------
 const selectedRows = ref<FieldLogItem[]>([])
 const selectedIds = computed(() => selectedRows.value.map((r) => r.id))
-
+const exportingXlsx = ref(false)
+async function exportExcel(): Promise<void> {
+  exportingXlsx.value = true
+  try {
+    const blob = await exportFieldLogsXlsx(props.cid, selectedIds.value)
+    saveBlob(blob, '字段日志.xlsx')
+    ElMessage.success('字段日志已导出')
+  } catch (e) {
+    ElMessage.error(errorMessage(e, '导出失败'))
+  } finally {
+    exportingXlsx.value = false
+  }
+}
 async function exportLogs(): Promise<void> {
   try {
     const ids = selectedIds.value.length > 0 ? selectedIds.value : undefined
@@ -119,34 +146,31 @@ async function exportLogs(): Promise<void> {
     link.download = `field-logs-${Date.now()}.json`
     link.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
+    ElMessage.success('日志已导出')
   } catch (err) {
     ElMessage.error(errorMessage(err, '操作失败'))
   }
 }
-
 /** 事件标签配色 */
 function eventTagType(event: string): 'primary' | 'warning' | 'info' {
   if (event === 'SCHEMA_CHANGE') return 'warning'
   if (event === 'VALUE_CHANGE') return 'primary'
   return 'info'
 }
-
 /** before → after 展示 */
 function changeText(row: FieldLogItem): string {
   return `${toDisplay(row.before)} → ${toDisplay(row.after)}`
 }
-
 // 资源变更广播（400ms 去抖合并）：日志/合同/公司/基础数据写操作后重拉当前页（分页与过滤条件保留）
 useResourceRefresh(['logs', 'contracts', 'companies', 'basedata'], load)
-
-onMounted(() => void load())
+onMounted(() => {
+  void loadCompanies()
+  void load()
+})
 </script>
-
 <template>
-  <div class="field-logs-page">
-    <h1 class="page-title">字段日志</h1>
-
+  <div class="field-logs-page page">
+    <PageHeader title="字段日志" />
     <el-card shadow="never" class="section-card anim-fade-in-up">
       <template #header>
         <div class="card-head">
@@ -156,12 +180,24 @@ onMounted(() => void load())
             <el-button type="primary" :icon="Download" @click="exportLogs">
               导出{{ selectedIds.length > 0 ? `选中（${selectedIds.length} 条）` : '当前全部' }}
             </el-button>
+            <el-button :loading="exportingXlsx" @click="exportExcel">导出 Excel</el-button>
           </div>
         </div>
       </template>
-
       <!-- 过滤栏（单条工具条：所有筛选项 + 查询/重置在一行内换行排列） -->
       <el-form :inline="true" class="filter-bar query-toolbar" @submit.prevent>
+        <el-form-item label="公司">
+          <el-select
+            v-model="filters.companyId"
+            filterable
+            clearable
+            :loading="companiesLoading"
+            placeholder="全部公司（本比赛）"
+            style="width: 200px"
+          >
+            <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="字段">
           <el-select
             v-model="filters.fieldKey"
@@ -181,7 +217,7 @@ onMounted(() => void load())
         <el-form-item label="合同 ID">
           <el-input
             v-model="filters.contractId"
-            placeholder="数字"
+            placeholder="请输入数字"
             clearable
             style="width: 110px"
           />
@@ -189,7 +225,7 @@ onMounted(() => void load())
         <el-form-item label="操作人 ID">
           <el-input
             v-model="filters.operatorId"
-            placeholder="数字"
+            placeholder="请输入数字"
             clearable
             style="width: 110px"
           />
@@ -231,14 +267,14 @@ onMounted(() => void load())
           <el-button @click="resetFilters">重置</el-button>
         </el-form-item>
       </el-form>
-
       <!-- 结果表 -->
-      <el-table
+            <TableSkeleton v-if="loading && !hasLoaded" :rows="6" />
+<el-table
         :data="items"
-        v-loading="loading"
+        v-loading="loading && hasLoaded"
         stripe
         @selection-change="(rows: FieldLogItem[]) => (selectedRows = rows)"
-      >
+       size="small" border class="table--sticky-head" max-height="calc(100vh - 330px)">
         <el-table-column type="selection" width="44" />
         <el-table-column label="时间" width="165">
           <template #default="{ row }">
@@ -246,7 +282,9 @@ onMounted(() => void load())
           </template>
         </el-table-column>
         <el-table-column prop="companyName" label="公司" min-width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.companyName || '—' }}</template>
+          <template #default="{ row }">
+            {{ row.companyName || (row.regionName ? `区域·${row.regionName}` : '—') }}
+          </template>
         </el-table-column>
         <el-table-column label="字段" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ fieldLabel(row.fieldKey) }}</template>
@@ -288,7 +326,6 @@ onMounted(() => void load())
           <el-empty description="暂无字段日志" :image-size="72" />
         </template>
       </el-table>
-
       <!-- 分页 -->
       <div class="pager">
         <el-pagination
@@ -303,7 +340,6 @@ onMounted(() => void load())
     </el-card>
   </div>
 </template>
-
 <style scoped>
 .field-logs-page {
   display: flex;
@@ -339,17 +375,14 @@ onMounted(() => void load())
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
 }
-
 .query-toolbar :deep(.el-form-item) {
   margin-bottom: 10px;
   margin-right: 12px;
 }
-
 .query-toolbar :deep(.el-form-item__label) {
   color: var(--color-text-secondary);
   font-size: var(--font-xs);
 }
-
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
@@ -358,4 +391,4 @@ onMounted(() => void load())
   justify-content: flex-end;
   margin-top: 14px;
 }
-</style>
+</style>

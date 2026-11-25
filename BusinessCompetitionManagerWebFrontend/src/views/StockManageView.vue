@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 交易管理：数据走 useStockSync 快照+增量；下单/撤单先本地乐观更新，再由增量校正。
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage } from 'element-plus'
 import { cancelStockOrder, placeStockOrder } from '@/api'
 import type { StockOrder, StockOrderSide, StockOrderStatus } from '@/api/types'
@@ -282,7 +283,7 @@ async function submitOrder(): Promise<void> {
     scheduleSync()
   } catch (e) {
     removeLocalOrder(tempId)
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '保存失败'))
   } finally {
     placing.value = false
   }
@@ -305,7 +306,7 @@ async function onCancelOrder(row: StockOrder): Promise<void> {
         updatedAt: new Date().toISOString(),
       })
     }
-    ElMessage.success('已撤单')
+    ElMessage.success('委托已撤销')
     scheduleSync()
   } catch (e) {
     applyLocalOrder(previous)
@@ -353,10 +354,10 @@ watch(
 </script>
 
 <template>
-  <div class="stock-manage-page">
+  <div class="stock-manage-page page">
     <el-alert
       v-if="missing"
-      type="warning"
+      type="error"
       show-icon
       :closable="false"
       title="比赛不存在或已删除"
@@ -380,8 +381,8 @@ watch(
       class="sync-error"
     />
 
-    <div class="mm-toolbar">
-      <h2 class="mm-title">交易管理</h2>
+    <PageHeader title="交易管理">
+      <template #actions>
       <div class="mm-actions">
         <el-tag type="info" effect="plain">轮次：{{ roundReady ? round : '—' }}</el-tag>
         <el-tag v-if="lastSyncAt" type="success" effect="plain">
@@ -392,7 +393,8 @@ watch(
           <span>同步</span>
         </el-button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <el-card shadow="never" class="block-card anim-fade-in-up">
       <template #header>
@@ -448,7 +450,7 @@ watch(
           </div>
         </div>
       </div>
-      <el-empty v-else description="暂无资金账户" :image-size="60" />
+      <el-empty v-else description="暂无资金账户" :image-size="72" />
     </el-card>
 
     <div class="manage-grid">
@@ -527,9 +529,9 @@ watch(
         <div v-if="initialLoading" class="table-skeleton">
           <div v-for="i in 5" :key="i" class="skeleton skeleton-line" />
         </div>
-        <el-table v-else :data="pagedHoldings" border stripe style="width: 100%">
+        <el-table v-else :data="pagedHoldings" border stripe style="width: 100%" size="small">
           <template #empty>
-            <el-empty description="暂无持仓" :image-size="60" />
+            <el-empty description="暂无持仓" :image-size="72" />
           </template>
           <el-table-column prop="stockCode" label="代码" width="100" />
           <el-table-column prop="stockName" label="名称" min-width="120" />
@@ -596,9 +598,9 @@ watch(
       <div v-if="initialLoading" class="table-skeleton">
         <div v-for="i in 5" :key="i" class="skeleton skeleton-line" />
       </div>
-      <el-table v-else :data="pagedOrders" border stripe style="width: 100%">
+      <el-table v-else :data="pagedOrders" border stripe style="width: 100%" size="small">
         <template #empty>
-          <el-empty description="暂无委托" :image-size="60" />
+          <el-empty description="暂无委托" :image-size="72" />
         </template>
         <el-table-column label="代码" width="100">
           <template #default="{ row }">{{ row.stockCode }}</template>
@@ -638,14 +640,7 @@ watch(
         </el-table-column>
         <el-table-column label="操作" width="100" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button
-              v-if="row.status === 'PENDING'"
-              type="danger"
-              size="small"
-              text
-              :loading="cancellingId === row.id"
-              @click="onCancelOrder(row)"
-            >
+            <el-button v-if="row.status === 'PENDING'" type="danger" link size="small" :loading="cancellingId === row.id" @click="onCancelOrder(row)">
               撤单
             </el-button>
             <span v-else class="num-empty">—</span>
@@ -676,8 +671,10 @@ watch(
 .mm-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .card-head {
@@ -827,22 +824,22 @@ watch(
 }
 
 .el-button.trade-submit.is-buy {
-  background-color: #ec0000 !important;
-  border-color: #ec0000 !important;
+  background-color: var(--color-up) !important;
+  border-color: var(--color-up) !important;
   color: #fff !important;
 }
 .el-button.trade-submit.is-buy:hover {
-  background-color: #d40000 !important;
-  border-color: #d40000 !important;
+  background-color: var(--color-up-hover) !important;
+  border-color: var(--color-up-hover) !important;
 }
 .el-button.trade-submit.is-sell {
-  background-color: #00a800 !important;
-  border-color: #00a800 !important;
+  background-color: var(--color-down) !important;
+  border-color: var(--color-down) !important;
   color: #fff !important;
 }
 .el-button.trade-submit.is-sell:hover {
-  background-color: #009000 !important;
-  border-color: #009000 !important;
+  background-color: var(--color-down-hover) !important;
+  border-color: var(--color-down-hover) !important;
 }
 .el-button.trade-submit.is-buy:disabled,
 .el-button.trade-submit.is-sell:disabled {

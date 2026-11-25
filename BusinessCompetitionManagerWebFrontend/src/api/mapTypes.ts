@@ -81,6 +81,7 @@ export interface MapEdgeRelations {
 export interface MapEdgeRow {
   id: number
   distance?: number | null
+  path?: number[][]
   nodeAId: number
   nodeBId: number
   pathTypeId?: number | null
@@ -88,6 +89,26 @@ export interface MapEdgeRow {
   createdAt?: string
   updatedAt?: string
   [key: string]: unknown
+}
+
+// ---------- 多图层地图 ----------
+
+export interface MapLayerFeature {
+  name: string
+  region?: string
+  rings: number[][][]
+  color?: string
+}
+
+export interface MapLayerSetting {
+  name: string
+  kind: 'POINT' | 'LINE' | 'POLYGON'
+  role: 'NODE' | 'EDGE' | 'REGION' | 'DECORATION'
+  color?: string
+  visible: boolean
+  nodeTypeId?: number
+  pathTypeId?: number
+  features: MapLayerFeature[]
 }
 
 // ---------- 写入载荷（POST / PATCH body） ----------

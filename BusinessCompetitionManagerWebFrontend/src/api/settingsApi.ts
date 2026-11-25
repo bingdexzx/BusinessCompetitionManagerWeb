@@ -1,4 +1,4 @@
-// 系统设置 — 流量限制接口（仅系统超管）：/api/system/rate-limit
+// 系统设置 — 流量限制接口（仅系统超级管理员）：/api/system/rate-limit
 // 契约：配置/统计字段全部 camelCase；错误响应 { code, message, details }（message 中文）
 import { http, request } from './client'
 
@@ -14,12 +14,10 @@ export interface LoginRateLimitConfig {
   lockSeconds: number
 }
 
-/** 五种角色的每分钟 API 请求限额 */
+/** 四种角色的每分钟 API 请求限额 */
 export interface ApiPerMinuteLimits {
-  /** 系统超级管理员 */
+  /** 超级管理员 */
   superuser: number
-  /** 比赛超级管理员 */
-  compSuperAdmin: number
   /** 管理员（主席团） */
   admin: number
   /** 参赛代表 */

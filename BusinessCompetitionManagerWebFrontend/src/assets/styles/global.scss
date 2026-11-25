@@ -263,6 +263,26 @@ body {
   background: var(--gradient-brand);
 }
 
+/* 页面标题右侧操作区：统一按钮间距（Element 相邻按钮自带的 12px 由 gap 取代） */
+/* PageHeader 被包在 .page-toolbar（flex 容器）里时，必须自己撑满整行，
+   否则整体按内容宽度收缩，右侧动作区就会挤在标题后面而不是贴右。 */
+.page-toolbar > .page-header {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.app-content .page-actions .el-button + .el-button,
+.app-content .head-actions .el-button + .el-button,
+.app-content .page-head-actions .el-button + .el-button,
+.app-content .mm-actions .el-button + .el-button,
+.app-content .pm-actions .el-button + .el-button,
+.app-content .prm-actions .el-button + .el-button,
+.app-content .vm-actions .el-button + .el-button,
+.app-content .tt-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
 // ===================== Notice (unified info bar, replaces hard-coded warning triplets) =====================
 .notice {
   display: flex;
@@ -301,6 +321,27 @@ body {
 }
 
 // ===================== Panel (unified content section) =====================
+/* ===== 页面骨架（2026-11 统一）：根容器 flex + 16px 间距，卡片不再自带外边距 ===== */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 列表页筛选栏：标题栏下一行，独立于动作区 */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-bar .el-input,
+.filter-bar .el-select {
+  width: 200px;
+}
+
 .panel {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -542,6 +583,14 @@ button:focus-visible,
 }
 
 // 区块小标题（卡片内部分组用，区别于页面主标题）
+/* 紧凑版区块标题（页面需要更小字号时用修饰类，不要在 scoped 里重写 .section-title） */
+.section-title--compact {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.3px;
+}
+
 .section-title {
   display: flex;
   align-items: center;

@@ -86,7 +86,7 @@ export const useAuthStore = defineStore('auth', () => {
   let sessionPromise: Promise<void> | null = null
 
 /** 刷新/深链时 main.ts 的 init() 是异步的，而路由守卫同步执行：此刻 user 仍为 null、isSuperuser/memberships 为空，
- *  权限判断会把系统超管误判成无权限、把深链重定向回比赛列表——守卫必须先 await 这里。 */
+ *  权限判断会把系统超级管理员误判成无权限、把深链重定向回比赛列表——守卫必须先 await 这里。 */
   async function ensureSession(): Promise<void> {
     if (!accessToken.value || user.value) return
     if (!sessionPromise) {

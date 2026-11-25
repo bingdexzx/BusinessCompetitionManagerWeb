@@ -21,33 +21,36 @@
   </div>
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" generic="T extends object = Record<string, unknown>">
 interface MobileColumn {
   prop?: string;
   label: string;
-  formatter?: (row: any) => any;
+  formatter?: (row: T) => unknown;
   slot?: string;
 }
 
 const props = withDefaults(
   defineProps<{
-    data: any[];
+    data: T[];
     columns: MobileColumn[];
     loading?: boolean;
-    rowKey?: (row: any) => string | number;
+    rowKey?: (row: T) => string | number;
     titleKey?: string;
     emptyText?: string;
   }>(),
-  { loading: false, titleKey: "name", emptyText: "暂无数据" },
+  { loading: false, titleKey: "name", emptyText: "暂无记录" },
 );
 
 // 支持点路径取值（如 "company.name"），与 DataManager 的 getNested 保持一致。
-function getNested(row: any, path?: string): any {
+function getNested(row: T, path?: string): unknown {
   if (!path || !row) return undefined;
-  return path.split(".").reduce((acc, k) => (acc == null ? acc : acc[k]), row);
+  return path.split(".").reduce<unknown>((acc, k) => {
+    if (acc == null) return acc;
+    return (acc as Record<string, unknown>)[k];
+  }, row);
 }
 
-function cellValue(row: any, col: MobileColumn): any {
+function cellValue(row: T, col: MobileColumn): unknown {
   if (col.formatter) return col.formatter(row);
   return getNested(row, col.prop);
 }
@@ -56,7 +59,7 @@ function colKey(col: MobileColumn): string {
   return col.prop || col.slot || col.label;
 }
 
-function titleFor(row: any): string {
+function titleFor(row: T): string {
   const t = getNested(row, props.titleKey);
   if (t != null && t !== "") return String(t);
   const first = props.columns[0];

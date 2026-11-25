@@ -1,26 +1,31 @@
 <template>
-  <div class="materials-manager">
-    <div class="mm-toolbar">
-      <h2 class="mm-title">{{ canManage ? "原料管理" : "原料" }}</h2>
-      <div class="mm-actions">
+  <!-- eslint-disable @typescript-eslint/no-explicit-any -- 基础数据行字段随表/插件动态变化 -->
+  <div class="materials-manager page">
+    <PageHeader :title="canManage ? '原料管理' : '原料'">
+      <template #actions>
+      <div class="dm-actions">
         <SearchToggle v-model="searchText" placeholder="搜索原料" />
-        <el-button v-if="canManage" type="primary" @click="openCreate">+ 新建</el-button>
+        <el-button v-if="canManage" type="primary" @click="openCreate">新建</el-button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
+
+    <el-card shadow="never" class="dm-card">
 
     <div v-if="!cid" class="notice notice--warning">
-      请先在「比赛管理」中选择一个比赛
+      请先在「比赛列表」中选择一个比赛
     </div>
 
-    <el-table
+        <TableSkeleton v-if="loading && !hasLoaded" :rows="6" />
+<el-table
       v-if="!isPhone"
-      v-loading="loading"
-      :data="filteredMaterials"
+      v-loading="loading && hasLoaded"
+      :data="pagedRows"
       border
       stripe
       class="anim-fade-in-up"
       style="width: 100%"
-    >
+     size="small">
       <el-table-column prop="name" label="名称" min-width="160" />
       <el-table-column label="产地" min-width="160">
         <template #default="{ row }">
@@ -40,7 +45,8 @@
           <div v-if="!getRowNodePrices(row).length" class="np-none">—</div>
           <div v-for="p in getRowNodePrices(row)" :key="p.nodeId" class="np-line">
             <span class="np-name">{{ p.nodeName }}</span>
-            <span class="np-val value-num">{{ formatMoney(p.price) }}</span>
+            <span v-if="isPriceUnset(p.price)" class="np-val np-unset">未填价</span>
+            <span v-else class="np-val value-num">{{ formatMoney(p.price) }}</span>
           </div>
         </template>
       </el-table-column>
@@ -54,19 +60,11 @@
           <span class="value-num">{{ row.carbonEmissionCoefficient }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="类型">
-        <template #default="{ row }">
-          <el-tag :type="row.type === 'SPECIAL' ? 'danger' : ''">{{
-            row.type === "SPECIAL" ? "特殊原料" : "普通原料"
-          }}</el-tag>
-        </template>
-      </el-table-column>
       <el-table-column v-if="canManage" label="操作" width="200" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="openDetail(row)">详情</el-button>
-          <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
-            >删除</el-button
+          <el-button size="small" @click="openDetail(row)" link type="primary">详情</el-button>
+          <el-button v-if="canManage" size="small" @click="openEdit(row)" link type="primary">编辑</el-button>
+          <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)" link>删除</el-button
           >
         </template>
       </el-table-column>
@@ -74,18 +72,19 @@
         <el-empty
           v-if="!loading"
           :image-size="72"
-          :description="searchText ? '没有匹配的记录' : '暂无原料数据'"
+          :description="searchText ? '暂无匹配记录' : '暂无原料数据'"
         />
       </template>
     </el-table>
 
+
     <MobileCards
       v-else
-      :data="filteredMaterials"
+      :data="pagedRows"
       :columns="materialColumns"
       :loading="loading"
       :row-key="(row: any) => row.id"
-      :empty-text="searchText ? '没有匹配的记录' : '暂无原料数据'"
+      :empty-text="searchText ? '暂无匹配记录' : '暂无原料数据'"
       class="anim-fade-in-up"
     >
       <template #origin="{ row }">
@@ -103,24 +102,20 @@
         <div v-if="!getRowNodePrices(row).length" class="np-none">—</div>
         <div v-for="p in getRowNodePrices(row)" :key="p.nodeId" class="np-line">
           <span class="np-name">{{ p.nodeName }}</span>
-          <span class="np-val value-num">{{ formatMoney(p.price) }}</span>
+          <span v-if="isPriceUnset(p.price)" class="np-val np-unset">未填价</span>
+          <span v-else class="np-val value-num">{{ formatMoney(p.price) }}</span>
         </div>
-      </template>
-      <template #type="{ row }">
-        <el-tag :type="row.type === 'SPECIAL' ? 'danger' : ''">{{
-          row.type === "SPECIAL" ? "特殊原料" : "普通原料"
-        }}</el-tag>
       </template>
       <template #actions="{ row }">
         <el-button size="small" @click="openDetail(row)">详情</el-button>
         <el-button v-if="canManage" size="small" @click="openEdit(row)">编辑</el-button>
-        <el-button v-if="canManage" size="small" type="danger" plain @click="handleDelete(row)"
-          >删除</el-button
+        <el-button v-if="canManage" size="small" type="danger" @click="handleDelete(row)" link>删除</el-button
         >
       </template>
     </MobileCards>
+    <TablePager v-model:page="page" v-model:page-size="pageSize" :total="totalRows" />
 
-    <el-dialog append-to-body v-model="showDetail" title="原料详情" width="480px">
+    <el-drawer direction="rtl" append-to-body v-model="showDetail" title="原料详情" size="480px">
       <el-descriptions :column="1" border>
         <el-descriptions-item label="名称">{{ detailRow?.name }}</el-descriptions-item>
         <el-descriptions-item label="产地">
@@ -135,24 +130,22 @@
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="碳排放系数">{{ detailRow?.carbonEmissionCoefficient }}</el-descriptions-item>
-        <el-descriptions-item label="类型">{{
-          detailRow?.type === "SPECIAL" ? "特殊原料" : "普通原料"
-        }}</el-descriptions-item>
         <el-descriptions-item label="价格">
           <span v-if="!getRowNodePrices(detailRow).length">（无按地点价格）</span>
           <ul v-else class="np-detail">
             <li v-for="p in getRowNodePrices(detailRow)" :key="p.nodeId">
-              {{ p.nodeName }}：<span class="value-num">{{ formatMoney(p.price) }}</span>
+              {{ p.nodeName }}：<span v-if="isPriceUnset(p.price)" class="np-unset">未填价</span>
+              <span v-else class="value-num">{{ formatMoney(p.price) }}</span>
             </li>
           </ul>
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDateTime(detailRow?.createdAt) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间">{{ formatDateTime(detailRow?.updatedAt) }}</el-descriptions-item>
       </el-descriptions>
-    </el-dialog>
+    </el-drawer>
 
-    <el-dialog append-to-body v-model="showDialog" :title="isEdit ? '编辑原料' : '新建原料'" width="520px">
-      <el-form ref="formRef" :model="form" :rules="formRules" label-width="120px">
+    <el-dialog append-to-body v-model="showDialog" :title="isEdit ? '编辑原料' : '新建原料'" width="560px">
+      <el-form ref="formRef" :model="form" :rules="formRules" label-width="96px">
         <el-form-item label="名称" prop="name"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="产地" prop="origin">
           <el-select
@@ -180,12 +173,6 @@
             :precision="2"
             style="width: 100%"
         /></el-form-item>
-        <el-form-item label="类型" required>
-          <el-select v-model="form.type" style="width: 100%">
-            <el-option label="普通原料" value="NORMAL" />
-            <el-option label="特殊原料" value="SPECIAL" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="价格" required>
           <template v-if="hasOrigin">
             <div class="np-editor">
@@ -208,14 +195,19 @@
       </el-form>
       <template #footer>
         <el-button @click="showDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleSubmit">确定</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleSubmit">保存</el-button>
       </template>
     </el-dialog>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import TablePager from '@/components/common/TablePager.vue'
+/* eslint-disable @typescript-eslint/no-explicit-any -- 基础数据行字段随表/插件动态变化，逐字段建模收益低 */
 import { ref, reactive, computed, watch, onMounted } from "vue";
+import TableSkeleton from '@/components/common/TableSkeleton.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage } from "element-plus";
 import type { FormRules } from "element-plus";
 import { listMapNodes, materialsApi } from "@/api/basedataApi";
@@ -241,23 +233,18 @@ const { isPhone } = useBreakpoint();
 const materials = ref<any[]>([]);
 const mapNodes = ref<MapNodeItem[]>([]);
 const loading = ref(false);
+/** 首屏骨架 → 之后刷新用 v-loading */
+const hasLoaded = ref(false);
 const searchText = ref("");
 
-/** 系统超管或本比赛超管：可新建/编辑/删除（其余只读） */
-const canManage = computed(
-  () =>
-    authStore.isSuperuser ||
-    authStore.memberships.some(
-      (m) => String(m.id) === props.cid && m.identity === "COMP_SUPER_ADMIN",
-    ),
-);
+/** 系统超级管理员或本比赛超级管理员：可新建/编辑/删除（其余只读） */
+const canManage = computed(() => authStore.isSuperuser);
 
 const materialColumns = [
   { prop: "name", label: "名称" },
   { label: "产地", slot: "origin" },
   { label: "价格（按地点）", slot: "nodePrices" },
   { prop: "carbonEmissionCoefficient", label: "碳排放系数" },
-  { label: "类型", slot: "type" },
 ];
 
 const filteredMaterials = computed(() => {
@@ -318,13 +305,11 @@ const form = reactive<{
   name: string;
   origin: string[];
   carbonEmissionCoefficient: number;
-  type: string;
   nodePrices: Record<number, number | string>;
 }>({
   name: "",
   origin: [],
   carbonEmissionCoefficient: 0,
-  type: "NORMAL",
   nodePrices: {},
 });
 
@@ -412,12 +397,25 @@ async function reloadAll() {
     await loadMapNodes();
   } finally {
     loading.value = false;
+  hasLoaded.value = true;
   }
 }
 
 onMounted(reloadAll);
 
 // 资源变更实时刷新：basedata 变更时自动重拉原料列表与地图节点选项
+
+// 分页（客户端分页：数据量 ≤ 数百行，服务端分页留给合同/日志等大表）
+const page = ref(1)
+const pageSize = ref(20)
+const totalRows = computed(() => filteredMaterials.value.length)
+const pagedRows = computed(() => {
+  const maxPage = Math.max(1, Math.ceil(totalRows.value / pageSize.value))
+  const current = Math.min(page.value, maxPage)
+  const start = (current - 1) * pageSize.value
+  return filteredMaterials.value.slice(start, start + pageSize.value)
+})
+
 useResourceRefresh(["basedata"], reloadAll);
 
 function openDetail(row: any) {
@@ -436,7 +434,7 @@ function onNodePriceChange(nodeId: number, v: string) {
 
 function openCreate() {
   if (!props.cid) {
-    ElMessage.warning("请先在「比赛管理」中选择一个比赛");
+    ElMessage.warning("请先在「比赛列表」中选择一个比赛");
     return;
   }
   isEdit.value = false;
@@ -444,7 +442,6 @@ function openCreate() {
   form.name = "";
   form.origin = [];
   form.carbonEmissionCoefficient = 0;
-  form.type = "NORMAL";
   form.nodePrices = {};
   showDialog.value = true;
 }
@@ -455,7 +452,6 @@ function openEdit(row: any) {
   form.name = row.name;
   form.origin = parseOriginToArray(row.origin);
   form.carbonEmissionCoefficient = row.carbonEmissionCoefficient;
-  form.type = row.type || "NORMAL";
   const np: Record<number, number | string> = {};
   for (const [k, v] of Object.entries(parseNodePrices(row.nodePrices))) {
     if (typeof v === "number" || (typeof v === "string" && /^[+-]?\d+(\.\d+)?$/.test(v))) {
@@ -485,7 +481,7 @@ async function handleSubmit() {
     } else {
       await materialsApi.create(props.cid, payload);
     }
-    ElMessage.success(isEdit.value ? "已更新" : "已创建");
+    ElMessage.success(isEdit.value ? "原料已更新" : "原料已创建");
     showDialog.value = false;
     const res = await materialsApi.list(props.cid, { page: 1, pageSize: 200 });
     materials.value = res.items || [];
@@ -505,14 +501,14 @@ async function handleDelete(row: any) {
   }
   try {
     await confirmDeleteWithImpact(row.name, impact, {
-      baseMessage: `确定删除 "${row.name}" 吗？此操作不可恢复。删除后将一并清除其零件配比关联。`,
+      baseMessage: `确定删除「${row.name}」？此操作不可恢复。删除后将一并清除其零件配比关联。`,
     });
   } catch {
     return; // 用户取消
   }
   try {
     await materialsApi.remove(props.cid, row.id);
-    ElMessage.success("已删除");
+    ElMessage.success("原料已删除");
     const res = await materialsApi.list(props.cid, { page: 1, pageSize: 200 });
     materials.value = res.items || [];
   } catch (e) {
@@ -555,6 +551,13 @@ function groupThousands(s: string, prec: number): string {
  * 大数安全：超过 2^53 的字符串大数走 BigInt 分组（不经 Number，10^23+ 无损，
  * 小数截断到 2 位）；安全范围内的数值保持原有 Number.toLocaleString 行为（含四舍五入）。
  */
+/** 价格 0 / 空 = 还没填，列表里显示「未填价」而不是 0 */
+function isPriceUnset(n: number | string | null | undefined): boolean {
+  if (n == null || n === "") return true;
+  const value = Number(n);
+  return !Number.isFinite(value) || value === 0;
+}
+
 function formatMoney(n: number | string | null | undefined): string {
   if (n == null || n === "") return "—";
   const s = String(n).trim();
@@ -588,14 +591,15 @@ function formatMoney(n: number | string | null | undefined): string {
   margin: 0;
 }
 .mm-title {
-  font-size: 20px;
-  font-weight: 500;
-  color: #1f1f1f;
   margin: 0;
 }
 .mm-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 /* 关系列为空时的占位「—」：统一弱化色 */
 .cell-empty {
@@ -624,7 +628,7 @@ function formatMoney(n: number | string | null | undefined): string {
 .origin-hint,
 .price-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--color-text-tertiary);
   line-height: 1.5;
   margin-top: 4px;
 }
@@ -633,7 +637,7 @@ function formatMoney(n: number | string | null | undefined): string {
 }
 .np-empty {
   font-size: 12px;
-  color: #909399;
+  color: var(--color-text-tertiary);
 }
 .np-row {
   display: flex;
@@ -643,15 +647,15 @@ function formatMoney(n: number | string | null | undefined): string {
 }
 .np-label {
   font-size: 13px;
-  color: #303133;
+  color: var(--color-text-primary);
 }
 .np-label small {
-  color: #909399;
+  color: var(--color-text-tertiary);
   margin-left: 4px;
 }
 .np-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--color-text-tertiary);
   line-height: 1.5;
   margin-top: 4px;
 }
@@ -660,6 +664,10 @@ function formatMoney(n: number | string | null | undefined): string {
   padding-left: 18px;
 }
 /* 列表「价格（按地点）」列：左节点名、右价格，逐地点平铺展示 */
+.np-unset {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
 .np-none {
   color: var(--color-text-tertiary);
 }
@@ -673,12 +681,12 @@ function formatMoney(n: number | string | null | undefined): string {
 }
 .np-name {
   font-size: 13px;
-  color: #303133;
+  color: var(--color-text-primary);
   text-align: left;
 }
 .np-val {
   font-size: 13px;
-  color: #303133;
+  color: var(--color-text-primary);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }

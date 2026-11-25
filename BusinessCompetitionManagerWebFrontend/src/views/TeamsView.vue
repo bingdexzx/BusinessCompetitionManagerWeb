@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import * as api from '@/api'
@@ -46,11 +47,16 @@ const creating = ref(false)
 const createRef = ref<FormInstance>()
 const createForm = ref({
   name: '',
-  industryChoice: [] as string[],
-  industryAdjustAccepted: [] as string[],
+  // 产业志愿 / 接受调剂均为单选（后端仍按数组存储，提交时包一层）
+  industryChoice: '',
+  industryAdjustAccepted: '',
 })
 const createRules: FormRules = {
-  name: [{ required: true, message: '请填写队伍名称', trigger: 'blur' }],
+  name: [{ required: true, message: '请输入队伍名称', trigger: 'blur' }],
+  industryChoice: [{ required: true, message: '请选择产业志愿', trigger: 'change' }],
+  industryAdjustAccepted: [
+    { required: true, message: '请选择可接受的调剂产业', trigger: 'change' },
+  ],
 }
 
 const showJoin = ref(false)
@@ -62,17 +68,12 @@ const adjusting = ref(false)
 const adjustTarget = ref<Team | null>(null)
 const adjustForm = ref({
   industryFinal: '',
-  industryChoice: [] as string[],
-  industryAdjustAccepted: [] as string[],
+  industryChoice: '',
+  industryAdjustAccepted: '',
 })
 
-// 可调整产业：系统超管或本比赛超管
-const canAdjust = computed(() => {
-  if (auth.isSuperuser) return true
-  return auth.memberships.some(
-    (m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN',
-  )
-})
+// 可调整产业：系统超级管理员或本比赛超级管理员
+const canAdjust = computed(() => auth.isSuperuser)
 
 function isCaptain(team: Team): boolean {
   return team.captainId === auth.user?.id
@@ -86,8 +87,8 @@ async function load(): Promise<void> {
     teams.value = await api.getTeams(props.cid)
     if (hadData) flashSummary()
   } catch (err) {
-    loadError.value = errorMessage(err, '操作失败')
-    ElMessage.error(errorMessage(err, '操作失败'))
+    loadError.value = errorMessage(err, '加载失败')
+    ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
     loading.value = false
     loaded.value = true
@@ -104,14 +105,16 @@ async function submitCreate(): Promise<void> {
   try {
     await api.createTeam(props.cid, {
       name: createForm.value.name.trim(),
-      industryChoice: createForm.value.industryChoice,
-      industryAdjustAccepted: createForm.value.industryAdjustAccepted,
+      industryChoice: createForm.value.industryChoice ? [createForm.value.industryChoice] : [],
+      industryAdjustAccepted: createForm.value.industryAdjustAccepted
+        ? [createForm.value.industryAdjustAccepted]
+        : [],
     })
-    ElMessage.success('队伍创建成功')
+    ElMessage.success('队伍已创建')
     showCreate.value = false
     await load()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '保存失败'))
   } finally {
     creating.value = false
   }
@@ -131,7 +134,7 @@ async function submitJoin(): Promise<void> {
     joinCode.value = ''
     await load()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '保存失败'))
   } finally {
     joining.value = false
   }
@@ -164,8 +167,8 @@ function openAdjust(team: Team): void {
   adjustTarget.value = team
   adjustForm.value = {
     industryFinal: team.industryFinal,
-    industryChoice: [...team.industryChoice],
-    industryAdjustAccepted: [...team.industryAdjustAccepted],
+    industryChoice: team.industryChoice?.[0] ?? '',
+    industryAdjustAccepted: team.industryAdjustAccepted?.[0] ?? '',
   }
   showAdjust.value = true
 }
@@ -175,21 +178,31 @@ async function submitAdjust(): Promise<void> {
   if (!target) return
   const final = adjustForm.value.industryFinal.trim()
   if (!final) {
-    ElMessage.warning('请填写最终产业')
+    ElMessage.warning('请选择最终产业')
+    return
+  }
+  if (!adjustForm.value.industryChoice) {
+    ElMessage.warning('请选择产业志愿')
+    return
+  }
+  if (!adjustForm.value.industryAdjustAccepted) {
+    ElMessage.warning('请选择接受调剂范围')
     return
   }
   adjusting.value = true
   try {
     await api.adjustTeamIndustry(props.cid, target.id, {
       industryFinal: final,
-      industryChoice: adjustForm.value.industryChoice,
-      industryAdjustAccepted: adjustForm.value.industryAdjustAccepted,
+      industryChoice: adjustForm.value.industryChoice ? [adjustForm.value.industryChoice] : [],
+      industryAdjustAccepted: adjustForm.value.industryAdjustAccepted
+        ? [adjustForm.value.industryAdjustAccepted]
+        : [],
     })
     ElMessage.success('产业已调整，公司已同步创建/更新')
     showAdjust.value = false
     await load()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '保存失败'))
   } finally {
     adjusting.value = false
   }
@@ -227,7 +240,7 @@ async function submitAssign(): Promise<void> {
     return
   }
   if (!companyName) {
-    ElMessage.warning('请填写公司名称')
+    ElMessage.warning('请输入公司名称')
     return
   }
   assigning.value = true
@@ -250,10 +263,9 @@ onMounted(() => void load())
 </script>
 
 <template>
-  <div class="teams-page">
-    <div class="page-toolbar">
-      <h2 class="page-title">组队管理</h2>
-      <div class="page-actions">
+  <div class="teams-page page">
+    <PageHeader title="组队管理">
+      <template #actions>
         <el-button @click="showJoin = true">
           <el-icon><Link /></el-icon>
           <span>加入队伍</span>
@@ -262,8 +274,8 @@ onMounted(() => void load())
           <el-icon><Plus /></el-icon>
           <span>创建队伍</span>
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div v-if="initialLoading" class="team-grid" aria-busy="true">
       <div v-for="n in 3" :key="n" class="skeleton team-skeleton" />
@@ -420,7 +432,7 @@ onMounted(() => void load())
                   v-if="canAdjust"
                   size="small"
                   link
-                  type="warning"
+                  type="primary"
                   @click="openAdjust(team)"
                 >
                   调整产业
@@ -429,7 +441,7 @@ onMounted(() => void load())
                   v-if="canAdjust"
                   size="small"
                   link
-                  type="success"
+                  type="primary"
                   @click="openAssign(team)"
                 >
                   {{ team.companyName ? '修改公司' : '分配公司' }}
@@ -441,37 +453,29 @@ onMounted(() => void load())
       </div>
 
       <div v-else-if="!loadError" class="panel empty-panel">
-        <el-empty description="暂无队伍" />
+        <el-empty description="暂无队伍"  :image-size="72" />
       </div>
     </template>
 
-    <el-dialog v-model="showCreate" title="创建队伍" width="520px" destroy-on-close>
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        title="输入产业 key，回车添加"
-        class="dialog-tip"
-      />
+    <el-dialog v-model="showCreate" title="创建队伍" width="560px" destroy-on-close>
       <el-form
         ref="createRef"
         :model="createForm"
         :rules="createRules"
-        label-width="110px"
+        label-width="96px"
         @submit.prevent
       >
         <el-form-item label="队伍名称" prop="name">
           <el-input v-model="createForm.name" placeholder="例如：星辰队" maxlength="60" />
         </el-form-item>
-        <el-form-item label="产业志愿">
+        <el-form-item label="产业志愿" prop="industryChoice">
           <el-select
             v-model="createForm.industryChoice"
-            multiple
             filterable
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="选择产业（可多选）"
+            placeholder="选择产业"
             style="width: 100%"
           >
             <el-option
@@ -482,15 +486,14 @@ onMounted(() => void load())
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="接受调剂">
+        <el-form-item label="接受调剂" prop="industryAdjustAccepted">
           <el-select
             v-model="createForm.industryAdjustAccepted"
-            multiple
             filterable
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="可接受的调剂产业（可多选）"
+            placeholder="选择可接受的调剂产业"
             style="width: 100%"
           >
             <el-option
@@ -509,7 +512,7 @@ onMounted(() => void load())
     </el-dialog>
 
     <el-dialog v-model="showJoin" title="加入队伍" width="420px" destroy-on-close>
-      <el-form label-width="80px" @submit.prevent>
+      <el-form label-width="96px" @submit.prevent>
         <el-form-item label="组队码">
           <el-input
             v-model="joinCode"
@@ -525,16 +528,16 @@ onMounted(() => void load())
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showAdjust" title="调整产业" width="520px" destroy-on-close>
+    <el-dialog v-model="showAdjust" title="调整产业" width="560px" destroy-on-close>
       <el-alert
-        type="warning"
+        type="info"
         :closable="false"
         show-icon
         title="保存后同步创建/更新对应公司"
         class="dialog-tip"
       />
-      <el-form :model="adjustForm" label-width="110px" @submit.prevent>
-        <el-form-item label="最终产业">
+      <el-form :model="adjustForm" label-width="96px" @submit.prevent>
+        <el-form-item label="最终产业" required>
           <el-select
             v-model="adjustForm.industryFinal"
             filterable
@@ -552,15 +555,14 @@ onMounted(() => void load())
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="产业志愿">
+        <el-form-item label="产业志愿" required>
           <el-select
             v-model="adjustForm.industryChoice"
-            multiple
             filterable
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="可一并修订产业志愿"
+            placeholder="选择产业志愿"
             style="width: 100%"
           >
             <el-option
@@ -571,15 +573,14 @@ onMounted(() => void load())
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="接受调剂">
+        <el-form-item label="接受调剂" required>
           <el-select
             v-model="adjustForm.industryAdjustAccepted"
-            multiple
             filterable
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="可一并修订接受调剂范围"
+            placeholder="选择接受调剂范围"
             style="width: 100%"
           >
             <el-option
@@ -600,7 +601,7 @@ onMounted(() => void load())
     <el-dialog
       v-model="showAssign"
       :title="assignTarget?.companyName ? '修改公司' : '分配公司'"
-      width="520px"
+      width="560px"
       destroy-on-close
     >
       <el-alert
@@ -610,7 +611,7 @@ onMounted(() => void load())
         title="分配后队长可操作本公司股票与合同，其他队员只读。"
         class="dialog-tip"
       />
-      <el-form :model="assignForm" label-width="110px" @submit.prevent>
+      <el-form :model="assignForm" label-width="96px" @submit.prevent>
         <el-form-item label="产业" required>
           <el-select
             v-model="assignForm.industryKey"
@@ -666,8 +667,10 @@ onMounted(() => void load())
 .page-actions {
   display: flex;
   align-items: center;
-  flex-shrink: 0;
+  justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .team-name {

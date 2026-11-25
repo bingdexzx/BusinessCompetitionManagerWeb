@@ -1,9 +1,10 @@
 // 全部走相对路径 /api/...（开发期由 vite proxy 转发）；契约见 docs/API契约.md
-import { http, request } from './client'
+import { getAccessToken, getCompetitionId, http, request } from './client'
 import type {
   AdminDevice,
   AssignMemberPayload,
   AuditLogItem,
+  BackgroundJob,
   AwardCandidate,
   AwardGrant,
   AwardGrantPayload,
@@ -14,6 +15,7 @@ import type {
   Company,
   CompanyTable,
   Competition,
+  CompetitionPermissionConfig,
   CompetitionMember,
   CompetitionMetaPayload,
   Contract,
@@ -27,32 +29,39 @@ import type {
   CreateInvitePayload,
   CreateSchoolPayload,
   CreateTeamPayload,
+  CreateTimerPayload,
+  CompetitionTimer,
+  FieldLogCompanyOption,
   FieldLogPage,
   FieldLogQuery,
   FiscalYear,
   FiscalYearBackup,
   InviteCode,
   InviteRedeemResult,
+  JobKind,
   LoginResponse,
   MedalAsset,
+  MyTicket,
   AddressBook,
   InmailMessage,
   InmailPage,
   IndustryFieldMeta,
   IndustryOption,
   SendInmailPayload,
-  MyDevice,
   NetworkLogPage,
   NetworkLogQuery,
   PackageRecord,
   PlaceStockOrderPayload,
   PluginKind,
+  PluginDryRunResult,
   PluginRecord,
   RefreshResponse,
+  RegionField,
   RegisterPayload,
   School,
   ScoringConfig,
   SettlementConfigPayload,
+  SettlementPreview,
   SettlementResult,
   Stock,
   StockAccount,
@@ -66,6 +75,8 @@ import type {
   StockSyncPage,
   Team,
   TeamJoinCode,
+  UpdateLog,
+  UpdateLogLatest,
   UpdateMePayload,
   UpdateMemberPayload,
   User,
@@ -99,8 +110,25 @@ export function updateMe(payload: UpdateMePayload): Promise<User> {
   return http.patch<User>('/me', payload)
 }
 
-export function getMyDevices(): Promise<MyDevice[]> {
-  return http.get<MyDevice[]>('/me/devices')
+
+export function getLatestUpdateLog(): Promise<UpdateLogLatest> {
+  return http.get<UpdateLogLatest>('/update-logs/latest')
+}
+
+export function markUpdateLogRead(id: number): Promise<{ seen: number }> {
+  return http.post<{ seen: number }>(`/update-logs/${id}/read`)
+}
+
+export function getUpdateLogs(): Promise<UpdateLog[]> {
+  return http.get<UpdateLog[]>('/update-logs')
+}
+
+export function createUpdateLog(payload: {
+  version: string
+  title: string
+  content: string
+}): Promise<UpdateLog> {
+  return http.post<UpdateLog>('/update-logs', payload)
 }
 
 // 改密后后端顶号（旧 token 失效），需重新登录
@@ -116,6 +144,11 @@ export function changePassword(
 
 export function fetchVersion(): Promise<{ version: string }> {
   return http.get<{ version: string }>('/version', { skipAuth: true, skipRefresh: true })
+}
+
+/** 我的纪念票（加入比赛时定格的票面） */
+export function getMyTickets(): Promise<MyTicket[]> {
+  return http.get<MyTicket[]>('/me/tickets')
 }
 
 export function getMyAwards(): Promise<AwardRecord[]> {
@@ -143,7 +176,7 @@ export function getSentInmails(): Promise<InmailMessage[]> {
   return http.get<InmailMessage[]>('/messages/sent')
 }
 
-// 收件人 =「比赛全员 + 个人」混合多选；按比赛批量（公告）仅超管
+// 收件人 =「比赛全员 + 个人」混合多选；按比赛批量（公告）仅超级管理员
 export function sendInmail(payload: SendInmailPayload): Promise<InmailMessage> {
   return http.post<InmailMessage>('/messages/send', payload)
 }
@@ -259,6 +292,15 @@ export function getIndustryFields(cid: number | string): Promise<IndustryFieldMe
   return http.get<IndustryFieldMeta[]>(`/competitions/${cid}/industry-fields`)
 }
 
+/** 设置字段展示分组（仅系统超级管理员；分组名称必填，对本比赛全部公司生效） */
+export function updateIndustryFieldGroup(
+  cid: number | string,
+  fieldKey: string,
+  group: string,
+): Promise<{ key: string; group: string }> {
+  return http.patch(`/competitions/${cid}/industry-fields/${fieldKey}`, { group })
+}
+
 // 选产业 + 公司名；后端创建/更新公司并绑定，队长据此获得操作权
 export function assignTeamCompany(
   cid: number | string,
@@ -289,6 +331,17 @@ export function importCompetitionPackage(id: number | string, file: File): Promi
   return http.post<PackageRecord>(`/competitions/${id}/package`, form)
 }
 
+/** 后台导入比赛包：立刻返回任务，导入在 worker 里跑（大包推荐） */
+export function importCompetitionPackageAsync(
+  id: number | string,
+  file: File,
+): Promise<{ job: BackgroundJob }> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('async', '1')
+  return http.post<{ job: BackgroundJob }>(`/competitions/${id}/package`, form)
+}
+
 export function getCompetitionPackages(id: number | string): Promise<PackageRecord[]> {
   return http.get<PackageRecord[]>(`/competitions/${id}/packages`)
 }
@@ -297,8 +350,11 @@ export function getContractTypes(id: number | string): Promise<ContractType[]> {
   return http.get<ContractType[]>(`/competitions/${id}/contract-types`)
 }
 
-export function getPlugins(kind?: PluginKind): Promise<PluginRecord[]> {
-  return http.get<PluginRecord[]>('/plugins', { query: { kind } })
+export function getPlugins(
+  kind?: PluginKind,
+  competitionId?: number | string,
+): Promise<PluginRecord[]> {
+  return http.get<PluginRecord[]>('/plugins', { query: { kind, competitionId } })
 }
 
 export function getBasedata(
@@ -368,6 +424,78 @@ export function requestContractModify(
   return http.post<Contract>(`/competitions/${cid}/contracts/${id}/request-modify`, { reason })
 }
 
+/** 下载二进制文件（xlsx 等）：走同一个鉴权头，返回 Blob 由调用方保存 */
+export async function downloadFile(
+  path: string,
+  payload?: Record<string, unknown>,
+): Promise<Blob> {
+  const response = await fetch(`/api${path}`, {
+    method: payload ? 'POST' : 'GET',
+    headers: {
+      Authorization: `Bearer ${getAccessToken()}`,
+      'X-Competition-Id': getCompetitionId(),
+      ...(payload ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: payload ? JSON.stringify(payload) : undefined,
+  })
+  if (!response.ok) {
+    let message = '导出失败'
+    try {
+      const body = await response.json()
+      if (body && typeof body.message === 'string') message = body.message
+    } catch {
+      /* 非 JSON 响应保持默认文案 */
+    }
+    throw new Error(message)
+  }
+  return response.blob()
+}
+
+/** 下载并触发浏览器保存 */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+
+export function exportFieldLogsXlsx(
+  cid: number | string,
+  ids: number[] = [],
+): Promise<Blob> {
+  return downloadFile(`/competitions/${cid}/logs/fields/export`, {
+    format: 'xlsx',
+    ids,
+  })
+}
+
+export function terminateContract(
+  cid: number | string,
+  id: number,
+  reason?: string,
+): Promise<Contract> {
+  return http.post<Contract>(`/competitions/${cid}/contracts/${id}/terminate`, { reason })
+}
+
+export function rejectContract(
+  cid: number | string,
+  id: number,
+  reason?: string,
+): Promise<Contract> {
+  return http.post<Contract>(`/competitions/${cid}/contracts/${id}/reject`, { reason })
+}
+
+export function updateContractDraft(
+  cid: number | string,
+  id: number,
+  payload: { inputs?: Record<string, unknown>; parties?: unknown[]; name?: string },
+): Promise<Contract> {
+  return http.patch<Contract>(`/competitions/${cid}/contracts/${id}`, payload)
+}
+
 export function reviewContractModify(
   cid: number | string,
   id: number,
@@ -380,17 +508,6 @@ export function reviewContractModify(
   })
 }
 
-export function reviewContractOtherParty(
-  cid: number | string,
-  id: number,
-  action: 'approve' | 'reject',
-  note?: string,
-): Promise<Contract> {
-  return http.post<Contract>(`/competitions/${cid}/contracts/${id}/modify/other-party`, {
-    action,
-    note,
-  })
-}
 
 export function submitContractChanges(
   cid: number | string,
@@ -416,6 +533,11 @@ export function getCompanies(cid: number | string): Promise<Company[]> {
   return http.get<Company[]>(`/competitions/${cid}/companies`)
 }
 
+/** 已分配公司：组队完成并分配公司后才出现（teamId 非空） */
+export function getAssignedCompanies(cid: number | string): Promise<Company[]> {
+  return http.get<Company[]>(`/competitions/${cid}/companies`, { query: { assigned: 1 } })
+}
+
 export function getCompanyTable(
   cid: number | string,
   companyId: number,
@@ -424,16 +546,23 @@ export function getCompanyTable(
   return http.get<CompanyTable>(`/competitions/${cid}/companies/${companyId}/tables/${table}`)
 }
 
+/** 手工修改公司字段值（超级管理员；后端写入字段日志；公司有合同修改中时会拒绝） */
+export function updateCompanyField(
+  cid: number | string,
+  companyId: number,
+  payload: {
+    fieldKey: string
+    value: unknown
+    fiscalYearId?: number | null
+    /** 乐观锁：带上拿到的版本，服务端并发冲突时返回 409 */
+    expectedVersion?: number
+  },
+): Promise<{ fieldKey: string; value: unknown; version: number }> {
+  return http.patch(`/competitions/${cid}/companies/${companyId}/fields`, payload)
+}
+
 export function getFiscalYears(cid: number | string): Promise<FiscalYear[]> {
   return http.get<FiscalYear[]>(`/competitions/${cid}/fiscal-years`)
-}
-
-export function openFiscalYear(cid: number | string): Promise<FiscalYear> {
-  return http.post<FiscalYear>(`/competitions/${cid}/fiscal-years/open`, {})
-}
-
-export function closeFiscalYear(cid: number | string): Promise<FiscalYear> {
-  return http.post<FiscalYear>(`/competitions/${cid}/fiscal-years/close`, {})
 }
 
 export function getFiscalYearBackups(
@@ -466,8 +595,60 @@ export function deleteSettlementConfigItem(
 
 export const deleteScoringItem = deleteSettlementConfigItem
 
-export function runSettlement(cid: number | string): Promise<{ runId: number; status: string }> {
-  return http.post(`/competitions/${cid}/settlement/run`, {})
+/** 提交后台任务（结算 / 财年开启结束），返回任务记录用于轮询 */
+export function createJob(
+  cid: number | string,
+  kind: JobKind,
+  payload: Record<string, unknown> = {},
+): Promise<BackgroundJob> {
+  return http.post<BackgroundJob>(`/competitions/${cid}/jobs`, { kind, payload })
+}
+
+export function getJob(cid: number | string, id: number): Promise<BackgroundJob> {
+  return http.get<BackgroundJob>(`/competitions/${cid}/jobs/${id}`)
+}
+
+/** 轮询直到任务结束（成功/失败），返回最终状态 */
+export async function waitJob(
+  cid: number | string,
+  id: number,
+  onProgress?: (job: BackgroundJob) => void,
+  options: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<BackgroundJob> {
+  const interval = options.intervalMs ?? 1500
+  const deadline = Date.now() + (options.timeoutMs ?? 120000)
+  for (;;) {
+    const job = await getJob(cid, id)
+    onProgress?.(job)
+    if (job.status === 'SUCCESS' || job.status === 'FAILED') return job
+    if (Date.now() > deadline) return job
+    await new Promise((resolve) => setTimeout(resolve, interval))
+  }
+}
+
+export function dryRunContractPlugin(
+  cid: number | string,
+  key: string,
+  payload: { inputs?: Record<string, unknown>; companyIds?: number[] } = {},
+): Promise<PluginDryRunResult> {
+  return http.post<PluginDryRunResult>(
+    `/competitions/${cid}/contracts/plugins/${encodeURIComponent(key)}/dry-run`,
+    payload,
+  )
+}
+
+export function getCompetitionPermissions(
+  cid: number | string,
+): Promise<CompetitionPermissionConfig> {
+  return http.get<CompetitionPermissionConfig>(`/competitions/${cid}/permissions`)
+}
+
+export function previewSettlement(cid: number | string): Promise<SettlementPreview> {
+  return http.post<SettlementPreview>(`/competitions/${cid}/settlement/preview`, {})
+}
+
+export function exportSettlement(cid: number | string): Promise<Blob> {
+  return downloadFile(`/competitions/${cid}/settlement/export`)
 }
 
 export function getSettlementResult(cid: number | string): Promise<SettlementResult> {
@@ -522,6 +703,12 @@ export function getFieldLogs(
   return http.get<FieldLogPage>(`/competitions/${cid}/logs/fields`, { query: { ...query } })
 }
 
+export function getFieldLogCompanyOptions(
+  cid: number | string,
+): Promise<FieldLogCompanyOption[]> {
+  return http.get<FieldLogCompanyOption[]>(`/competitions/${cid}/logs/fields/companies`)
+}
+
 export function exportFieldLogs(
   cid: number | string,
   ids?: number[],
@@ -531,7 +718,15 @@ export function exportFieldLogs(
 
 export function getAuditLogs(
   cid: number | string,
-  query: { actorId?: number; action?: string; limit?: number } = {},
+  query: {
+    actorId?: number
+    actor?: string
+    action?: string
+    target?: string
+    from?: string
+    to?: string
+    limit?: number
+  } = {},
 ): Promise<AuditLogItem[]> {
   return http.get<AuditLogItem[]>(`/competitions/${cid}/audit-logs`, { query: { ...query } })
 }
@@ -595,7 +790,7 @@ export function cancelStockOrder(
   )
 }
 
-// 超管；撮合 + 定价 + K 线，单事务
+// 超级管理员；撮合 + 定价 + K 线，单事务
 export function advanceStockRound(cid: number | string): Promise<StockRoundAdvanceResult> {
   return http.post<StockRoundAdvanceResult>(`/competitions/${cid}/stock/round/advance`, {})
 }
@@ -724,6 +919,30 @@ export function saveRegionCardsByName(
   )
 }
 
+// ---------------------------------------------------------------- 区域字段
+
+/** 某区域的全部区域字段值（定义由比赛包提供；读不到该区域时返回默认值） */
+export function getRegionFieldValues(
+  cid: number | string,
+  regionName: string,
+): Promise<RegionField[]> {
+  return http.get<RegionField[]>(
+    `/competitions/${cid}/regions/by-name/${encodeURIComponent(regionName)}/field-values`,
+  )
+}
+
+export function setRegionFieldValue(
+  cid: number | string,
+  regionName: string,
+  key: string,
+  value: unknown,
+): Promise<{ key: string; value: unknown; version: number }> {
+  return http.patch(
+    `/competitions/${cid}/regions/by-name/${encodeURIComponent(regionName)}/field-values/${encodeURIComponent(key)}`,
+    { value },
+  )
+}
+
 export function getCompanyIndustryFields(
   cid: number | string,
   companyId: number,
@@ -824,4 +1043,23 @@ export function deleteContract(
   return http.delete<{ ok: boolean; rolledBackRounds: number[] }>(
     `/competitions/${cid}/contracts/${id}?rollback=${rollback ? 1 : 0}`,
   )
+}
+
+// ---------- 工具箱：计时器 ----------
+export async function getTimers(cid: number | string): Promise<CompetitionTimer[]> {
+  const res = await http.get<{ items: CompetitionTimer[] } | CompetitionTimer[]>(
+    `/competitions/${cid}/timers`,
+  )
+  return Array.isArray(res) ? res : (res.items ?? [])
+}
+
+export function createTimer(
+  cid: number | string,
+  payload: CreateTimerPayload,
+): Promise<CompetitionTimer> {
+  return http.post<CompetitionTimer>(`/competitions/${cid}/timers`, payload)
+}
+
+export function deleteTimer(cid: number | string, id: number): Promise<void> {
+  return http.delete<void>(`/competitions/${cid}/timers/${id}`)
 }

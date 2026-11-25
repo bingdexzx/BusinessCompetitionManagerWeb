@@ -20,6 +20,7 @@
     "@element-plus/icons-vue": "^2.3.2",
     "echarts": "^6.1.0",
     "element-plus": "^2.14.7",
+    "html-to-image": "^1.11.13",
     "konva": "^10.7.1",
     "pinia": "^4.0.3",
     "sass": "^1.105.1",

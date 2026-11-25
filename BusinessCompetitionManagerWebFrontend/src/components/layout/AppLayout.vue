@@ -18,14 +18,17 @@
         </div>
       </div>
     </div>
+
+    <UpdateLogDialog />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import Sidebar from './Sidebar.vue'
+import Sidebar from './AppSidebar.vue'
 import TopBar from './TopBar.vue'
+import UpdateLogDialog from '@/components/common/UpdateLogDialog.vue'
 import {
   subscribeCompetition,
   subscribeGlobal,

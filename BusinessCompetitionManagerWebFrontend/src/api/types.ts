@@ -1,11 +1,10 @@
 // 后端 API 数据结构（对齐 docs/API契约.md，camelCase）
 
-export type MemberIdentity = 'COMP_SUPER_ADMIN' | 'ADMIN' | 'PLAYER'
+export type MemberIdentity = 'ADMIN' | 'PLAYER'
 
-export const MEMBER_IDENTITIES: MemberIdentity[] = ['COMP_SUPER_ADMIN', 'ADMIN', 'PLAYER']
+export const MEMBER_IDENTITIES: MemberIdentity[] = ['ADMIN', 'PLAYER']
 
 export const MEMBER_IDENTITY_LABELS: Record<MemberIdentity, string> = {
-  COMP_SUPER_ADMIN: '比赛超管',
   ADMIN: '管理员（主席团）',
   PLAYER: '参赛代表',
 }
@@ -39,6 +38,7 @@ export interface User {
   username: string
   email: string | null
   displayName: string
+  avatar: string
   school: number | null
   schoolName: string | null
   isActive: boolean
@@ -67,20 +67,26 @@ export interface RegisterPayload {
 
 export interface UpdateMePayload {
   displayName?: string
+  avatar?: string
   email?: string
   schoolId?: number | null
 }
 
-export interface MyDevice {
+export interface UpdateLog {
   id: number
-  os: string
-  browser: string
-  screen: string
-  ip: string | null
-  ua: string
-  firstLoginAt: string
-  lastLoginAt: string
+  version: string
+  title: string
+  content: string
+  createdByUsername: string
+  publishedAt: string
 }
+
+export interface UpdateLogLatest {
+  log: UpdateLog | null
+  shouldShow: boolean
+}
+
+
 
 export interface School {
   id: number
@@ -93,11 +99,47 @@ export interface CreateSchoolPayload {
   region?: string
 }
 
+export type JobKind = 'SETTLEMENT' | 'FISCAL_OPEN' | 'FISCAL_CLOSE'
+export type JobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+
+export interface BackgroundJob {
+  id: number
+  kind: JobKind
+  kindLabel: string
+  status: JobStatus
+  statusLabel: string
+  progress: number
+  message: string
+  result: Record<string, unknown>
+  error: string
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+export interface PermissionCapability {
+  key: string
+  label: string
+  group: string
+}
+
+export interface CompetitionPermissionConfig {
+  roles: Array<{ key: string; label: string }>
+  capabilities: PermissionCapability[]
+  matrix: Record<string, string[]>
+  defaults: Record<string, string[]>
+}
+
 export interface Competition {
   id: number
   name: string
   code: string
   coverImage: string
+  /** 纪念票图（加入比赛时的入场券背景） */
+  ticketImage?: string
+  hostSchoolIds: number[]
+  hostSchoolNames: string[]
+  /** 兼容旧字段：第一所办赛学校 */
   hostSchoolId: number | null
   hostSchoolName: string | null
   location: string
@@ -113,6 +155,10 @@ export interface CreateCompetitionPayload {
   name: string
   code?: string
   coverImage?: string
+  /** 纪念票图：铺在加入比赛时那张票的左侧主票上 */
+  ticketImage?: string
+  hostSchoolIds?: number[]
+  /** 兼容旧调用方 */
   hostSchoolId?: number | null
   location?: string
   staffingInfo?: string
@@ -204,6 +250,8 @@ export interface InviteRedeemResult {
   competitionName: string
   identity: string
   identityLabel: string
+  /** 纪念券票号：比赛内自增（展示时补足 5 位） */
+  ticketNo?: number | null
 }
 
 export interface ImportReport {
@@ -254,7 +302,20 @@ export interface ContractType {
   version: string
   numberPrefix?: string
   partyRoles: Array<{ role: string; label: string; optional?: boolean }>
-  inputSchema: Array<{ key: string; label: string; type: string; min?: number; required?: boolean }>
+  inputSchema: Array<{
+    key: string
+    label: string
+    type: string
+    min?: number
+    required?: boolean
+    /** 选填输入项（多清单任选时用）：留空不算缺失 */
+    optional?: boolean
+    /** LIST 类型：每条记录的主引用（原料/产品…）与附加字段 */
+    itemType?: string
+    itemLabel?: string
+    minItems?: number
+    fields?: Array<{ key: string; label: string; type: string; min?: number }>
+  }>
   errors?: string[]
 }
 
@@ -275,6 +336,23 @@ export interface IndustryFieldMeta {
 }
 
 export type PluginKind = 'CONTRACT' | 'INDUSTRY'
+
+export interface PluginDryRunResult {
+  contractTypeKey: string
+  pluginVersion: string
+  parties: Record<string, string>
+  inputs: Record<string, unknown>
+  problems: string[]
+  effects: Array<{
+    company: string
+    field: string
+    op: string
+    value: unknown
+    region: string
+  }>
+  warnings: string[]
+  error: string
+}
 
 export interface PluginRecord {
   id: number
@@ -310,6 +388,10 @@ export interface ContractParty {
   confirmOrder: number
   confirmAt?: string | null
   confirmedBy?: string | null
+  /** 拒绝确认（退回草稿）留痕 */
+  rejectedAt?: string | null
+  rejectedBy?: string | null
+  rejectReason?: string
 }
 
 export interface TimelineNode {
@@ -341,6 +423,12 @@ export interface Contract {
   fiscalYear: number | null
   createdBy: number
   createdAt: string
+  /** 待审批超过 24 小时（修改申请 / 补录审核） */
+  overdue?: boolean
+  /** 终止（作废）信息 */
+  cancelledAt?: string | null
+  cancelledBy?: string
+  cancelReason?: string
   timeline?: TimelineNode[]
   /** §7.3 四检查点落库；修改后按轮次回放当时的检查内容 */
   checks?: ContractCheck[]
@@ -364,6 +452,10 @@ export interface ContractEffect {
   id: number
   companyId: number
   fieldKey: string
+  /** COMPANY=公司字段；REGION=区域字段（此时 regionId/regionName 有值） */
+  target?: 'COMPANY' | 'REGION'
+  regionId?: number | null
+  regionName?: string
   op: 'ADD' | 'SUB' | 'SET'
   value: unknown
   before: unknown
@@ -375,6 +467,19 @@ export interface ContractEffect {
   isCurrent: boolean
   replayBefore?: unknown
   replayAfter?: unknown
+}
+
+/** 区域字段（每区域一套，实体字段不分财年） */
+export interface RegionField {
+  id: number
+  key: string
+  name: string
+  fieldType: string
+  defaultValue: unknown
+  /** 合同修改条件：{fieldKey, op, value}；空对象=不限制 */
+  condition: { fieldKey?: string; op?: string; value?: unknown } | Record<string, never>
+  value: unknown
+  updatedAt?: string
 }
 
 /** 当时值=审计；重演值=按当前内容重算（上游合同修改后自动同步） */
@@ -392,11 +497,29 @@ export interface LedgerNode {
   replayAfter: unknown
 }
 
+export interface LedgerNonContractChange {
+  id: number
+  source: string
+  sourceLabel: string
+  op: string
+  before: unknown
+  after: unknown
+  operator: string
+  occurredAt: string
+}
+
 export interface LedgerChain {
   companyId: number
   fieldKey: string
   initialValue: unknown
+  /** 字段真实值（手工修改 / 股票 / 公式重算都算数） */
   currentValue: unknown
+  /** 只重演合同效果得到的值 */
+  replayValue?: unknown
+  /** currentValue - replayValue（非数值时为 null） */
+  drift?: number | null
+  /** 不入合同链的变更（手工修改 / 定时器 / 公式重算 / 补录同步） */
+  nonContractChanges?: LedgerNonContractChange[]
   nodes: LedgerNode[]
 }
 
@@ -435,8 +558,10 @@ export interface Company {
   name: string
   industryKey: string
   teamId: number | null
+  teamName?: string
   regionId: number | null
   status: string
+  createdAt?: string
 }
 
 export interface CompanyField {
@@ -445,7 +570,14 @@ export interface CompanyField {
   type: string
   isCalculated: boolean
   formula: string
+  /** 展示分组（插件 FIELDS[].group）；空 = 其他 */
+  group?: string
+  /** 数值字段的可填范围（插件 meta.min / meta.max） */
+  min?: number | null
+  max?: number | null
   values: Record<string, unknown>
+  /** 每个财年行的版本号（手工修改时做乐观锁校验） */
+  versions?: Record<string, number>
 }
 
 export interface CompanyTable {
@@ -505,6 +637,27 @@ export interface SettlementEntry {
   rank: number
   score: number
   detail: Record<string, { value: number; normalized: number; weight: number; score: number }>
+}
+
+export interface SettlementPreviewEntry {
+  companyId: number
+  companyName: string
+  rank: number
+  score: number
+  detail: Record<string, { value: number; normalized: number; weight: number; score: number }>
+}
+
+export interface SettlementPreview {
+  criteria: Array<{
+    id: number
+    name: string
+    fieldKey: string
+    aggregation: string
+    direction: string
+    weight: number
+  }>
+  entries: SettlementPreviewEntry[]
+  preview: boolean
 }
 
 export interface SettlementResult {
@@ -574,6 +727,18 @@ export interface AwardInfo {
 }
 
 /** 集体奖对每个受益成员各记一条 */
+/** 我的纪念票（加入比赛时定格的左侧票面） */
+export interface MyTicket {
+  competitionId: number
+  competitionName: string
+  ticketNo: number | null
+  ticketImage: string
+  identity: string
+  identityLabel: string
+  userName: string
+  joinedAt: string
+}
+
 export interface AwardRecord {
   id: number
   competitionId: number
@@ -652,6 +817,8 @@ export interface FieldLogItem {
   id: number
   companyId: number | null
   companyName: string | null
+  regionId?: number | null
+  regionName?: string | null
   fieldKey: string
   dataTable: string
   event: 'VALUE_CHANGE' | 'SCHEMA_CHANGE'
@@ -686,6 +853,12 @@ export interface FieldLogQuery {
   to?: string
   limit?: number
   offset?: number
+}
+
+/** 字段日志「公司」筛选项：仅本比赛（且有字段日志）的公司 */
+export interface FieldLogCompanyOption {
+  id: number
+  name: string
 }
 
 export type InmailKind = 'PERSONAL' | 'ANNOUNCE' | 'SYSTEM'
@@ -931,10 +1104,33 @@ export interface BasedataRow {
   infraType?: string
   buildCost?: number
   maintenanceCost?: number
-  tier?: number
   prerequisiteCodes?: string
   researchCost?: number
   [key: string]: unknown
+}
+
+/** 工具箱计时器：名称 + 倒计时时长，前端按秒显示剩余 */
+export interface CompetitionTimer {
+  id: number
+  name: string
+  /** 倒计时总时长（秒） */
+  durationSeconds: number
+  /** 开始时间（ISO） */
+  startedAt: string
+  /** 结束时刻 = 开始 + 时长（ISO，服务端算好） */
+  targetAt: string
+  /** 剩余秒数（服务端快照；前端以 startedAt + durationSeconds 实时计算） */
+  remainingSeconds?: number
+  note?: string
+  createdByUsername?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface CreateTimerPayload {
+  name: string
+  durationSeconds: number
+  note?: string
 }
 
 export interface BasedataPage {

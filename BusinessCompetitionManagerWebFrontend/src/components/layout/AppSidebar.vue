@@ -4,7 +4,7 @@
       <div class="brand-text">
         <div class="brand-title-row">
           <img class="brand-logo" src="@/assets/logo.svg" alt="logo" />
-          <div class="brand-name">商赛办赛管理系统</div>
+          <div class="brand-name">商赛辅助办赛系统</div>
         </div>
         <div class="brand-meta">
           <!-- 会话恢复中：不要先闪一句「未选择比赛」 -->
@@ -12,9 +12,12 @@
             <div class="skeleton skeleton-line meta-skeleton" />
           </div>
           <div v-else-if="competitionName" class="meta-row">
-            <el-tag type="success" size="small" effect="plain" class="meta-name">{{
+            <el-tag type="primary" size="small" effect="plain" class="meta-name">{{
               competitionName
             }}</el-tag>
+          </div>
+          <div v-if="!auth.booting && competitionName && activeCid" class="meta-row meta-fy">
+            <FiscalYearBadge :cid="activeCid" />
           </div>
           <div v-else class="meta-row meta-hint">
             未选择比赛 —
@@ -24,14 +27,20 @@
       </div>
     </div>
 
-    <el-menu :default-active="activeMenu" router class="sidebar-menu ai-sidebar">
+    <el-menu
+      ref="menuRef"
+      :default-active="activeMenu"
+      :default-openeds="defaultOpeneds"
+      router
+      class="sidebar-menu ai-sidebar"
+    >
       <el-menu-item index="/competitions">
         <el-icon><Trophy /></el-icon>
         <span>比赛列表</span>
       </el-menu-item>
 
       <el-menu-item-group v-if="hasCompetition" title="当前比赛" class="sidebar-group">
-        <el-menu-item :index="`/competitions/${activeCid}`">
+        <el-menu-item v-if="auth.isSuperuser" :index="`/competitions/${activeCid}`">
           <el-icon><InfoFilled /></el-icon>
           <span>比赛详情</span>
         </el-menu-item>
@@ -43,14 +52,52 @@
           <el-icon><User /></el-icon>
           <span>组队管理</span>
         </el-menu-item>
-        <el-menu-item :index="`/competitions/${activeCid}/contracts`">
+        <el-menu-item
+          v-if="canManageComp"
+          :index="`/competitions/${activeCid}/companies`"
+        >
+          <el-icon><OfficeBuilding /></el-icon>
+          <span>公司管理</span>
+        </el-menu-item>
+        <el-menu-item
+          v-if="can('view.contracts')"
+          :index="`/competitions/${activeCid}/contracts`"
+        >
           <el-icon><Files /></el-icon>
           <span>合同工作台</span>
         </el-menu-item>
-        <el-menu-item :index="`/competitions/${activeCid}/basedata`">
-          <el-icon><Grid /></el-icon>
-          <span>数据管理</span>
-        </el-menu-item>
+        <el-sub-menu index="data-management" class="sidebar-group">
+          <template #title>
+            <el-icon><Grid /></el-icon>
+            <span>数据管理</span>
+          </template>
+          <el-menu-item
+            v-for="item in dataManagementItems"
+            :key="item.type"
+            :index="`/competitions/${activeCid}/basedata?type=${item.type}`"
+          >{{ item.label }}</el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="tools-group" class="sidebar-group">
+          <template #title>
+            <el-icon><Box /></el-icon>
+            <span>工具箱</span>
+          </template>
+          <el-menu-item :index="`/competitions/${activeCid}/tools/material-price`"
+            >原料价格</el-menu-item
+          >
+          <el-menu-item :index="`/competitions/${activeCid}/tools/part-materials`"
+            >零件用量</el-menu-item
+          >
+          <el-menu-item :index="`/competitions/${activeCid}/tools/product-parts`"
+            >产品用量</el-menu-item
+          >
+          <el-menu-item :index="`/competitions/${activeCid}/tools/navigation`"
+            >地图导航</el-menu-item
+          >
+          <el-menu-item :index="`/competitions/${activeCid}/tools/timers`"
+            >计时器</el-menu-item
+          >
+        </el-sub-menu>
         <el-menu-item :index="`/competitions/${activeCid}/region-overview`">
           <el-icon><MapLocation /></el-icon>
           <span>区域总览</span>
@@ -60,7 +107,7 @@
             <el-icon><TrendCharts /></el-icon>
             <span>股票市场</span>
           </template>
-          <el-menu-item :index="`/competitions/${activeCid}/stocks`">行情看板</el-menu-item>
+          <el-menu-item :index="`/competitions/${activeCid}/stocks`">股票行情</el-menu-item>
           <el-menu-item :index="`/competitions/${activeCid}/stocks/manage`">交易管理</el-menu-item>
           <el-menu-item
             v-if="canManageComp"
@@ -69,11 +116,11 @@
         </el-sub-menu>
         <el-menu-item :index="`/competitions/${activeCid}/fiscal`">
           <el-icon><Calendar /></el-icon>
-          <span>财年与补录</span>
+          <span>财年管理</span>
         </el-menu-item>
         <el-menu-item v-if="canViewSettlement" :index="`/competitions/${activeCid}/settlement`">
           <el-icon><TrophyBase /></el-icon>
-          <span>结算与获奖</span>
+          <span>结算管理</span>
         </el-menu-item>
         <el-menu-item v-if="canViewFieldLogs" :index="`/competitions/${activeCid}/logs`">
           <el-icon><DataLine /></el-icon>
@@ -81,7 +128,11 @@
         </el-menu-item>
         <el-menu-item v-if="canViewAudit" :index="`/competitions/${activeCid}/audit`">
           <el-icon><Document /></el-icon>
-          <span>审计日志</span>
+          <span>审计流水</span>
+        </el-menu-item>
+        <el-menu-item v-if="canManageComp" :index="`/competitions/${activeCid}/plugins`">
+          <el-icon><Box /></el-icon>
+          <span>插件管理</span>
         </el-menu-item>
       </el-menu-item-group>
 
@@ -101,13 +152,13 @@
           <el-icon><Monitor /></el-icon>
           <span>网络日志</span>
         </el-menu-item>
-        <el-menu-item index="/plugins">
-          <el-icon><Box /></el-icon>
-          <span>插件管理</span>
+        <el-menu-item index="/update-logs">
+          <el-icon><Notebook /></el-icon>
+          <span>更新日志</span>
         </el-menu-item>
         <el-menu-item index="/users">
           <el-icon><User /></el-icon>
-          <span>用户管理</span>
+          <span>账号管理</span>
         </el-menu-item>
         <el-menu-item index="/schools">
           <el-icon><School /></el-icon>
@@ -123,10 +174,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as api from '@/api'
+import { getCompetitionPermissions } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import FiscalYearBadge from '@/components/common/FiscalYearBadge.vue'
 
 defineProps<{
   drawer?: boolean
@@ -136,26 +189,71 @@ defineProps<{
 const route = useRoute()
 const auth = useAuthStore()
 
+type MenuHandle = { open?: (index: string) => void }
+const menuRef = ref<MenuHandle | null>(null)
+
+/** 数据管理的子菜单项（与 DataManagementView 的子模块一一对应） */
+const dataManagementItems = [
+  { type: 'materials', label: '原料' },
+  { type: 'parts', label: '零件' },
+  { type: 'products', label: '产品' },
+  { type: 'maps', label: '地图' },
+  { type: 'infrastructures', label: '基建' },
+  { type: 'tech-tree', label: '科技树' },
+  { type: 'fuels', label: '燃料' },
+  { type: 'vehicles', label: '载具' },
+  { type: 'warehouses', label: '仓库' },
+  { type: 'production-lines', label: '生产线' },
+]
+
 /** 当前比赛 id：路由 /competitions/:cid/... 优先，其次选中的比赛上下文 */
 const activeCid = computed(() => {
   const cid = route.params.cid
   if (typeof cid === 'string' && cid) return cid
   return auth.selectedCompetitionId !== null ? String(auth.selectedCompetitionId) : ''
 })
+
+/** 当前比赛的角色权限矩阵（超管恒为全开）：用来隐藏没有权限的菜单入口 */
+const permissions = ref<Record<string, string[]> | null>(null)
+
+async function loadPermissions(): Promise<void> {
+  if (!activeCid.value || !auth.isAuthenticated) {
+    permissions.value = null
+    return
+  }
+  try {
+    const data = await getCompetitionPermissions(activeCid.value)
+    permissions.value = data.matrix
+  } catch {
+    permissions.value = null
+  }
+}
+
+function can(capability: string): boolean {
+  if (auth.isSuperuser) return true
+  const role = auth.currentMembership?.identity
+  if (!permissions.value || !role) return true // 拿不到矩阵时不隐藏，避免误伤
+  return (permissions.value[role] ?? []).includes(capability)
+}
+
+watch(
+  [activeCid, () => auth.currentMembership],
+  () => {
+    void loadPermissions()
+  },
+  { immediate: true },
+)
 const hasCompetition = computed(() => activeCid.value !== '')
 
-/** 本比赛超级管理员 / 系统超管（与后端 can_manage_competition 口径一致） */
-const canManageComp = computed(() => {
-  if (auth.isSuperuser) return true
-  return auth.currentMembership?.identity === 'COMP_SUPER_ADMIN'
-})
-/** 审计日志可见性：系统超管 / 比赛超管（主席团与参赛代表不可见） */
+/** 本比赛超级管理员 / 系统超级管理员（与后端 can_manage_competition 口径一致） */
+const canManageComp = computed(() => auth.isSuperuser)
+/** 审计流水可见性：系统超级管理员 / 比赛超级管理员（参赛代表不可见） */
 const canViewAudit = canManageComp
 const canViewSettlement = canManageComp
 /** 字段日志同理：字段级流水含各公司成本/利润，参赛代表一律不可见 */
 const canViewFieldLogs = canManageComp
 
-// 当前比赛名（侧栏品牌区）：成员身份自带名称，系统超管按需查询
+// 当前比赛名（侧栏品牌区）：成员身份自带名称，系统超级管理员按需查询
 const competitionName = ref('')
 watch(
   activeCid,
@@ -184,8 +282,26 @@ const activeMenu = computed(() => {
   if (/^\/competitions\/[^/]+\/contracts\/[^/]+$/.test(path)) {
     return `/competitions/${activeCid.value}/contracts`
   }
+  // 数据管理是按 ?type= 分子模块的，高亮要带上 query 才能对上子菜单项
+  if (/\/basedata$/.test(path)) {
+    const type = typeof route.query.type === 'string' ? route.query.type : 'materials'
+    return `${path}?type=${type}`
+  }
   return path
 })
+
+/** 停留在数据管理时展开它的子菜单 */
+const onDataManagementRoute = computed(() => /\/basedata$/.test(route.path))
+const defaultOpeneds = computed(() =>
+  onDataManagementRoute.value ? ['data-management'] : [],
+)
+watch(
+  onDataManagementRoute,
+  (active) => {
+    if (active) nextTick(() => menuRef.value?.open?.('data-management'))
+  },
+  { immediate: true },
+)
 </script>
 
 <style scoped>
@@ -263,6 +379,9 @@ const activeMenu = computed(() => {
 .brand-meta .meta-row {
   display: flex;
   justify-content: center;
+}
+.brand-meta .meta-fy {
+  margin-top: 6px;
 }
 .brand-meta .meta-name {
   max-width: 100%;

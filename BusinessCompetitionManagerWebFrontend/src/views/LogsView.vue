@@ -1,25 +1,26 @@
 <script setup lang="ts">
-// 网络日志中心（仅系统超管）：网络日志查询/导出 + 登录设备管理
+// 网络日志中心（仅系统超级管理员）：网络日志查询/导出 + 登录设备管理
 import { onMounted, reactive, ref } from 'vue'
+import TableSkeleton from '@/components/common/TableSkeleton.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import { exportNetworkLogs, getAdminDevices, getNetworkLogs } from '@/api'
 import type { AdminDevice, NetworkLogItem, NetworkLogQuery } from '@/api/types'
 import { formatDateTime, truncate } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
-
 const activeTab = ref<'network' | 'devices'>('network')
-
 // ---------- 网络日志 ----------
 const PAGE_SIZE = 20
 const logs = ref<NetworkLogItem[]>([])
 const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
+/** 首屏骨架 → 之后刷新用 v-loading */
+const hasLoaded = ref(false);
 const selectedRows = ref<NetworkLogItem[]>([])
 /** 展开行里摘要全文的展开状态（默认截断） */
 const digestOpen = ref<Record<number, boolean>>({})
-
 const filters = reactive({
   method: '',
   path: '',
@@ -28,7 +29,6 @@ const filters = reactive({
   traceId: '',
   range: null as [string, string] | null,
 })
-
 function buildQuery(): NetworkLogQuery {
   const query: NetworkLogQuery = {
     limit: PAGE_SIZE,
@@ -45,7 +45,6 @@ function buildQuery(): NetworkLogQuery {
   }
   return query
 }
-
 async function loadLogs(): Promise<void> {
   loading.value = true
   try {
@@ -53,17 +52,16 @@ async function loadLogs(): Promise<void> {
     logs.value = res.items ?? []
     total.value = res.total ?? 0
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
-    loading.value = false
+    loading.value = false;
+  hasLoaded.value = true;
   }
 }
-
 function search(): void {
   page.value = 1
   void loadLogs()
 }
-
 function resetFilters(): void {
   filters.method = ''
   filters.path = ''
@@ -73,15 +71,12 @@ function resetFilters(): void {
   filters.range = null
   search()
 }
-
 function onSelectionChange(rows: NetworkLogItem[]): void {
   selectedRows.value = rows
 }
-
 function toggleDigest(id: number): void {
   digestOpen.value = { ...digestOpen.value, [id]: !digestOpen.value[id] }
 }
-
 /** 设备快照摘要：os / browser / screen 等键值拼接 */
 function deviceSummary(snap: Record<string, string> | null | undefined): string {
   if (!snap || typeof snap !== 'object') return '—'
@@ -90,7 +85,6 @@ function deviceSummary(snap: Record<string, string> | null | undefined): string 
     .join(' · ')
   return text || '—'
 }
-
 // 状态码着色：2xx 成功 / 3xx 重定向 / 4xx 客户端错误 / 5xx 服务端错误
 function statusTagType(status: number): 'success' | 'info' | 'warning' | 'danger' {
   if (status >= 500) return 'danger'
@@ -98,7 +92,6 @@ function statusTagType(status: number): 'success' | 'info' | 'warning' | 'danger
   if (status >= 300) return 'info'
   return 'success'
 }
-
 function methodTagType(method: string): 'primary' | 'success' | 'warning' | 'danger' | 'info' {
   if (method === 'GET') return 'primary'
   if (method === 'POST') return 'success'
@@ -106,10 +99,8 @@ function methodTagType(method: string): 'primary' | 'success' | 'warning' | 'dan
   if (method === 'DELETE') return 'danger'
   return 'info'
 }
-
 // 导出选中记录（未勾选则导出当前全部）→ 客户端 JSON 下载
 const exporting = ref(false)
-
 async function exportLogs(): Promise<void> {
   exporting.value = true
   try {
@@ -124,20 +115,18 @@ async function exportLogs(): Promise<void> {
     link.download = `network-logs-${Date.now()}.json`
     link.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
+    ElMessage.success('日志已导出')
   } catch (err) {
     ElMessage.error(errorMessage(err, '操作失败'))
   } finally {
     exporting.value = false
   }
 }
-
 // ---------- 设备管理 ----------
 const devices = ref<AdminDevice[]>([])
 const devicesLoading = ref(false)
 const deviceUserId = ref('')
 const devicesLoaded = ref(false)
-
 async function loadDevices(): Promise<void> {
   devicesLoading.value = true
   try {
@@ -146,24 +135,25 @@ async function loadDevices(): Promise<void> {
     )
     devicesLoaded.value = true
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
     devicesLoading.value = false
   }
 }
-
 // 切到设备管理时懒加载
 function onTabChange(name: string | number): void {
   if (name === 'devices' && !devicesLoaded.value) void loadDevices()
 }
-
+/** 设备管理筛选重置：清空用户 ID 后重查（与其它筛选条的重置一致） */
+function resetDeviceFilters(): void {
+  deviceUserId.value = ''
+  void loadDevices()
+}
 onMounted(() => void loadLogs())
 </script>
-
 <template>
-  <div class="logs-view">
-    <h1 class="page-title">网络日志中心</h1>
-
+  <div class="logs-view page">
+    <PageHeader title="网络日志中心" />
     <el-card shadow="never" class="log-card anim-fade-in-up">
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <!-- ===== 网络日志 ===== -->
@@ -207,7 +197,7 @@ onMounted(() => void loadLogs())
             <el-button type="primary" :icon="Search" @click="search">查询</el-button>
             <el-button @click="resetFilters">重置</el-button>
             <el-button
-              type="success"
+              type="primary"
               :icon="Download"
               :loading="exporting"
               @click="exportLogs"
@@ -216,15 +206,15 @@ onMounted(() => void loadLogs())
             </el-button>
             <el-button :icon="Refresh" @click="loadLogs">刷新</el-button>
           </div>
-
-          <el-table
+                    <TableSkeleton v-if="loading && !hasLoaded" :rows="6" />
+<el-table
             :data="logs"
-            v-loading="loading"
+            v-loading="loading && hasLoaded"
             row-key="id"
             stripe
             size="small"
             @selection-change="onSelectionChange"
-          >
+           border>
             <el-table-column type="selection" width="42" />
             <el-table-column type="expand">
               <template #default="{ row }">
@@ -301,7 +291,6 @@ onMounted(() => void loadLogs())
               <el-empty description="暂无日志数据" :image-size="72" />
             </template>
           </el-table>
-
           <div class="pager">
             <el-pagination
               v-model:current-page="page"
@@ -313,10 +302,9 @@ onMounted(() => void loadLogs())
             />
           </div>
         </el-tab-pane>
-
         <!-- ===== 设备管理 ===== -->
         <el-tab-pane label="设备管理" name="devices">
-          <div class="filter-bar">
+          <div class="filter-bar query-toolbar">
             <el-input
               v-model="deviceUserId"
               placeholder="用户 ID，留空查全部"
@@ -325,10 +313,10 @@ onMounted(() => void loadLogs())
               @keyup.enter="loadDevices"
             />
             <el-button type="primary" :icon="Search" @click="loadDevices">查询</el-button>
+            <el-button @click="resetDeviceFilters">重置</el-button>
             <el-button :icon="Refresh" @click="loadDevices">刷新</el-button>
           </div>
-
-          <el-table :data="devices" v-loading="devicesLoading" stripe size="small">
+          <el-table :data="devices" v-loading="devicesLoading" stripe size="small" border>
             <el-table-column label="用户" min-width="130" show-overflow-tooltip>
               <template #default="{ row }">
                 {{ row.username || `用户 #${row.userId}` }}
@@ -359,21 +347,17 @@ onMounted(() => void loadLogs())
     </el-card>
   </div>
 </template>
-
 <style scoped>
 .logs-view {
   display: flex;
   flex-direction: column;
 }
-
 .log-note {
   margin-bottom: 16px;
 }
-
 .log-card {
   margin-bottom: 16px;
 }
-
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -381,15 +365,13 @@ onMounted(() => void loadLogs())
   gap: 8px;
   margin-bottom: 12px;
 }
-
 /* 网络日志筛选：集中成一条浅底工具条，与表格分开 */
 .query-toolbar {
-  padding: 12px 14px 4px;
+  padding: 12px 14px;
   background: var(--color-surface-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
 }
-
 /* 展开行：请求/响应摘要等详情 */
 .expand-body {
   padding: 8px 16px 12px;
@@ -398,13 +380,11 @@ onMounted(() => void loadLogs())
   gap: 8px;
   background: var(--color-surface-2);
 }
-
 .expand-row {
   display: flex;
   align-items: flex-start;
   gap: 12px;
 }
-
 .expand-label {
   flex-shrink: 0;
   width: 64px;
@@ -412,7 +392,6 @@ onMounted(() => void loadLogs())
   font-size: var(--font-xs);
   line-height: 22px;
 }
-
 .mono,
 .digest {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -422,7 +401,6 @@ onMounted(() => void loadLogs())
   word-break: break-all;
   white-space: pre-wrap;
 }
-
 /* 摘要默认截断（脱敏摘要很长时先省略展示） */
 .digest {
   margin: 0;
@@ -430,15 +408,13 @@ onMounted(() => void loadLogs())
   max-height: 44px;
   overflow: hidden;
 }
-
 .digest--open {
   max-height: 240px;
   overflow: auto;
 }
-
 .pager {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
 }
-</style>
+</style>

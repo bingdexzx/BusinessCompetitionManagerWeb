@@ -10,7 +10,7 @@
         <el-icon :size="20"><Menu /></el-icon>
       </el-button>
       <el-breadcrumb separator="/">
-        <el-breadcrumb-item :to="{ path: '/competitions' }">商赛办赛管理系统</el-breadcrumb-item>
+        <el-breadcrumb-item :to="{ path: '/competitions' }">商赛辅助办赛系统</el-breadcrumb-item>
         <el-breadcrumb-item v-if="currentPageTitle">{{ currentPageTitle }}</el-breadcrumb-item>
       </el-breadcrumb>
     </div>
@@ -75,6 +75,7 @@ import * as api from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useNotifications } from '@/composables/useNotifications'
 import { errorMessage } from '@/utils/errors'
+import { pageTitleOf } from '@/utils/pageTitles'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 
 const { unreadCount, resetUnread } = useNotifications()
@@ -119,7 +120,7 @@ watch(
   { immediate: true },
 )
 
-// 选项：我的比赛（memberships）+ 系统超管的全部比赛，去重合并
+// 选项：我的比赛（memberships）+ 系统超级管理员的全部比赛，去重合并
 const competitionOptions = computed(() => {
   const map = new Map<number, string>()
   for (const m of auth.memberships) {
@@ -146,7 +147,7 @@ const displayName = computed(
   () => auth.user?.displayName || auth.user?.username || '用户',
 )
 const roleLabel = computed(() => {
-  if (auth.isSuperuser) return '系统超管'
+  if (auth.isSuperuser) return '超级管理员'
   return auth.currentIdentityLabel || ''
 })
 const roleTagType = computed(() => (auth.isSuperuser ? 'danger' : 'primary'))
@@ -168,46 +169,9 @@ function onUserCommand(command: string | number | object): void {
   }
 }
 
-const PAGE_TITLES: Record<string, string> = {
-  '/competitions': '比赛列表',
-  '/messages': '消息中心',
-  '/profile': '个人档案',
-  '/logs': '网络日志',
-  '/plugins': '插件管理',
-}
-const SECTION_TITLES: Record<string, string> = {
-  '': '比赛详情',
-  teams: '组队管理',
-  contracts: '合同工作台',
-  stocks: '股票市场',
-  fiscal: '财年与补录',
-  settlement: '结算与获奖',
-  logs: '字段日志',
-  audit: '审计日志',
-}
-
-const currentPageTitle = computed(() => {
-  const path = route.path
-  const direct = PAGE_TITLES[path]
-  if (direct) return direct
-  const match = /^\/competitions\/[^/]+(?:\/([^/]+))?(?:\/([^/]+))?/.exec(path)
-  if (match) {
-    const section = match[1] ?? ''
-    const sub = match[2] ?? ''
-    if (section === 'contracts') {
-      // 合同详情页也归入合同工作台
-      return /^\/competitions\/[^/]+\/contracts\/[^/]+$/.test(path) ? '合同详情' : '合同工作台'
-    }
-    if (section === 'stocks') {
-      if (sub === 'manage') return '股票交易管理'
-      if (sub === 'admin') return '股票管理'
-      return '股票行情'
-    }
-    return SECTION_TITLES[section] ?? ''
-  }
-  return ''
-})
-</script>
+const currentPageTitle = computed(() =>
+  pageTitleOf(route.path, route.query as Record<string, unknown>),
+)</script>
 
 <style scoped>
 .topbar {
@@ -263,14 +227,14 @@ const currentPageTitle = computed(() => {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  border: 1px solid var(--color-border, #e4e7ed) !important;
+  border: 1px solid var(--color-border, var(--color-border-strong)) !important;
   border-radius: 6px !important;
-  background: var(--el-fill-color-blank, #fff) !important;
+  background: var(--el-fill-color-blank) !important;
 }
 .menu-toggle:hover {
   color: var(--color-primary);
-  border-color: var(--color-primary, #409eff) !important;
-  background: var(--el-fill-color-light, #f5f7fa) !important;
+  border-color: var(--color-primary, var(--color-primary)) !important;
+  background: var(--el-fill-color-light, var(--surface-sunken)) !important;
 }
 @media (max-width: 1024px) {
   .menu-toggle {

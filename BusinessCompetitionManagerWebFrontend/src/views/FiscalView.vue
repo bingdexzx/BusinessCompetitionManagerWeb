@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  closeFiscalYear,
+  createJob,
   getFiscalYearBackups,
   getFiscalYears,
-  openFiscalYear,
+  waitJob,
 } from '@/api'
 import type { FiscalYear, FiscalYearBackup } from '@/api/types'
 import { useCountUp } from '@/composables/useMotion'
@@ -30,12 +31,8 @@ function statusMeta(status: string): { label: string; type: TagType } {
   return STATUS_META[status] ?? { label: status, type: 'info' }
 }
 
-// ---------- 权限：系统超管 / 本比赛超管 ----------
-const canManage = computed(
-  () =>
-    auth.isSuperuser ||
-    auth.memberships.some((m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN'),
-)
+// ---------- 权限：系统超级管理员 / 本比赛超级管理员 ----------
+const canManage = computed(() => auth.isSuperuser)
 
 // ---------- 财年列表 ----------
 const years = ref<FiscalYear[]>([])
@@ -47,7 +44,7 @@ async function loadYears(): Promise<void> {
   try {
     years.value = await getFiscalYears(props.cid)
   } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     loading.value = false
   }
@@ -67,11 +64,17 @@ const closedTotalShown = useCountUp(closedTotal)
 const backupTotalShown = useCountUp(backupTotal)
 
 // ---------- 开启 / 结束财年 ----------
-async function handleOpen(): Promise<void> {
+/** 开启/结束财年都走后台任务：定时器重算、整表备份耗时较长，避免阻塞请求 */
+async function runFiscalJob(kind: 'FISCAL_OPEN' | 'FISCAL_CLOSE', success: string): Promise<void> {
   acting.value = true
   try {
-    await openFiscalYear(props.cid)
-    ElMessage.success('财年已开启')
+    const job = await createJob(props.cid, kind)
+    const finalJob = await waitJob(props.cid, job.id)
+    if (finalJob.status === 'FAILED') {
+      ElMessage.error(finalJob.error || '执行失败')
+      return
+    }
+    ElMessage.success(success)
     await loadYears()
   } catch (e) {
     ElMessage.error(errorMessage(e, '操作失败'))
@@ -80,26 +83,21 @@ async function handleOpen(): Promise<void> {
   }
 }
 
+async function handleOpen(): Promise<void> {
+  await runFiscalJob('FISCAL_OPEN', '财年已开启')
+}
+
 async function handleClose(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '结束财年将自动备份各公司字段数据表（实体信息表 + 财务报表），并触发财年末定时器。是否继续？',
+      '确定结束当前财年？将自动备份各公司字段数据表（实体信息表 + 财务报表），并触发财年末定时器。',
       '结束财年',
       { type: 'warning', confirmButtonText: '结束财年', cancelButtonText: '取消' },
     )
   } catch {
     return // 用户取消
   }
-  acting.value = true
-  try {
-    await closeFiscalYear(props.cid)
-    ElMessage.success('财年已结束，已自动备份')
-    await loadYears()
-  } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
-  } finally {
-    acting.value = false
-  }
+  await runFiscalJob('FISCAL_CLOSE', '财年已结束，已自动备份')
 }
 
 // ---------- 备份查看 ----------
@@ -116,7 +114,7 @@ async function loadBackups(): Promise<void> {
   try {
     backups.value = await getFiscalYearBackups(props.cid, selectedFiscalYearId.value)
   } catch (e) {
-    ElMessage.error(errorMessage(e, '操作失败'))
+    ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
     backupsLoading.value = false
   }
@@ -142,14 +140,13 @@ watch(() => props.cid, loadYears)
 </script>
 
 <template>
-  <div class="fiscal-page">
-    <div class="page-toolbar">
-      <h1 class="page-title">财年管理</h1>
-      <div v-if="canManage" class="page-actions">
+  <div class="fiscal-page page">
+    <PageHeader title="财年管理">
+      <template v-if="canManage" #actions>
         <el-button type="primary" :loading="acting" @click="handleOpen">开启财年</el-button>
         <el-button type="danger" :loading="acting" @click="handleClose">结束财年</el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- 补录说明 -->
     <!-- 关键数字：财年 / 状态 / 备份总量 -->
@@ -188,9 +185,9 @@ watch(() => props.cid, loadYears)
         class="year-table"
         style="width: 100%"
         @row-click="selectYear"
-      >
+       size="small">
         <template #empty>
-          <el-empty description="暂无财年" />
+          <el-empty description="暂无财年"  :image-size="72" />
         </template>
         <el-table-column label="财年" width="120" align="center">
           <template #default="{ row }">
@@ -249,11 +246,11 @@ watch(() => props.cid, loadYears)
         border
         stripe
         style="width: 100%"
-      >
+       size="small">
         <template #empty>
           <el-empty
             :description="selectedFiscalYearId == null ? '请先选择财年' : '该财年暂无备份快照'"
-          />
+           :image-size="72" />
         </template>
         <el-table-column type="expand">
           <template #default="{ row }">
@@ -304,7 +301,10 @@ watch(() => props.cid, loadYears)
 .page-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .backfill-alert {
@@ -312,9 +312,6 @@ watch(() => props.cid, loadYears)
 }
 
 .section-title {
-  font-size: var(--font-lg);
-  font-weight: 700;
-  color: var(--color-text-primary);
   margin-bottom: 14px;
 }
 

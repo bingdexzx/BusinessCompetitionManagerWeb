@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// 股票管理页：股票与资金账户的新增/编辑/删除（仅超管可写，其余整页提示）
+// 股票管理页：股票与资金账户的新增/编辑/删除（仅超级管理员可写，其余整页提示）
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import * as api from '@/api'
@@ -17,12 +18,8 @@ const props = defineProps<{ cid: string }>()
 const catalog = useCatalog(() => props.cid)
 const auth = useAuthStore()
 
-/** 系统超管或本比赛超管：可新增/编辑/删除（其余整页提示） */
-const canManage = computed(
-  () =>
-    auth.isSuperuser ||
-    auth.memberships.some((m) => String(m.id) === props.cid && m.identity === 'COMP_SUPER_ADMIN'),
-)
+/** 系统超级管理员或本比赛超级管理员：可新增/编辑/删除（其余整页提示） */
+const canManage = computed(() => auth.isSuperuser)
 
 // ---------- 名称解析（关联公司 / 用户） ----------
 const companies = ref<Company[]>([])
@@ -106,7 +103,7 @@ async function loadStocks(): Promise<void> {
     void backfillStockDetails()
   } catch (err) {
     stockRows.value = []
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
     stockLoading.value = false
   }
@@ -140,7 +137,7 @@ async function loadAccounts(): Promise<void> {
     accountRows.value = res.items
   } catch (err) {
     accountRows.value = []
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
     accountLoading.value = false
   }
@@ -210,11 +207,11 @@ const stockFormRef = ref<FormInstance>()
 const stockForm = reactive<StockForm>(emptyStockForm())
 
 const stockRules: FormRules = {
-  code: [{ required: true, message: '请填写代码', trigger: 'blur' }],
-  name: [{ required: true, message: '请填写名称', trigger: 'blur' }],
-  totalShares: [{ required: true, message: '请填写股本', trigger: 'change' }],
-  initNetProfit: [{ required: true, message: '请填写净利润', trigger: 'change' }],
-  initPrice: [{ required: true, message: '请填写发行价', trigger: 'change' }],
+  code: [{ required: true, message: '请输入代码', trigger: 'blur' }],
+  name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
+  totalShares: [{ required: true, message: '请输入股本', trigger: 'change' }],
+  initNetProfit: [{ required: true, message: '请输入净利润', trigger: 'change' }],
+  initPrice: [{ required: true, message: '请输入发行价', trigger: 'change' }],
 }
 
 function setText(key: string, value: string): void {
@@ -251,7 +248,7 @@ async function openStockEdit(row: StockRow): Promise<void> {
     stockForm.pbRandom = num(detail.pbRandom)
     showStockForm.value = true
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '保存失败'))
   }
 }
 
@@ -285,15 +282,15 @@ async function submitStock(): Promise<void> {
     const payload = buildStockPayload()
     if (editingCode.value == null) {
       await api.createStock(props.cid, payload)
-      ElMessage.success('已新增')
+      ElMessage.success('股票已新增')
     } else {
       await api.updateStock(props.cid, editingCode.value, payload)
-      ElMessage.success('已保存')
+      ElMessage.success('股票已保存')
     }
     showStockForm.value = false
     load()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '保存失败'))
   } finally {
     stockSaving.value = false
   }
@@ -302,7 +299,7 @@ async function submitStock(): Promise<void> {
 async function removeStock(row: StockRow): Promise<void> {
   const label = `${row.name || row.code}（${row.code}）`
   try {
-    await ElMessageBox.confirm(`确定删除股票「${label}」？`, '删除', {
+    await ElMessageBox.confirm(`确定删除股票「${label}」？`, '删除股票', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -312,10 +309,10 @@ async function removeStock(row: StockRow): Promise<void> {
   }
   try {
     await api.deleteStock(props.cid, row.code)
-    ElMessage.success('已删除')
+    ElMessage.success('股票已删除')
     load()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '删除失败'))
   }
 }
 
@@ -346,7 +343,7 @@ const accountFormRef = ref<FormInstance>()
 const accountForm = reactive<AccountForm>(emptyAccountForm())
 
 const accountRules = computed<FormRules>(() => ({
-  name: [{ required: true, message: '请填写账户名', trigger: 'blur' }],
+  name: [{ required: true, message: '请输入账户名', trigger: 'blur' }],
   userId:
     accountForm.ownerType === 'USER'
       ? [{ required: true, message: '请选择归属用户', trigger: 'change' }]
@@ -401,15 +398,15 @@ async function submitAccount(): Promise<void> {
     const payload = buildAccountPayload()
     if (editingAccountId.value == null) {
       await api.createStockAccount(props.cid, payload)
-      ElMessage.success('已新增')
+      ElMessage.success('资金账户已新增')
     } else {
       await api.updateStockAccount(props.cid, editingAccountId.value, payload)
-      ElMessage.success('已保存')
+      ElMessage.success('资金账户已保存')
     }
     showAccountForm.value = false
     loadAccounts()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '保存失败'))
   } finally {
     accountSaving.value = false
   }
@@ -418,7 +415,7 @@ async function submitAccount(): Promise<void> {
 async function removeAccount(row: StockAccount): Promise<void> {
   const label = row.name || (row.id != null ? `#${row.id}` : '')
   try {
-    await ElMessageBox.confirm(`确定删除账户「${label}」？`, '删除', {
+    await ElMessageBox.confirm(`确定删除账户「${label}」？`, '删除账户', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -428,10 +425,10 @@ async function removeAccount(row: StockAccount): Promise<void> {
   }
   try {
     await api.deleteStockAccount(props.cid, row.id ?? 0)
-    ElMessage.success('已删除')
+    ElMessage.success('资金账户已删除')
     loadAccounts()
   } catch (err) {
-    ElMessage.error(errorMessage(err, '操作失败'))
+    ElMessage.error(errorMessage(err, '删除失败'))
   }
 }
 
@@ -448,12 +445,10 @@ watch(
 </script>
 
 <template>
-  <div class="stock-admin-page">
-    <div class="page-toolbar">
-      <h1 class="page-title">股票管理</h1>
-    </div>
+  <div class="stock-admin-page page">
+    <PageHeader title="股票管理" />
 
-    <el-empty v-if="!canManage" description="仅超级管理员可管理股票与账户" />
+    <el-empty v-if="!canManage" description="仅超级管理员可管理股票与账户"  :image-size="72" />
 
     <template v-else>
       <!-- 股票管理 -->
@@ -473,13 +468,13 @@ watch(
           </div>
         </template>
 
-        <!-- 首屏加载：骨架代替空表，避免「暂无数据」误判 -->
+        <!-- 首屏加载：骨架代替空表，避免「暂无记录」误判 -->
         <div v-if="stockLoading && !stockRows.length" class="table-skeleton">
           <div v-for="i in 6" :key="i" class="skeleton skeleton-line" />
         </div>
-        <el-table v-else v-loading="stockLoading" :data="stockRows" border stripe>
+        <el-table v-else v-loading="stockLoading" :data="stockRows" border stripe size="small">
           <template #empty>
-            <el-empty description="暂无股票数据" :image-size="60" />
+            <el-empty description="暂无股票数据" :image-size="72" />
           </template>
           <el-table-column label="代码" width="100">
             <template #default="{ row }">{{ toDisplay(row.code) }}</template>
@@ -516,13 +511,7 @@ watch(
                 <el-button size="small" link type="primary" @click="openStockEdit(row)">
                   编辑
                 </el-button>
-                <el-button
-                  size="small"
-                  link
-                  type="danger"
-                  class="danger-op"
-                  @click="removeStock(row)"
-                >
+                <el-button size="small" link type="danger" class="danger-op" @click="removeStock(row)">
                   删除
                 </el-button>
               </div>
@@ -551,9 +540,9 @@ watch(
         <div v-if="accountLoading && !accountRows.length" class="table-skeleton">
           <div v-for="i in 5" :key="i" class="skeleton skeleton-line" />
         </div>
-        <el-table v-else v-loading="accountLoading" :data="accountRows" border stripe>
+        <el-table v-else v-loading="accountLoading" :data="accountRows" border stripe size="small">
           <template #empty>
-            <el-empty description="暂无资金账户" :image-size="60" />
+            <el-empty description="暂无资金账户" :image-size="72" />
           </template>
           <el-table-column label="账户名" min-width="130">
             <template #default="{ row }">{{ toDisplay(row.name) }}</template>
@@ -580,13 +569,7 @@ watch(
                 <el-button size="small" link type="primary" @click="openAccountEdit(row)">
                   编辑
                 </el-button>
-                <el-button
-                  size="small"
-                  link
-                  type="danger"
-                  class="danger-op"
-                  @click="removeAccount(row)"
-                >
+                <el-button size="small" link type="danger" class="danger-op" @click="removeAccount(row)">
                   删除
                 </el-button>
               </div>
@@ -600,21 +583,21 @@ watch(
     <el-dialog
       v-model="showStockForm"
       :title="editingCode == null ? '新增股票' : '编辑股票'"
-      width="520px"
+      width="560px"
       destroy-on-close
     >
       <el-form
         ref="stockFormRef"
         :model="stockForm"
         :rules="stockRules"
-        label-width="110px"
+        label-width="96px"
         @submit.prevent
       >
         <el-form-item v-for="f in STOCK_FIELDS" :key="f.key" :label="f.label" :prop="f.key">
           <el-select
             v-if="f.kind === 'company'"
             v-model="stockForm.companyId"
-            placeholder="选择公司"
+            placeholder="请选择公司"
             clearable
             filterable
             style="width: 100%"
@@ -664,14 +647,14 @@ watch(
     <el-dialog
       v-model="showAccountForm"
       :title="editingAccountId == null ? '新增资金账户' : '编辑资金账户'"
-      width="520px"
+      width="560px"
       destroy-on-close
     >
       <el-form
         ref="accountFormRef"
         :model="accountForm"
         :rules="accountRules"
-        label-width="110px"
+        label-width="96px"
         @submit.prevent
       >
         <el-form-item label="账户名" prop="name">
@@ -702,7 +685,7 @@ watch(
         <el-form-item v-else label="归属公司" prop="companyId">
           <el-select
             v-model="accountForm.companyId"
-            placeholder="选择公司"
+            placeholder="请选择公司"
             clearable
             filterable
             style="width: 100%"

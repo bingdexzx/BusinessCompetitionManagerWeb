@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// 系统设置 — 流量限制（仅系统超管）：登录限流 + API 每分钟限流 + 限流记录清理
+// 系统设置 — 流量限制（仅系统超级管理员）：登录限流 + API 每分钟限流 + 限流记录清理
 import { computed, onMounted, ref } from 'vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useCountUp } from '@/composables/useMotion'
@@ -15,31 +16,25 @@ import {
 } from '@/api/settingsApi'
 import { errorMessage } from '@/utils/errors'
 import { useResourceRefresh } from '@/composables/useNotifications'
-
 /** 五角色固定键集合 + 中文名（与后端 api.perMinute 严格一致） */
 interface RoleRow {
   key: keyof ApiPerMinuteLimits
   label: string
   desc: string
 }
-
 const roleRows: RoleRow[] = [
-  { key: 'superuser', label: '系统超级管理员', desc: '系统级管理账号' },
-  { key: 'compSuperAdmin', label: '比赛超级管理员', desc: '比赛内最高权限' },
+  { key: 'superuser', label: '超级管理员', desc: '系统级管理账号' },
   { key: 'admin', label: '管理员（主席团）', desc: '比赛内管理员' },
   { key: 'player', label: '参赛代表', desc: '参赛队伍成员' },
   { key: 'anonymous', label: '匿名 / 无身份', desc: '未登录或无比赛身份的用户' },
 ]
-
 // el-table 插槽的 row 是 any，这里用带类型的读写器避免隐式 any 索引
 function perMinuteOf(row: RoleRow): number {
   return form.value.api.perMinute[row.key]
 }
-
 function setPerMinute(row: RoleRow, value: number | undefined): void {
   form.value.api.perMinute[row.key] = Math.round(Number(value ?? 1))
 }
-
 function defaultConfig(): RateLimitConfig {
   return {
     login: { failLimit: 10, windowSeconds: 300, lockSeconds: 900 },
@@ -47,7 +42,6 @@ function defaultConfig(): RateLimitConfig {
       enabled: true,
       perMinute: {
         superuser: 600,
-        compSuperAdmin: 300,
         admin: 200,
         player: 120,
         anonymous: 30,
@@ -55,21 +49,17 @@ function defaultConfig(): RateLimitConfig {
     },
   }
 }
-
 const loading = ref(false)
 const saving = ref(false)
 const resetting = ref(false)
 const clearing = ref(false)
-
 const form = ref<RateLimitConfig>(defaultConfig())
 /** 锁定时长按「分钟」编辑，保存时换算成秒（后端存 lockSeconds） */
 const lockMinutes = ref(15)
 const stats = ref<RateLimitStats>({ throttleRecords: 0, activeLocks: 0 })
-
 // 统计数字：随实时刷新平滑滚动（useCountUp 首次赋值不播动画）
 const throttleShown = useCountUp(computed(() => stats.value.throttleRecords))
 const activeLocksShown = useCountUp(computed(() => stats.value.activeLocks))
-
 function applyConfig(config: RateLimitConfig): void {
   form.value = {
     login: { ...config.login },
@@ -80,7 +70,6 @@ function applyConfig(config: RateLimitConfig): void {
   }
   lockMinutes.value = Math.max(1, Math.round(config.login.lockSeconds / 60))
 }
-
 async function load(): Promise<void> {
   loading.value = true
   try {
@@ -93,10 +82,8 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
-
 // 实时刷新：系统设置（/api/system/rate-limit → 资源名 system）变更广播后重拉配置与统计
 useResourceRefresh(['system'], load)
-
 /** 本地数值必须为正整数（后端严格校验，这里先给出友好拦截） */
 function buildPayload(): RateLimitConfig | null {
   const failLimit = Math.round(Number(form.value.login.failLimit))
@@ -113,7 +100,6 @@ function buildPayload(): RateLimitConfig | null {
     api: { enabled: form.value.api.enabled, perMinute },
   }
 }
-
 async function save(): Promise<void> {
   const payload = buildPayload()
   if (!payload) {
@@ -123,7 +109,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     applyConfig(await saveRateLimit(payload))
-    ElMessage.success('保存成功')
+    ElMessage.success('限流设置已保存')
     await refreshStats()
   } catch (err) {
     ElMessage.error(errorMessage(err, '保存失败'))
@@ -131,12 +117,11 @@ async function save(): Promise<void> {
     saving.value = false
   }
 }
-
 async function reset(): Promise<void> {
   resetting.value = true
   try {
     applyConfig(await resetRateLimit())
-    ElMessage.success('已恢复默认配置')
+    ElMessage.success('限流配置已恢复默认')
     await refreshStats()
   } catch (err) {
     ElMessage.error(errorMessage(err, '恢复默认失败'))
@@ -144,7 +129,6 @@ async function reset(): Promise<void> {
     resetting.value = false
   }
 }
-
 async function refreshStats(): Promise<void> {
   try {
     stats.value = (await getRateLimit()).stats
@@ -152,12 +136,11 @@ async function refreshStats(): Promise<void> {
     // 统计刷新失败不打扰用户，主操作已完成
   }
 }
-
 async function clearRecords(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '确定清空全部限流记录吗？包含 API 请求计数与登录失败限流记录，清空后相关限制立即重新计算。',
-      '清空限制记录',
+      '确定清空全部限流记录？包含 API 请求计数与登录失败限流记录，清空后相关限制立即重新计算。',
+      '清空限流记录',
       { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
     )
   } catch {
@@ -166,7 +149,7 @@ async function clearRecords(): Promise<void> {
   clearing.value = true
   try {
     const res = await clearRateLimitRecords()
-    ElMessage.success(`已清空 ${res.cleared} 条限流记录`)
+    ElMessage.success(`限流记录已清空 ${res.cleared} 条`)
     await refreshStats()
   } catch (err) {
     ElMessage.error(errorMessage(err, '清空失败'))
@@ -174,17 +157,17 @@ async function clearRecords(): Promise<void> {
     clearing.value = false
   }
 }
-
 onMounted(() => void load())
 </script>
-
 <template>
-  <div class="settings-view">
+  <div class="settings-view page">
     <div class="page-toolbar">
-      <h1 class="page-title">系统设置</h1>
-      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      <PageHeader title="系统设置">
+        <template #actions>
+          <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        </template>
+      </PageHeader>
     </div>
-
     <!-- ===== 限流概况 ===== -->
     <section class="panel settings-panel anim-fade-in-up">
       <h2 class="section-title">限流概况</h2>
@@ -199,11 +182,10 @@ onMounted(() => void load())
         </div>
       </div>
     </section>
-
     <!-- ===== 登录限流 ===== -->
     <section class="panel settings-panel anim-fade-in-up">
       <h2 class="section-title">登录限流</h2>
-      <el-form label-width="150px" class="limit-form" @submit.prevent>
+      <el-form label-width="96px" class="limit-form" @submit.prevent>
         <el-form-item label="失败次数上限">
           <el-input-number
             v-model="form.login.failLimit"
@@ -236,15 +218,13 @@ onMounted(() => void load())
         </el-form-item>
       </el-form>
     </section>
-
     <!-- ===== API 限流 ===== -->
     <section class="panel settings-panel anim-fade-in-up">
       <h2 class="section-title">API 限流</h2>
       <div class="switch-row">
         <el-switch v-model="form.api.enabled" active-text="启用 API 每分钟限流" />
       </div>
-
-      <el-table :data="roleRows" stripe size="small" class="role-table">
+      <el-table :data="roleRows" stripe size="small" class="role-table" border>
         <el-table-column prop="label" label="角色" width="170" />
         <el-table-column prop="key" label="角色标识" width="160" />
         <el-table-column label="每分钟限额（次）" width="220">
@@ -263,7 +243,6 @@ onMounted(() => void load())
         <el-table-column prop="desc" label="说明" min-width="200" show-overflow-tooltip />
       </el-table>
     </section>
-
     <!-- ===== 操作（常驻底部，长页面滚动时也可达） ===== -->
     <div class="sticky-actions">
       <el-button type="primary" :loading="saving" @click="save">保存</el-button>
@@ -274,14 +253,12 @@ onMounted(() => void load())
     </div>
   </div>
 </template>
-
 <style scoped>
 .settings-view {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-
 .page-toolbar {
   display: flex;
   align-items: center;
@@ -289,43 +266,34 @@ onMounted(() => void load())
   gap: 12px;
   flex-wrap: wrap;
 }
-
 .page-toolbar .page-title {
   margin-bottom: 0;
 }
-
 /* 每个分区一张面板卡片，避免整页一长条 */
 .settings-panel {
   padding: 18px 20px;
 }
-
 .settings-panel .section-title {
   margin-bottom: 14px;
 }
-
 .limit-form {
   max-width: 720px;
 }
-
 .form-tip {
   margin-left: 12px;
   color: var(--color-text-secondary);
   font-size: var(--font-xs);
 }
-
 .switch-row {
   margin-bottom: 12px;
 }
-
 /* 页面本身用 gap 排版，操作条不再叠加全局 margin-top */
 .settings-view .sticky-actions {
   margin-top: 0;
 }
-
 .role-table {
   max-width: 860px;
 }
-
 @media (max-width: 640px) {
   .form-tip {
     display: block;
@@ -333,4 +301,4 @@ onMounted(() => void load())
     margin-top: 2px;
   }
 }
-</style>
+</style>
