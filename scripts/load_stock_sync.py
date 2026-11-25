@@ -17,12 +17,10 @@ import http.client
 import json
 import os
 import socket
-import statistics
 import sys
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timezone
 
 REPO = os.path.join(os.path.dirname(__file__), '..')
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'BusinessCompetitionManagerWeb.settings')
@@ -216,12 +214,10 @@ def main():
         for i, (_uid, token) in enumerate(tokens)
     ]
     print(f'  load: {len(threads)} 并发账号 × {args.seconds}s ...')
-    t0 = time.time()
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    elapsed = time.time() - t0
 
     print('\n== 压测结果（计时窗=稳态增量） ==')
     print(f'并发账号: {len(threads)}  计时窗: {args.seconds}s')

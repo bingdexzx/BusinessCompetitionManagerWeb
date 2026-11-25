@@ -15,7 +15,6 @@ import http.client
 import json
 import os
 import socket
-import statistics
 import sys
 import threading
 import time
