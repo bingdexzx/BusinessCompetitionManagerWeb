@@ -1,260 +1,113 @@
-# Debian 一键部署
+# Debian 部署 / 运维脚本（v2）
 
-目标：**Debian 12（或 Debian 系）全新服务器**，一条命令装好 PostgreSQL + 后端 + WebSocket + 前端 + Nginx + HTTPS + systemd。
-
-## 1. 准备
-
-- Debian 12+（root 或 sudo 权限），内存 ≥ 2GB；
-- 域名已解析到服务器 IP（要 HTTPS 证书时必须）；
-- 服务器能访问外网（apt / PyPI / npm / certbot）。
-
-把仓库上传到服务器任意目录（或 `git clone`），然后：
+一个脚本覆盖：**安装、升级、体检、状态查看**。能自动判断的都自动判断，只问需要人决定的；
+重复执行安全，失败时给出下一步。
 
 ```bash
-cd BusinessCompetitionManagerWeb
+# 交互式安装（推荐第一次用）
 sudo bash deploy/debian/install.sh
-```
 
-## 2. 交互流程（能生成的自动生成，不能猜的才问）
+# 全自动（自动探测本机 IP、自动生成密钥/密码/管理员密码）
+sudo bash deploy/debian/install.sh install --yes
 
-部署时会逐项询问，**直接回车 = 使用默认值**：
-
-| 项 | 处理方式 | 默认 |
-| --- | --- | --- |
-| 站点域名 | **必须询问**（无法生成） | — |
-| 安装目录 | 询问 | `/opt/bcm` |
-| 管理员用户名 | 询问 | `admin` |
-| 管理员邮箱 | 询问 | `admin@<域名>` |
-| 管理员密码 | **自动生成**并展示一次（可选自己填） | 随机 12 位 |
-| 数据库模式 | 询问 `local`（本机装）或 `existing`（用已有库） | `local` |
-| 数据库名 / 用户 | 询问 | `business_competition_manager` / `bcm_app` |
-| 数据库密码 | **自动生成**（existing 模式必须手填） | 随机 24 位 |
-| worker 数 | 询问 | CPU 核数 |
-| 每 worker 线程数 | 询问 | 8 |
-| 申请 HTTPS | 确认 | 是 |
-| 构建前端 | 确认（需要 Node 20，缺会自动装） | 是 |
-| 启用 ufw | 确认（放行 SSH/80/443） | 是 |
-
-`SECRET_KEY`（48 位随机）也在部署时**自动生成**写入 `.env`。
-
-> 全自动（CI/无人值守）：
-> ```bash
-> sudo bash deploy/debian/install.sh --domain bcm.example.com --yes
-> ```
-> `--yes` 下所有默认值生效、密钥/密码自动生成；域名必须通过参数给。
-> 已部署过、想复用已有数据库：
-> ```bash
-> sudo bash deploy/debian/install.sh --domain bcm.example.com --db-mode existing \
->   --db-host 10.0.0.5 --db-name bcm --db-user bcm --db-password '***' --yes
-> ```
-
-
-## 2.5 使用 1Panel 安装 PostgreSQL / Nginx（推荐）
-
-如果你用 1Panel 管理服务器，**不需要让脚本再装一遍**：
-
-1. 在 1Panel「应用商店」安装 **PostgreSQL** 和 **Nginx/OpenResty**；
-2. 在 1Panel「数据库 → PostgreSQL」创建数据库与用户（记住密码）；
-3. 在 1Panel「网站」创建一个站点（静态/PHP 均可），根目录填：
-   `/opt/bcm/BusinessCompetitionManagerWebFrontend/dist`；
-4. 运行部署脚本（只装 Python 依赖、构建前端、起 systemd 后端）：
-
-```bash
-sudo bash deploy/debian/install.sh \
-  --domain bcm.example.com \
-  --db-mode existing \
-  --db-host 127.0.0.1 --db-port 5432 \
-  --db-name bcm --db-user bcm --db-password '***' \
-  --nginx-mode manual --yes
-```
-
-脚本会：
-
-- **自动检测** 1Panel / Nginx / OpenResty / PostgreSQL 是否已存在，已存在就**跳过安装**；
-- `--nginx-mode manual`：不修改系统 nginx，只把站点配置导出到
-  `/opt/bcm/deploy/nginx/bcm.site.conf`，并打印 1Panel 里的两种配法
-  （替换站点配置，或反向代理 `/api`→8000、`/ws`→8001 并开启 WebSocket）；
-- 跳过 certbot（在 1Panel 网站设置里一键申请 SSL）与 ufw（1Panel 自带防火墙）。
-
-> 不带 `--nginx-mode` 时：检测到 Nginx/OpenResty 会询问 `manage`（脚本写配置）还是
-> `manual`（1Panel 里配）；检测到 1Panel 时默认 `manual`，防火墙默认交给 1Panel。
-
-### 1Panel 用的是 OpenResty（不是系统 nginx）
-
-脚本**不会改** `/etc/nginx`（那里即使写了也不生效），需要在 1Panel 里配：
-
-1. 网站 → 创建网站 → **静态网站**，根目录：
-   `/opt/bcm/BusinessCompetitionManagerWebFrontend/dist`；
-2. 打开站点 → **配置文件**，用 `/opt/bcm/deploy/nginx/bcm.site.conf`
-   的内容整体替换（里面已含 SPA 回退、`/api`、`/ws` 升级、上传上限）；
-   若文件不存在，用仓库的 `deploy/nginx/bcm.conf`，把 `server_name` 改成服务器 IP、
-   `root` 改成上面的 dist 路径；
-3. 保存后 1Panel 会自动 reload OpenResty，用下面命令验证：
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: <IP>' http://127.0.0.1/
-curl -s -H 'Host: <IP>' http://127.0.0.1/api/health
-```
-
-> 1Panel 建站点时如果域名输入框不接受纯 IP：随便填一个占位域名，
-> 保存后在「配置文件」里把 `server_name` 改成 `_` 或服务器 IP 即可。
-
-### 站点目录被 1Panel 限制（只能用它自己的目录）
-
-1Panel 创建站点时根目录只能选它规定的位置（如
-`/opt/1panel/apps/openresty/openresty/www/sites/<站点>/index`）。两种做法：
-
-> 部署脚本在进入迁移前会检查目标库：**不存在就用你输入的用户名/密码/库名创建**
-> （owner 为该用户）。如果该用户没有 CREATEDB 权限，脚本会尝试用系统 postgres 创建；
-> 仍失败时请到 1Panel 里建库，或给用户授权：`ALTER ROLE <用户> CREATEDB;`。
-
-**推荐：部署时把 dist 同步进站点目录**
-
-```bash
-sudo bash deploy/debian/install.sh --ip <IP> --yes \
-  --site-dir /opt/1panel/apps/openresty/openresty/www/sites/<站点>/index
-```
-
-脚本构建完成后会 `rsync --delete` 把 `dist/` 同步到该目录，并 `chown www:www`；
-nginx 配置里的 `root` 也自动指向它。
-
-**手动同步（已有站点）**
-
-```bash
-SITE_DIR=/opt/1panel/apps/openresty/openresty/www/sites/<站点>/index
-sudo rsync -a --delete /opt/bcm/BusinessCompetitionManagerWebFrontend/dist/ "$SITE_DIR"/
-sudo chown -R www:www "$SITE_DIR"
-```
-
-之后每次重新构建前端，都要再同步一次（或用上面的 `--site-dir` 重跑部署脚本）。
-
-### 检测逻辑
-
-| 组件 | 检测方式 | 已存在时 |
-| --- | --- | --- |
-| 1Panel | `/opt/1panel` 或 `1pctl` | 跳过 ufw；Nginx 默认 manual |
-| Nginx | `nginx`/`openresty` 命令 | 不安装；按 `--nginx-mode` 处理 |
-| PostgreSQL | 5432 端口监听 | 不安装；默认复用（existing） |
-| certbot | `certbot` 命令 | 不重复安装 |
-
-> 调试用：`--assume-detected nginx --assume-detected postgres --assume-detected onepanel`
-> 可在没有对应组件的机器上预演「已安装」分支（配合 `--dry-run`）。
-
-
-## 2.6 纯 IP 部署（没有域名）
-
-可以，直接把 IP 当访问地址即可，脚本会自动识别并关掉 HTTPS：
-
-```bash
+# 纯 IP
 sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes
-# 或：--domain 203.0.113.10（脚本检测到是 IP，效果相同）
-# 或直接：sudo bash deploy/debian/install.sh --yes
-#   → 不带域名/IP 时自动检测本机 IP（公网 IP 不同时请用 --ip 指定）
+
+# 已部署环境升级：同步代码 → 依赖 → 迁移 → 构建前端 → 重启
+sudo bash deploy/debian/install.sh upgrade
+
+# 只体检，不改系统
+python3 deploy/debian/deploy.py doctor
+
+# 看服务/健康/数据库/访问地址
+python3 deploy/debian/deploy.py status
 ```
 
-脚本会：
+## 它比旧版聪明在哪
 
-- 跳过 certbot（Let's Encrypt 不给 IP 签长期证书），站点走 `http://IP`；
-- `.env` 写：`ALLOWED_HOSTS=IP`、`CORS_ALLOWED_ORIGINS=http://IP`、
-  `CSRF_TRUSTED_ORIGINS=http://IP`、`SECURE_SSL_REDIRECT=false`、`SECURE_HSTS_SECONDS=0`、
-  `SESSION_COOKIE_SECURE=false`、`CSRF_COOKIE_SECURE=false`；
-- nginx `server_name` 填 IP（1Panel 手动模式同样填 IP 或 `_`）。
-
-**已部署好的环境**（手工改 `/opt/bcm/.env` 后重启 `bcm`）：
-
-| 变量 | 值 |
+| 场景 | 自动处理 |
 | --- | --- |
-| `ALLOWED_HOSTS` | `203.0.113.10` |
-| `CORS_ALLOWED_ORIGINS` | `http://203.0.113.10` |
-| `CSRF_TRUSTED_ORIGINS` | `http://203.0.113.10` |
-| `SECURE_SSL_REDIRECT` | `false` |
-| `SECURE_HSTS_SECONDS` | `0` |
-| `TRUST_X_FORWARDED_PROTO` | `false` |
-| `SESSION_COOKIE_SECURE` / `CSRF_COOKIE_SECURE` | `false` |
+| 地址没给 | `--yes` 时自动探测本机 IP（并提示公网不同请用 `--ip`） |
+| 已是 Debian + root | 自动跳过前置检查；非 Debian/非 root 直接拒绝并说明 |
+| 已装依赖 | `dpkg -s` 逐个判断，只 apt 安装缺的 |
+| 已有 `.env` | 复用数据库连接与 `SECRET_KEY`，部署/升级不会改密、不会让登录态失效 |
+| 本机已有 PostgreSQL | 默认复用；自动创建数据库（用输入的用户/密码，owner 为该用户） |
+| 1Panel / OpenResty 占着 80 | 默认改用系统 nginx；有 `--stop-openresty` 或确认时停掉 OpenResty，否则自动改用 8080 |
+| uv 的 Python 在 /root 下 | 固定装到 `/opt/uv-python`，并检测到旧 venv 指向 `/root` 时自动重建 |
+| 前端站点目录受限（1Panel） | `--site-dir` 自动 `rsync` dist 进去并 `chown www:www` |
+| 机器没有 Node.js | 询问后装 Node 20；`--no-frontend-build` 可跳过 |
+| 数据库不存在 | 自动建库；无权限时提示去 1Panel 建库或 `ALTER ROLE ... CREATEDB` |
+| 数据库连不上 | 迁移前单独校验，报错直接给出当前 `用户@主机:端口/库` 与修复命令 |
+| 管理员不存在 | 自动创建并**校验确实存在**；`--reset-admin-password` 可重置已有账号 |
+| 证书申请失败 | 只警告，不影响 HTTP 站点；可稍后手动 certbot |
+| 重复执行 | 安装/升级都是幂等的：已存在则跳过，`.env`/media/日志保留 |
 
-> 安全提示：纯 IP + HTTP 时**密码和登录令牌是明文传输**，只适合内网 / VPN / 临时验收。
-> 公网长期使用建议：套 SSH 隧道/VPN，或绑一个域名后重新跑脚本申请 HTTPS。
+## 常用参数
 
+| 参数 | 说明 |
+| --- | --- |
+| `--ip <IP>` / `--domain <域名>` | 访问地址（二选一；IP 自动按纯 IP 模式处理） |
+| `--app-dir` | 安装目录，默认 `/opt/bcm` |
+| `--site-dir` | 把前端 dist 同步到该目录（1Panel 站点根目录） |
+| `--db-mode local\|existing` | 本机装 PostgreSQL / 使用已有库 |
+| `--db-name/--db-user/--db-password/--db-host/--db-port` | 数据库连接 |
+| `--nginx-mode auto\|system\|manage\|manual` | auto=自动判断；system=系统 nginx；manage=写现有 nginx；manual=只导出配置（1Panel） |
+| `--http-port` | nginx 端口，默认 80；被占用自动换 8080 |
+| `--stop-openresty` | 80 被 1Panel OpenResty 占用时停掉它 |
+| `--tls` / `--no-tls` | 是否申请 Let's Encrypt 证书 |
+| `--workers/--threads` | waitress 进程数/线程数 |
+| `--admin-user/--admin-email/--admin-password` | 管理员账号 |
+| `--reset-admin-password` | 已存在时重置密码为本次密码 |
+| `--no-frontend-build` | 使用现有 dist，不构建 |
+| `--firewall` / `--no-firewall` | 是否启用 ufw |
+| `--yes` | 全部默认值/自动生成，不逐项询问 |
+| `--dry-run` | 只打印计划，不执行 |
+| `--verbose` | 打印每条命令 |
 
-## 2.7 不用 1Panel 的 nginx（用系统 nginx，推荐）
+## 安装流程
 
-不想被 1Panel 的站点目录/OpenResty 限制时，让脚本直接装并配置系统 nginx：
+1. 环境探测（Debian/root/1Panel/OpenResty/nginx/PostgreSQL/Node/磁盘/内存/IP）；
+2. 只安装缺失的系统包；
+3. 数据库：复用或创建库/用户；
+4. 创建 `bcm` 系统用户与安装目录；
+5. `rsync` 同步代码（保留 `.env`、media、日志）；
+6. 生成 `.env`（自动生成 `SECRET_KEY` / 数据库密码 / 管理员密码）；
+7. `uv` 安装 Python 3.12 与依赖（固定 `/opt/uv-python`）；
+8. 建库/校验连接 → 迁移 → 确保管理员存在；
+9. 构建前端（可选同步到 `--site-dir`）；
+10. 写 systemd 服务并启动（waitress :8000 + daphne :8001，仅监听 127.0.0.1）；
+11. 写 nginx 站点（SPA 回退、`/api`、`/ws`、上传上限、安全头）；
+12. 可选 HTTPS / ufw；
+13. 健康检查，输出摘要到 `/opt/bcm/DEPLOY_SUMMARY.txt`（600）。
 
-```bash
-sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes --nginx-mode system
+## 升级流程
+
+`upgrade` 假定 `.env` 已存在且可用：
+
+```
+同步代码 → 依赖 → 校验数据库 → 迁移 → 构建前端（+ site-dir 同步）→ 重启服务 → 健康检查
 ```
 
-脚本会：
+不会重新生成密码/密钥，也不会覆盖 `.env`。
 
-1. `apt install nginx`（已装则跳过）；
-2. 写 `/etc/nginx/conf.d/bcm.conf`：`listen 80 default_server`、`server_name <IP> _`、
-   `root <dist 或 --site-dir>`、SPA 回退、`/api`、`/ws`；
-3. 删掉 `sites-enabled/default`，`nginx -t` 后 `enable --now nginx`；
-4. 不经过 1Panel，也不需要建站点。
+## 体检（doctor）
 
-**80 被 1Panel OpenResty 占用时**（执行 `ss -ltnp | grep :80` 看到 openresty）：
+检查项：Debian/root/磁盘、`.env` 关键键、`bcm` 服务与 `/api/health`、8000/8001 监听、
+nginx 站点配置。退出码 `1` 表示有问题。
 
-- 想用系统 nginx 接管 80：加 `--stop-openresty`，脚本会 `systemctl stop/disable openresty`；
-  注意这会停掉 1Panel 里**所有** OpenResty 站点；
-- 不想动 OpenResty：去掉该参数，脚本自动改用 **8080**，访问 `http://<IP>:8080`，
-  并自动在 ufw 放行 8080。
+## 状态（status）
 
-> 之后想切回 1Panel：`sudo systemctl enable --now openresty`，再删掉
-> `/etc/nginx/conf.d/bcm.conf` 并 `systemctl reload nginx`。
+输出安装目录、服务状态、健康检查、数据库连接、访问地址、站点目录与常用命令。
 
-## 3. 它会做什么
-
-1. `apt` 安装：python3、venv、nginx、rsync、postgresql（本地模式）、certbot；
-2. 创建系统用户 `bcm` 与安装目录；
-3. 同步项目代码（保留 `.env`、`media` 运行数据、日志）；
-4. 生成 `/opt/bcm/.env`（含自动生成的 SECRET_KEY、数据库密码、生产安全配置）；
-5. 用 `uv` 安装后端依赖（自动下载 Python 3.12，兼容 Debian 12 自带 3.11）；
-6. 执行数据库迁移、创建管理员账号；
-7. 构建前端（`npm ci && npm run build`）；
-8. 写入并启动 `bcm.service`（waitress :8000 + daphne :8001，只监听 127.0.0.1）；
-9. 写入 nginx 站点（静态 + `/api` + `/ws`，自动 SPA 回退、WebSocket 升级、上传大小）；
-10. 可选 certbot 申请 HTTPS 并跳转；可选 ufw 防火墙；
-11. 健康检查 + 汇总（含管理员密码与服务命令，保存在 `/opt/bcm/DEPLOY_SUMMARY.txt`，权限 600）。
-
-## 4. 部署后
-
-```bash
-systemctl status bcm
-systemctl restart bcm            # 改完 /opt/bcm/.env 后重启
-journalctl -u bcm -f             # 后端日志
-tail -f /var/log/nginx/access.log
-```
-
-- 访问 `https://<域名>`（未申请证书则 `http://<域名>`）；
-- 管理员账号/密码在部署结束时打印，也在 `DEPLOY_SUMMARY.txt`；
-- 数据库迁移、创建比赛等后续操作都在 Web 界面完成，新比赛会自动建独立库。
-
-## 5. 预演（不修改系统）
-
-任意系统都可先看计划：
-
-```bash
-python3 deploy/debian/deploy.py --dry-run --domain bcm.example.com --yes
-```
-
-## 6. 常见问题
+## 常见问题
 
 | 现象 | 处理 |
 | --- | --- |
-| certbot 失败 | 域名未解析 / 80 端口被占；修复后手动 `certbot --nginx -d 域名` |
-| 页面 404 | 前端未构建成功；`cd /opt/bcm/BusinessCompetitionManagerWebFrontend && npm run build` |
-| 502 Bad Gateway | 后端没起来：`journalctl -u bcm -n 100 --no-pager` |
-| WebSocket 连不上 | 检查 nginx `/ws/` 段是否保留 `Upgrade`/`Connection` 头 |
-| 上传 413 | nginx `client_max_body_size` 小于 `.env` 的 `UPLOAD_MAX_BYTES` |
-| 登录立刻失效 | HTTPS 未启用但 `SESSION_COOKIE_SECURE=true`：要么启用 HTTPS，要么改 `.env` 为 false 后重启 |
-| 想换域名 | 改 `.env` 的 `ALLOWED_HOSTS`/`CORS_*`/`CSRF_*` + nginx `server_name`，重载两项服务 |
-| 重复部署 | 直接再跑一次即可：代码会同步，`.env`/media/日志保留；数据库与管理员已存在会自动跳过 |
+| 80 被占用 | 加 `--stop-openresty`，或让脚本自动用 8080（`--http-port 8080`） |
+| 1Panel 站点目录受限 | 用 `--site-dir /opt/1panel/.../sites/<站点>/index` |
+| 数据库不存在 | 脚本会自动建；失败时去 1Panel 建库，或给用户 `CREATEDB` |
+| 登录/接口 502 | `systemctl status bcm` + `journalctl -u bcm -n 100` |
+| 前端 404 | 确认 `dist/index.html` 存在；重新 `upgrade` |
+| 证书失败 | 确认域名解析与 80 端口；稍后 `certbot --nginx -d 域名` |
 
-## 7. 文件
-
-```
-deploy/debian/
-├── install.sh    # 入口（bash 包装，exec python3 deploy.py）
-├── deploy.py     # 部署逻辑（交互/自动生成/幂等步骤）
-└── README.md     # 本文件
-```
+> 本脚本只在 Debian 上执行真实系统操作；`--dry-run` / `doctor` / `status` 可在其它系统预览。
