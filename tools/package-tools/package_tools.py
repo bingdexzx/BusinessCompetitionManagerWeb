@@ -136,6 +136,27 @@ FIELDS: list[IndustryFieldSpec] = [
 ]
 '''
 
+DASHBOARD_TEMPLATE = {
+    'title': '经营看板',
+    'components': [
+        {'id': 'cash', 'type': 'number', 'title': '现金合计',
+         'bind': {'table': 'finance', 'fieldKey': 'cash', 'aggregate': 'sum'}},
+        {'id': 'capacity', 'type': 'gauge', 'title': '产能',
+         'bind': {'table': 'entity', 'fieldKey': 'capacity',
+                  'aggregate': 'latest', 'max': 100}},
+        {'id': 'note', 'type': 'text', 'title': '说明', 'text': '示例仪表盘，可自行修改'},
+    ],
+    'industries': {
+        'example_industry': {
+            'title': '示例产业',
+            'components': [
+                {'id': 'i_cash', 'type': 'number', 'title': '产业现金',
+                 'bind': {'table': 'finance', 'fieldKey': 'cash', 'aggregate': 'sum'}},
+            ],
+        },
+    },
+}
+
 PACKAGE_README = '''# 比赛包工程
 
 ```bash
@@ -190,6 +211,8 @@ def cmd_init(args) -> int:
     (root / 'plugins' / 'contract_example.py').write_text(CONTRACT_TEMPLATE, encoding='utf-8')
     (root / 'plugins' / 'industry_example.py').write_text(INDUSTRY_TEMPLATE, encoding='utf-8')
     (root / 'README.md').write_text(PACKAGE_README, encoding='utf-8')
+    (root / 'dashboard.json').write_text(
+        json.dumps(DASHBOARD_TEMPLATE, ensure_ascii=False, indent=2), encoding='utf-8')
 
     _write_xlsx(root / 'sheets' / 'industries.xlsx', {
         'industries': (
@@ -212,6 +235,7 @@ def cmd_init(args) -> int:
 
     manifest = {
         'packageVersion': '1.0',
+        'dashboard': 'dashboard.json',
         'competition': {'name': '新的比赛', 'hostSchool': '', 'location': ''},
         'plugins': [
             {'file': 'plugins/contract_example.py', 'kind': 'CONTRACT',
@@ -517,15 +541,81 @@ def _headers(worksheet) -> set[str]:
     return set()
 
 
-def validate_optional_files(root: Path) -> None:
-    for name in ('dashboard.json', 'region-fields.json'):
-        path = root / name
-        if path.exists():
-            try:
-                json.loads(path.read_text(encoding='utf-8'))
-                ok(f'{name} JSON 合法')
-            except json.JSONDecodeError as exc:
-                error(f'{name}: JSON 解析失败：{exc}')
+DASHBOARD_TYPES = {'number', 'gauge', 'table', 'text'}
+DASHBOARD_AGGREGATES = {'sum', 'latest', 'average'}
+
+
+def _validate_dashboard_components(where: str, components) -> None:
+    if not isinstance(components, list):
+        error(f'{where} 必须是数组')
+        return
+    for index, comp in enumerate(components):
+        tag = f'{where}[{index}]'
+        if not isinstance(comp, dict):
+            error(f'{tag} 必须是对象')
+            continue
+        ctype = comp.get('type')
+        if ctype not in DASHBOARD_TYPES:
+            error(f'{tag}.type 必须是 {"|".join(sorted(DASHBOARD_TYPES))}')
+        if not comp.get('title'):
+            error(f'{tag}.title 不能为空')
+        if ctype == 'text':
+            continue
+        bind = comp.get('bind')
+        if not isinstance(bind, dict):
+            error(f'{tag}.bind 必须是对象')
+            continue
+        if bind.get('table') not in ('entity', 'finance'):
+            error(f'{tag}.bind.table 必须是 entity|finance')
+        if not bind.get('fieldKey'):
+            error(f'{tag}.bind.fieldKey 不能为空')
+        if bind.get('aggregate', 'latest') not in DASHBOARD_AGGREGATES:
+            error(f'{tag}.bind.aggregate 必须是 {"|".join(sorted(DASHBOARD_AGGREGATES))}')
+
+
+def validate_dashboard(root: Path, manifest: dict) -> None:
+    rel = str(manifest.get('dashboard') or 'dashboard.json')
+    path = root / rel
+    if manifest.get('dashboard') and not path.exists():
+        error(f'manifest 声明的仪表盘文件不存在：{rel}')
+        return
+    if not path.exists():
+        return
+    try:
+        doc = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        error(f'{rel}: JSON 解析失败：{exc}')
+        return
+    if not isinstance(doc, dict):
+        error(f'{rel}: 顶层必须是对象')
+        return
+    _validate_dashboard_components(f'{rel}.components', doc.get('components'))
+    industries = doc.get('industries')
+    if industries is not None and not isinstance(industries, dict):
+        error(f'{rel}.industries 必须是对象')
+        return
+    industry_keys = {entry.get('key') for entry in manifest.get('plugins') or []
+                     if str(entry.get('kind')).upper() == 'INDUSTRY'}
+    for key, section in (industries or {}).items():
+        if not isinstance(section, dict):
+            error(f'{rel}.industries.{key} 必须是对象')
+            continue
+        if industry_keys and key not in industry_keys:
+            error(f'{rel}.industries.{key} 没有对应的 INDUSTRY 插件')
+        _validate_dashboard_components(f'{rel}.industries.{key}.components',
+                                       section.get('components'))
+    ok(f'{rel} 仪表盘结构合法')
+
+
+def validate_optional_files(root: Path, manifest: dict) -> None:
+    validate_dashboard(root, manifest)
+    path = root / 'region-fields.json'
+    if path.exists():
+        try:
+            json.loads(path.read_text(encoding='utf-8'))
+            ok('region-fields.json JSON 合法')
+        except json.JSONDecodeError as exc:
+            error(f'region-fields.json: JSON 解析失败：{exc}')
 
 
 def check_directory(root: Path) -> int:
@@ -534,7 +624,7 @@ def check_directory(root: Path) -> int:
     print(f'校验包工程：{root}')
     manifest = validate_manifest(root)
     if manifest:
-        validate_optional_files(root)
+        validate_optional_files(root, manifest)
         ok(f'manifest.yaml：{len(manifest.get("plugins") or [])} 个插件、'
            f'{len(manifest.get("sheets") or [])} 张表')
     for message in WARNINGS:

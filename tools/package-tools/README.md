@@ -27,6 +27,7 @@ my_package/
 ├── plugins/
 │   ├── contract_example.py     # 合同插件模板（可复制多份改 key）
 │   └── industry_example.py     # 产业插件模板
+├── dashboard.json              # 仪表盘布局（可选，init 会生成示例）
 ├── sheets/
 │   ├── industries.xlsx         # industries + fields 两个工作表
 │   └── contracts.xlsx
@@ -63,6 +64,12 @@ my_package/
 - `contracts.xlsx`：必须有 `contractTypeKey/name/partiesJSON/inputsJSON` 列，
   `contractTypeKey` 必须对应 CONTRACT 插件；
 - 可选 `dashboard.json` / `region-fields.json` 必须是合法 JSON。
+
+**dashboard.json（可选）**
+
+- `components[]`：`type ∈ number/gauge/table/text`，`title` 非空；
+- 非 text 组件必须有 `bind.table(entity|finance)`、`bind.fieldKey`、`bind.aggregate(sum|latest|average)`；
+- `industries.<产业key>.components` 的 key 必须对应 INDUSTRY 插件。
 
 **zip**
 

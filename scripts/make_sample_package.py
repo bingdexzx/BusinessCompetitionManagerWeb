@@ -1,6 +1,6 @@
 """生成示例比赛包（《比赛包格式规范》配套交付物）。
 
-输出：dist/sample_competition_package.zip（含 manifest.yaml、3 个插件、12 张表格）
+输出：dist/sample_competition_package.zip（含 manifest.yaml、dashboard.json、3 个插件、2 张表）
 
 运行：.venv\\Scripts\\python.exe scripts\\make_sample_package.py [--out <目录>]
 """
@@ -191,6 +191,32 @@ BASEDATA_SHEETS = {
 }
 
 
+DASHBOARD = {
+    'title': '经营看板',
+    'components': [
+        {'id': 'cash', 'type': 'number', 'title': '现金合计',
+         'bind': {'table': 'finance', 'fieldKey': 'cash', 'aggregate': 'sum'}, 'suffix': '元'},
+        {'id': 'capacity', 'type': 'number', 'title': '产能合计',
+         'bind': {'table': 'entity', 'fieldKey': 'capacity', 'aggregate': 'sum'}},
+        {'id': 'loan', 'type': 'table', 'title': '各公司贷款额度',
+         'bind': {'table': 'finance', 'fieldKey': 'loan_limit', 'aggregate': 'latest'}},
+        {'id': 'note', 'type': 'text', 'title': '说明', 'text': '示例仪表盘，可自行修改 dashboard.json'},
+    ],
+    'industries': {
+        'manufacturer': {
+            'title': '制造业',
+            'components': [
+                {'id': 'm_cash', 'type': 'number', 'title': '制造业现金',
+                 'bind': {'table': 'finance', 'fieldKey': 'cash', 'aggregate': 'sum'}},
+                {'id': 'm_capacity', 'type': 'gauge', 'title': '制造业产能',
+                 'bind': {'table': 'entity', 'fieldKey': 'capacity',
+                          'aggregate': 'latest', 'max': 100}},
+            ],
+        },
+    },
+}
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -260,6 +286,10 @@ def build(out_dir: Path) -> Path:
         ],
     )
 
+    # 仪表盘布局（可选，但示例包带上）
+    (root / 'dashboard.json').write_text(
+        json.dumps(DASHBOARD, ensure_ascii=False, indent=2), encoding='utf-8')
+
     # manifest.yaml
     plugins = [
         ('plugins/contract_purchase.py', 'CONTRACT', 'purchase', '采购合同', '1.0.0'),
@@ -268,6 +298,7 @@ def build(out_dir: Path) -> Path:
     ]
     manifest = {
         'packageVersion': '1.0',
+        'dashboard': 'dashboard.json',
         'competition': {
             'name': '2025 商业对抗赛（示例）',
             'coverImage': '',
