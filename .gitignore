@@ -24,3 +24,7 @@ gipfel_m1_*/
 # pnpm 试用产物（本项目以 npm + package-lock.json 为准）
 BusinessCompetitionManagerWebFrontend/pnpm-lock.yaml
 BusinessCompetitionManagerWebFrontend/pnpm-workspace.yaml
+
+# 本地数据备份 / 压测报告（运行时产物，不入库）
+/backup/
+/reports/
