@@ -309,8 +309,11 @@ def collect(cli) -> Config:
         info('提示：纯 IP 走 HTTP 时密码/令牌是明文传输，公网使用建议套 VPN/SSH 隧道，'
              '或改用域名后开启 HTTPS。')
 
-    cfg.app_dir = cli.app_dir or (ask('安装目录', '/opt/bcm') if not cli.yes else '/opt/bcm')
-    cfg.site_dir = (cli.site_dir or '').rstrip('/')
+    raw_app_dir = cli.app_dir or (ask('安装目录', '/opt/bcm') if not cli.yes else '/opt/bcm')
+    cfg.app_dir = str(Path(raw_app_dir).expanduser().resolve()) if raw_app_dir else '/opt/bcm'
+    cfg.app_dir = cfg.app_dir.rstrip('/') or '/opt/bcm'
+    raw_site_dir = (cli.site_dir or '').strip()
+    cfg.site_dir = str(Path(raw_site_dir).expanduser().resolve()).rstrip('/') if raw_site_dir else ''
     cfg.http_port = int(cli.http_port or 80)
     cfg.stop_openresty = bool(cli.stop_openresty)
     cfg.admin_user = cli.admin_user or (ask('管理员用户名', 'admin') if not cli.yes else 'admin')
@@ -547,6 +550,9 @@ def _user_exists(name: str) -> bool:
 def copy_project(runner: Runner, cfg: Config) -> None:
     step('同步项目代码')
     target = Path(cfg.app_dir)
+    if target.resolve() == REPO_ROOT.resolve():
+        info('安装目录与源码目录相同，跳过 rsync（就地部署）')
+        return
     excludes = [
         '.git', '.venv', 'node_modules', '__pycache__', '.ruff_cache', '.gitignore',
         'BusinessCompetitionManagerWebFrontend/dist',
@@ -668,7 +674,10 @@ def install_python_deps(runner: Runner, cfg: Config) -> None:
     # 项目要求 Python >= 3.12；Debian 12 自带 3.11，用 uv 下载独立 Python 3.12
     runner.run([uv, 'python', 'install', '3.12'])
     runner.run([uv, 'sync', '--frozen', '--python', '3.12', '--project', str(app_dir)])
-    ok('后端依赖安装完成（.venv）')
+    venv_python = app_dir / '.venv' / 'bin' / 'python'
+    if not runner.dry_run and not venv_python.exists():
+        die(f'虚拟环境创建失败：{venv_python} 不存在（请检查 uv sync 输出）')
+    ok(f'后端依赖安装完成（{venv_python}）')
 
 
 def ensure_database(runner: Runner, cfg: Config) -> None:
