@@ -275,16 +275,14 @@ useResourceRefresh(['messages'], () => {
 
 <template>
   <div class="messages-page page">
-    <div class="page-head">
-      <PageHeader title="消息中心">
-        <template #actions>
-          <el-button :icon="Refresh" @click="activeTab === 'inbox' ? loadInbox() : loadSent()">
-            刷新
-          </el-button>
-          <el-button type="primary" :icon="EditPen" @click="openCompose">写消息</el-button>
-        </template>
-      </PageHeader>
-    </div>
+    <PageHeader title="消息中心">
+      <template #actions>
+        <el-button :icon="Refresh" @click="activeTab === 'inbox' ? loadInbox() : loadSent()">
+          刷新
+        </el-button>
+        <el-button type="primary" :icon="EditPen" @click="openCompose">写消息</el-button>
+      </template>
+    </PageHeader>
 
     <el-tabs :model-value="activeTab" @tab-change="(v: string) => switchTab(v as 'inbox' | 'sent')">
       <!-- ===== 收件箱 ===== -->
@@ -499,19 +497,6 @@ useResourceRefresh(['messages'], () => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.head-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
 }
 .inbox-badge {
   margin-left: 6px;
