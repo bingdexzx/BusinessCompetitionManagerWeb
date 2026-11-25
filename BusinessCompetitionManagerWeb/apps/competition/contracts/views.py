@@ -163,8 +163,11 @@ class ContractListCreateView(APIView):
         contract_type_key = (request.data.get('contractTypeKey') or '').strip()
         if not contract_type_key:
             return _error('缺少合同类型 contractTypeKey')
+        # 2026-11 决策：仅系统超级管理员 / 比赛主席团可创建合同，参赛选手只能查看与确认
+        if not (request.user.is_superuser or _is_competition_chair(request.user)):
+            return _error('仅管理员可创建合同', 403)
         parties = request.data.get('parties') or []
-        if not (_is_competition_chair(request.user)
+        if not (request.user.is_superuser or _is_competition_chair(request.user)
                 or any(can_act_for_company(request.user, p.get('companyId')) for p in parties)):
             return _error('只能为可操作的公司创建合同', 403)
 

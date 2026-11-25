@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { ElMessage } from 'element-plus'
 import { useListOptions } from '@/composables/useListOptions'
 import {
@@ -19,6 +20,14 @@ import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const router = useRouter()
+const auth = useAuthStore()
+
+/** 仅系统超级管理员 / 比赛主席团可以创建合同；参赛选手只能查看与确认 */
+const canCreateContract = computed(() => {
+  if (auth.isSuperuser) return true
+  const membership = auth.memberships.find((m) => String(m.id) === String(props.cid))
+  return membership?.identity === 'ADMIN'
+})
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 
@@ -480,7 +489,9 @@ watch(
         </el-select>
         <span class="filters-divider" aria-hidden="true" />
         <el-button :loading="syncing" @click="loadContracts(false)">同步</el-button>
-        <el-button type="primary" @click="openCreate">创建合同</el-button>
+        <el-button v-if="canCreateContract" type="primary" @click="openCreate">
+        创建合同
+      </el-button>
       </div>
         </template>
       </PageHeader>
