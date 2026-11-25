@@ -141,6 +141,24 @@ def _is_ip(value: str) -> bool:
         return False
 
 
+def read_env_file(path: Path) -> dict:
+    """读取 .env 里的 KEY = 'value'（重复部署时复用数据库连接与 SECRET_KEY）。"""
+    import re
+
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        match = re.match(r"^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        key, value = match.group(1), match.group(2)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
 def gen_token(length: int = 48) -> str:
     return secrets.token_urlsafe(length)
 
@@ -312,7 +330,22 @@ def collect(cli) -> Config:
         info('检测到 1Panel：已通过 1Panel 安装的 PostgreSQL / Nginx 不会重复安装。')
 
     step('数据库')
-    if cli.db_mode:
+    reuse_env = read_env_file(Path(cfg.app_dir) / '.env')
+    reuse = bool(reuse_env.get('DATABASES_PASSWORD')) and not cli.db_password
+    if reuse:
+        cfg.db_mode = 'existing'
+        cfg.db_host = reuse_env.get('DATABASES_HOST', 'localhost')
+        cfg.db_port = reuse_env.get('DATABASES_PORT', '5432')
+        cfg.db_name = reuse_env.get('DATABASES_NAME', DB_NAME_DEFAULT)
+        cfg.db_user = reuse_env.get('DATABASES_USER', DB_USER_DEFAULT)
+        cfg.db_password = reuse_env['DATABASES_PASSWORD']
+        cfg.secret_key = reuse_env.get('SECRET_KEY', '')
+        info('检测到已有 .env：复用数据库连接与 SECRET_KEY'
+             '（重复部署不会改密、不会让登录态失效）')
+
+    if reuse:
+        pass
+    elif cli.db_mode:
         cfg.db_mode = cli.db_mode
     elif facts['postgres_port']:
         # 已在监听 5432（多半是 1Panel 装的）：默认复用，不再安装
@@ -324,9 +357,9 @@ def collect(cli) -> Config:
     elif not cli.yes:
         mode = ask('数据库模式：local=本机安装 PostgreSQL / existing=使用已有数据库', 'local')
         cfg.db_mode = mode if mode in ('local', 'existing') else 'local'
-    if cfg.db_mode == 'existing':
+    if cfg.db_mode == 'existing' and not reuse:
         info('提示：数据库与账号请在 1Panel「数据库」里创建，然后把连接信息填到下面。')
-    if cfg.db_mode == 'existing':
+    if cfg.db_mode == 'existing' and not reuse:
         if cli.yes:
             cfg.db_host = cli.db_host or 'localhost'
             cfg.db_port = cli.db_port or '5432'
@@ -384,7 +417,7 @@ def collect(cli) -> Config:
         cfg.firewall = True if cli.yes else confirm(
             '启用 ufw 防火墙（放行 SSH/80/443）？', True)
 
-    cfg.secret_key = gen_token(48)
+    cfg.secret_key = cfg.secret_key or gen_token(48)
     return cfg
 
 
@@ -446,6 +479,17 @@ def setup_database(runner: Runner, cfg: Config) -> None:
     if cfg.pg_detected:
         # 已有实例（1Panel 装的通常不是 systemd 的 postgresql 服务名），不重复安装/启动
         info('检测到本机 PostgreSQL 已在运行，只创建数据库与账号')
+        if not runner.dry_run:
+            check = runner.run(
+                ['sudo', '-u', 'postgres', 'psql', '-tAc', 'SELECT 1'],
+                check=False, capture=True)
+            if check.returncode != 0:
+                die('本机 5432 端口有 PostgreSQL，但无法用系统 postgres 用户管理它'
+                    '（通常是 1Panel / Docker 安装）。\n'
+                    '请改为：在 1Panel「数据库」里创建库和用户，然后执行：\n'
+                    '  sudo bash deploy/debian/install.sh --db-mode existing '
+                    '--db-host 127.0.0.1 --db-name <库名> --db-user <用户> '
+                    "--db-password '<密码>' --yes")
     else:
         runner.run(['systemctl', 'enable', '--now', 'postgresql'])
     # 幂等创建用户与数据库（密码来自自动生成，字符集安全）
@@ -613,6 +657,51 @@ def install_python_deps(runner: Runner, cfg: Config) -> None:
     runner.run([uv, 'python', 'install', '3.12'])
     runner.run([uv, 'sync', '--frozen', '--python', '3.12', '--project', str(app_dir)])
     ok('后端依赖安装完成（.venv）')
+
+
+def verify_database(runner: Runner, cfg: Config) -> None:
+    step('校验数据库连接')
+    if runner.dry_run:
+        info(f'[dry-run] 连接 {cfg.db_user}@{cfg.db_host}:{cfg.db_port}/{cfg.db_name}')
+        return
+    app_dir = Path(cfg.app_dir)
+    code = (
+        "import os, sys\n"
+        "import psycopg2\n"
+        "try:\n"
+        "    psycopg2.connect(dbname=os.environ['BCM_DB_NAME'],\n"
+        "                    user=os.environ['BCM_DB_USER'],\n"
+        "                    password=os.environ['BCM_DB_PASSWORD'],\n"
+        "                    host=os.environ['BCM_DB_HOST'],\n"
+        "                    port=os.environ['BCM_DB_PORT'],\n"
+        "                    connect_timeout=5).close()\n"
+        "except Exception as exc:\n"
+        "    print(str(exc).strip())\n"
+        "    sys.exit(1)\n"
+    )
+    result = runner.run(
+        [str(app_dir / '.venv' / 'bin' / 'python'), '-c', code],
+        env={
+            'BCM_DB_NAME': cfg.db_name,
+            'BCM_DB_USER': cfg.db_user,
+            'BCM_DB_PASSWORD': cfg.db_password,
+            'BCM_DB_HOST': cfg.db_host,
+            'BCM_DB_PORT': cfg.db_port,
+        },
+        check=False, capture=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stdout or '').strip()
+        die(
+            f'数据库连接失败：{detail}\n'
+            f'  当前配置：{cfg.db_user}@{cfg.db_host}:{cfg.db_port}/{cfg.db_name}\n'
+            '  处理办法：\n'
+            '  1) 1Panel：在「数据库」里把该用户密码改成 /opt/bcm/.env 的 '
+            'DATABASES_PASSWORD，或把 .env 改成 1Panel 里的实际密码；\n'
+            '  2) 系统 PostgreSQL：sudo -u postgres psql -c '
+            '"ALTER ROLE <用户> WITH PASSWORD \'<密码>\';"\n'
+            '  3) 修改后重新执行部署脚本即可（会复用已有 .env）。')
+    ok('数据库连接正常')
 
 
 def migrate(runner: Runner, cfg: Config) -> None:
@@ -944,6 +1033,7 @@ def main() -> int:
     copy_project(runner, cfg)
     write_env(runner, cfg)
     install_python_deps(runner, cfg)
+    verify_database(runner, cfg)
     migrate(runner, cfg)
     create_superuser(runner, cfg)
     build_frontend(runner, cfg)
