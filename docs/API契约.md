@@ -4,6 +4,20 @@
 > 比赛域接口统一为 `/api/competitions/{cid}/...`，由多库路由解析到对应比赛库。
 > 请求头约定：`X-Competition-Id`（缺省时按 URL 解析）、`X-Trace-Id`、`X-Device-Screen`。
 > 错误响应统一：`{ code, message, details }`；成功响应均为 camelCase JSON。
+>
+> **维护约定（2026-11 起）**：接口以代码为准，本文随改动同步；最近一次核对：2026-11-25。
+
+## 2026-11 接口变更
+
+| 变更 | 说明 |
+| --- | --- |
+| **移除** `GET /competitions/{cid}/contracts/export` | 合同 xlsx 导出功能已删除（连同前端按钮/API） |
+| 合同列表分页 | `?page&pageSize&status&q`，默认 50/页、上限 200（可用 `.env` 的 `CONTRACT_PAGE_SIZE*` 调整） |
+| 合同增量同步 | `?updatedAfter=<ISO>&limit=`，默认 500、上限 1000 |
+| 后台任务 | `GET/POST /competitions/{cid}/jobs`、`GET /competitions/{cid}/jobs/{id}`（结算、财年、导入） |
+| 工具箱计时器 | `GET/POST /competitions/{cid}/timers`、`PATCH/DELETE /competitions/{cid}/timers/{id}`（按用户隔离） |
+| 基础数据下拉 | `GET /competitions/{cid}/basedata/{table}?nodeType=城市点位` 等，支持按节点类型过滤 |
+| WebSocket | `ws://.../ws/notifications?token=<access>`；token 只用于握手，不写入访问日志 |
 
 ## 1. 账号 / 认证
 
