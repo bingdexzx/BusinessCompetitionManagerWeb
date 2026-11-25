@@ -99,6 +99,31 @@ curl -s -H 'Host: <IP>' http://127.0.0.1/api/health
 > 1Panel 建站点时如果域名输入框不接受纯 IP：随便填一个占位域名，
 > 保存后在「配置文件」里把 `server_name` 改成 `_` 或服务器 IP 即可。
 
+### 站点目录被 1Panel 限制（只能用它自己的目录）
+
+1Panel 创建站点时根目录只能选它规定的位置（如
+`/opt/1panel/apps/openresty/openresty/www/sites/<站点>/index`）。两种做法：
+
+**推荐：部署时把 dist 同步进站点目录**
+
+```bash
+sudo bash deploy/debian/install.sh --ip <IP> --yes \
+  --site-dir /opt/1panel/apps/openresty/openresty/www/sites/<站点>/index
+```
+
+脚本构建完成后会 `rsync --delete` 把 `dist/` 同步到该目录，并 `chown www:www`；
+nginx 配置里的 `root` 也自动指向它。
+
+**手动同步（已有站点）**
+
+```bash
+SITE_DIR=/opt/1panel/apps/openresty/openresty/www/sites/<站点>/index
+sudo rsync -a --delete /opt/bcm/BusinessCompetitionManagerWebFrontend/dist/ "$SITE_DIR"/
+sudo chown -R www:www "$SITE_DIR"
+```
+
+之后每次重新构建前端，都要再同步一次（或用上面的 `--site-dir` 重跑部署脚本）。
+
 ### 检测逻辑
 
 | 组件 | 检测方式 | 已存在时 |

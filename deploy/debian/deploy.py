@@ -265,6 +265,7 @@ class Config:
     firewall: bool = True
     nginx_mode: str = 'manage'      # manage=脚本写配置 | manual=用户自己在 1Panel 配
     facts: dict = field(default_factory=dict)
+    site_dir: str = ''          # 1Panel 站点根目录（把 dist 同步进去，绕开面板的目录限制）
     pg_detected: bool = False
     nginx_detected: bool = False
     onepanel: bool = False
@@ -306,6 +307,7 @@ def collect(cli) -> Config:
              '或改用域名后开启 HTTPS。')
 
     cfg.app_dir = cli.app_dir or (ask('安装目录', '/opt/bcm') if not cli.yes else '/opt/bcm')
+    cfg.site_dir = (cli.site_dir or '').rstrip('/')
     cfg.admin_user = cli.admin_user or (ask('管理员用户名', 'admin') if not cli.yes else 'admin')
     # 纯 IP 的 admin@203.0.113.10 过不了邮箱校验，默认用 example.com 占位
     default_email = 'admin@example.com' if cfg.ip_mode else f'admin@{cfg.domain}'
@@ -736,10 +738,18 @@ def create_superuser(runner: Runner, cfg: Config) -> None:
 
 def build_frontend(runner: Runner, cfg: Config) -> None:
     step('构建前端')
-    if not cfg.build_frontend:
-        info('跳过（使用已有 dist；请确认前端产物已就位）')
-        return
     front = Path(cfg.app_dir) / 'BusinessCompetitionManagerWebFrontend'
+    if not cfg.build_frontend:
+        info('跳过构建（使用已有 dist；请确认前端产物已就位）')
+        if cfg.site_dir and (front / 'dist' / 'index.html').exists():
+            target = Path(cfg.site_dir)
+            if runner.dry_run:
+                info(f'[dry-run] 同步已有 dist → {target}')
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+                runner.run(['rsync', '-a', '--delete', f'{front}/dist/', f'{target}/'])
+                ok(f'已有 dist 已同步到站点目录：{target}')
+        return
     if shutil.which('npm') is None:
         if not confirm('未检测到 Node.js，是否安装 Node.js 20？', True):
             die('缺少 Node.js，无法构建前端（可改 --no-frontend-build 使用预构建产物）')
@@ -750,6 +760,21 @@ def build_frontend(runner: Runner, cfg: Config) -> None:
     runner.run(['npm', 'run', 'build'], cwd=front)
     if not (front / 'dist' / 'index.html').exists():
         warn('未找到 dist/index.html，nginx 可能返回 404，请检查前端构建')
+
+    if cfg.site_dir:
+        target = Path(cfg.site_dir)
+        if runner.dry_run:
+            info(f'[dry-run] 同步 dist → {target}')
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+            runner.run(['rsync', '-a', '--delete', f'{front}/dist/', f'{target}/'])
+            try:
+                import pwd
+                pwd.getpwnam('www')
+                runner.run(['chown', '-R', 'www:www', str(target)])
+            except KeyError:
+                pass
+            ok(f'前端已同步到站点目录：{target}')
     ok('前端构建完成（BusinessCompetitionManagerWebFrontend/dist）')
 
 
@@ -787,6 +812,7 @@ WantedBy=multi-user.target
 def write_nginx(runner: Runner, cfg: Config) -> None:
     step('配置 nginx')
     max_body_mb = 100
+    web_root = cfg.site_dir or f'{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist'
     conf = f"""upstream bcm_http {{
     server 127.0.0.1:{BACKEND_PORT};
     keepalive 32;
@@ -811,7 +837,7 @@ server {{
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy same-origin always;
 
-    root {cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist;
+    root {web_root};
     index index.html;
 
     location / {{
@@ -973,6 +999,7 @@ def print_summary(cfg: Config) -> None:
         f'站点：        {proto}://{cfg.domain}{mode_note}',
         f'安装目录：    {cfg.app_dir}',
         f'后端端口：    127.0.0.1:{BACKEND_PORT}（HTTP）/ {WS_PORT}（WS）',
+        *([f'站点目录：    {cfg.site_dir}'] if cfg.site_dir else []),
         f'管理员账号：  {cfg.admin_user}',
         f'管理员密码：  {cfg.admin_password}',
         f'数据库：      {cfg.db_name}（用户 {cfg.db_user}）',
@@ -1000,6 +1027,8 @@ def main() -> int:
     parser.add_argument('--domain', help='站点域名（也可直接填 IP）')
     parser.add_argument('--ip', help='纯 IP 部署的访问地址（等价于 --domain 传 IP）')
     parser.add_argument('--app-dir', help='安装目录（默认 /opt/bcm）')
+    parser.add_argument('--site-dir',
+                        help='1Panel 站点根目录（如 .../www/sites/<站点>/index），构建后自动同步 dist 进去')
     parser.add_argument('--admin-user', help='管理员用户名')
     parser.add_argument('--admin-email', help='管理员邮箱')
     parser.add_argument('--db-mode', choices=['local', 'existing'], help='数据库模式')
