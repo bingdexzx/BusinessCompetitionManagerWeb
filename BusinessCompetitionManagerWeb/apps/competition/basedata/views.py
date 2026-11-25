@@ -8,6 +8,8 @@ GET 带 relations，POST/PATCH 可提交嵌套 relations 整体替换（带 id �
 权限：读=本比赛成员，写=can_manage_competition；错误响应 {code, message, details}。
 """
 
+from django.conf import settings
+
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
@@ -64,7 +66,6 @@ TABLES = {
             _f('origin', 'origin', 'char'),
             _f('carbonEmissionCoefficient', 'carbon_emission_coefficient', 'float'),
             _f('nodePrices', 'node_prices', 'text'),
-            _f('type', 'type', 'char'),
         ],
         'required': ['name', 'origin', 'carbonEmissionCoefficient'],
     },
@@ -103,7 +104,6 @@ TABLES = {
         'fields': [
             _f('name', 'name', 'char'),
             _f('description', 'description', 'text'),
-            _f('tier', 'tier', 'int'),
             _f('researchCost', 'research_cost', 'float'),
         ],
         'required': ['name'],
@@ -153,6 +153,7 @@ TABLES = {
             _f('fromNodeId', 'from_node', 'fk', target='MapNode'),
             _f('toNodeId', 'to_node', 'fk', target='MapNode'),
             _f('distance', 'distance', 'float'),
+            _f('path', 'path', 'json'),
             _f('pathTypeId', 'path_type', 'fk', target='PathType'),
         ],
         'required': ['fromNodeId', 'toNodeId', 'pathTypeId'],
@@ -321,7 +322,7 @@ def _error(message, code=400, details=''):
 
 
 def _require_member(user, cid):
-    """读权限：本比赛成员（系统超管恒通过）——实现在 apps.common.authority。"""
+    """读权限：本比赛成员（系统超级管理员恒通过）——实现在 apps.common.authority。"""
     return can_read_competition(user, cid)
 
 
@@ -424,6 +425,10 @@ def _coerce_value(fdef, value):
     if kind in ('char', 'text'):
         if not isinstance(value, str):
             value = str(value)
+        return value
+    if kind == 'json':
+        if not isinstance(value, (list, dict)):
+            raise ValueError(f"{fdef['api']} 需要数组或对象")
         return value
     if kind == 'int':
         try:
@@ -627,7 +632,7 @@ class BasedataTableView(APIView):
 
     def get(self, request, cid, table):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         model, spec = _model_for(table)
         if model is None:
             return _error('未知数据表', 404, table)
@@ -641,17 +646,37 @@ class BasedataTableView(APIView):
             if table == 'map_edges' and keyword.isdigit():
                 condition |= Q(pk=int(keyword))
             qs = qs.filter(condition)
+        if table == 'map_nodes':
+            # 只取某类节点（如「城市点位」），合同下拉选项用
+            node_type = (request.query_params.get('nodeType') or '').strip()
+            if node_type:
+                qs = qs.filter(node_type__name=node_type)
         try:
             page = max(int(request.query_params.get('page', 1) or 1), 1)
-            page_size = min(max(int(request.query_params.get('pageSize', 200) or 200), 1), 500)
+            page_size = min(
+                max(int(request.query_params.get('pageSize', settings.BASEDATA_PAGE_SIZE)
+                    or settings.BASEDATA_PAGE_SIZE), 1),
+                settings.BASEDATA_PAGE_SIZE_MAX)
         except (TypeError, ValueError):
             return _error('分页参数无效')
-        total = qs.count()
-        rows = list(qs.order_by('-updated_at', '-id')[(page - 1) * page_size: page * page_size])
-        return Response({
-            'items': _serialize_many(rows, table),
-            'total': total, 'page': page, 'pageSize': page_size,
-        })
+        # 数据管理/合同下拉都走这个接口，读多写少：按查询参数缓存 20s；
+        # 写入（basedata/files 广播）会 bump 命名空间。
+        from apps.common.cache import remember
+
+        node_type = (request.query_params.get('nodeType') or '').strip()
+        cache_parts = (cid, table, keyword, node_type, page, page_size)
+
+        def build_page():
+            total = qs.count()
+            rows = list(
+                qs.order_by('-updated_at', '-id')[(page - 1) * page_size: page * page_size])
+            return {
+                'items': _serialize_many(rows, table),
+                'total': total, 'page': page, 'pageSize': page_size,
+            }
+
+        return Response(remember(
+            'basedata', cache_parts, build_page, timeout=settings.CACHE_TTL_BASEDATA))
 
     def post(self, request, cid, table):
         if not can_manage_competition(request.user, cid):
@@ -702,7 +727,7 @@ class BasedataRowView(APIView):
 
     def get(self, request, cid, table, pk):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         row, spec, denied = self._row(table, pk)
         if denied:
             return denied
@@ -752,7 +777,7 @@ class BasedataImpactView(APIView):
 
     def get(self, request, cid, table, pk):
         if not _require_member(request.user, cid):
-            return _error('需要比赛成员身份', 403)
+            return _error('仅比赛成员可操作', 403)
         model, spec = _model_for(table)
         if model is None:
             return _error('未知数据表', 404, table)
@@ -766,3 +791,78 @@ class BasedataImpactView(APIView):
             if hard:
                 removable = False
         return Response({'removable': removable, 'refs': refs})
+
+
+class MapSettingsView(APIView):
+    """GET .../basedata/map-settings —— 地图坐标模式与地理范围（QGIS 导入后为 GEO）。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, cid):
+        if not _require_member(request.user, cid):
+            return _error('仅比赛成员可操作', 403)
+        from apps.competition.basedata.models import MapSettings
+
+        settings = MapSettings.load()
+        return Response({
+            'mode': settings.mode,
+            'bounds': settings.bounds or [],
+            'regions': settings.regions or [],
+            'layers': settings.layers or [],
+            'source': settings.source,
+            'importedAt': settings.imported_at.isoformat() if settings.imported_at else None,
+        })
+
+
+class MapImportView(APIView):
+    """POST .../basedata/map-import —— 导入 QGIS 工程（点→节点、线→边、面→区域）。
+
+    请求：multipart `file`，只接受 `.qgz` 工程（内含 shp 数据源；`.zip` 内含 `.qgz` 也兼容）；
+    `replace=true` 时先清空现有地图节点/边再导入（幂等：同名节点复用、重复边跳过）。
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, cid):
+        if not can_manage_competition(request.user, cid):
+            return _error('没有权限执行此操作', 403)
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        from apps.competition.basedata.map_import import GeoJSONError
+        from apps.competition.basedata.map_import_qgis import import_qgis_project
+
+        upload = request.FILES.get('file')
+        replace = str(request.data.get('replace', '') or '').lower() in ('1', 'true', 'yes', 'on')
+        if upload is None:
+            return _error('请上传 QGIS 工程文件（.qgz）', 400)
+
+        name = (upload.name or '').lower()
+        if not name.endswith(('.qgz', '.zip')):
+            return _error('请上传 QGIS 工程文件（.qgz）', 400)
+
+        try:
+            if name.endswith('.qgz'):
+                with tempfile.TemporaryDirectory(prefix='qgis_project_') as tmp:
+                    target = Path(tmp) / 'project.qgz'
+                    with target.open('wb') as handle:
+                        for chunk in upload.chunks():
+                            handle.write(chunk)
+                    report = import_qgis_project(target, replace=replace)
+            else:
+                # 兼容「.qgz + 同目录 shp 一起打成 ZIP」的包（qgz 本身不含图层数据源）
+                with tempfile.TemporaryDirectory(prefix='qgis_zip_') as tmp:
+                    target = Path(tmp) / 'project.zip'
+                    with target.open('wb') as handle:
+                        for chunk in upload.chunks():
+                            handle.write(chunk)
+                    with zipfile.ZipFile(target) as archive:
+                        archive.extractall(tmp)
+                    projects = list(Path(tmp).rglob('*.qgz'))
+                    if not projects:
+                        return _error('压缩包中没有 .qgz 工程文件', 400)
+                    report = import_qgis_project(projects[0], replace=replace)
+        except GeoJSONError as exc:
+            return _error(str(exc), 400)
+        return Response(report, status=201)

@@ -19,12 +19,10 @@ from apps.common.authority import can_manage_competition
 from apps.global_.competitions.models import Competition
 from apps.global_.files.models import MapBackground
 
-MAX_UPLOAD_SIZE = 100 * 1024 * 1024
-MESSAGE_IMAGE_MAX_SIZE = 5 * 1024 * 1024
+MAX_UPLOAD_SIZE = settings.UPLOAD_MAX_BYTES
+MESSAGE_IMAGE_MAX_SIZE = settings.MESSAGE_IMAGE_MAX_BYTES
 
-ALLOWED_UPLOAD_EXTENSIONS = {
-    'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'xlsx', 'csv', 'zip', 'txt', 'md',
-}
+ALLOWED_UPLOAD_EXTENSIONS = set(settings.UPLOAD_ALLOWED_EXTENSIONS)
 IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 # 文件读取白名单：仅允许读取 MEDIA_ROOT 下这些子目录（plugins/、packages/ 等一律拒绝）
@@ -167,7 +165,7 @@ class ServeFileView(APIView):
 class MapBackgroundView(APIView):
     """`/api/competitions/{cid}/files/map-background`：地图背景读取与维护。
 
-    GET `{url, transform}`；POST 传图片或 JSON `{url, transform}`（写权限=比赛/系统超管）；
+    GET `{url, transform}`；POST 传图片或 JSON `{url, transform}`（写权限=比赛/系统超级管理员）；
     PATCH 只更新 transform；DELETE 清背景（删记录 + 尽力删盘上文件）。"""
 
     permission_classes = [IsAuthenticated]

@@ -5,6 +5,7 @@
 失败策略：任一阶段出错 → 全局库/比赛库整体回滚（新建的比赛库直接删除），并持久化 FAILED 报告。"""
 
 import json
+import re
 import tempfile
 
 from datetime import datetime, timezone
@@ -13,7 +14,6 @@ from zipfile import BadZipFile, ZipFile
 
 import yaml
 
-from django.apps import apps as django_apps
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
@@ -27,8 +27,9 @@ from apps.global_.packages.models import Package, PackagePlugin
 from apps.global_.plugins.models import PluginRegistry
 from plugins_runtime import loader
 
-MAX_PACKAGE_BYTES = 100 * 1024 * 1024
-MAX_ROWS_PER_SHEET = 50_000
+from django.conf import settings
+
+MAX_PACKAGE_BYTES = settings.PACKAGE_MAX_BYTES
 
 
 class ImportFailure(Exception):
@@ -97,6 +98,8 @@ def _validate_manifest(manifest: dict, root: Path, report: dict):
 
     # dashboard.json（或 manifest.dashboard 指定名）是合法声明文件，先入 declared 以免被误报
     declared.add(str(manifest.get('dashboard') or 'dashboard.json'))
+    # 区域字段定义文件（manifest.regionFields 可改名，默认 region-fields.json）
+    declared.add(str(manifest.get('regionFields') or 'region-fields.json'))
 
     for path in root.rglob('*'):
         if path.is_file():
@@ -105,12 +108,27 @@ def _validate_manifest(manifest: dict, root: Path, report: dict):
                 warnings.append(f'未在 manifest 声明的文件：{rel}')
 
 
+MAX_PACKAGE_FILES = settings.PACKAGE_MAX_FILES
+MAX_PACKAGE_UNCOMPRESSED_BYTES = settings.PACKAGE_MAX_UNCOMPRESSED_BYTES   # 解压后上限（防 zip bomb）
+
+
 def _extract_package(zip_path, dest: Path):
     try:
         with ZipFile(zip_path) as zf:
-            for member in zf.infolist():
+            members = zf.infolist()
+            if len(members) > MAX_PACKAGE_FILES:
+                raise ImportFailure(
+                    {'errors': [f'压缩包文件过多（> {MAX_PACKAGE_FILES}）']})
+            total = sum(max(0, member.file_size) for member in members)
+            if total > MAX_PACKAGE_UNCOMPRESSED_BYTES:
+                raise ImportFailure(
+                    {'errors': [f'解压后体积过大（{total // 1024 // 1024}MB），上限 '
+                                f'{MAX_PACKAGE_UNCOMPRESSED_BYTES // 1024 // 1024}MB']})
+            root = dest.resolve()
+            for member in members:
                 target = (dest / member.filename).resolve()
-                if not str(target).startswith(str(dest.resolve())):
+                # 用 is_relative_to 而不是字符串前缀：避免 /a/b 与 /a/bc 的前缀绕过
+                if not target.is_relative_to(root):
                     raise ImportFailure({'errors': [f'非法压缩包路径：{member.filename}']})
             zf.extractall(dest)
     except BadZipFile as exc:
@@ -233,7 +251,7 @@ def import_package(*, competition, zip_path, file_name, user):
 
             plugins = _load_plugins(root, manifest, report, user)
             db_created_this_run = _provision_database(competition, report)
-            _import_data(competition, root, plugins, report, user)
+            _import_data(competition, root, plugins, report, user, manifest)
             _load_dashboard(root, manifest, competition, report)
 
         if report['errors']:
@@ -350,7 +368,6 @@ def _drop_database(db_name: str):
     from django.db import connections
 
     import psycopg2
-    from django.conf import settings
 
     connections.close_all()
     cfg = settings.DATABASES['default']
@@ -363,7 +380,7 @@ def _drop_database(db_name: str):
         conn.close()
 
 
-def _import_data(competition, root: Path, plugins: dict, report: dict, user):
+def _import_data(competition, root: Path, plugins: dict, report: dict, user, manifest: dict):
     alias = provisioning.ensure_competition_db(competition.db_name)
     ctx.set_competition_context(competition.id, alias)
     try:
@@ -378,9 +395,17 @@ def _import_data(competition, root: Path, plugins: dict, report: dict, user):
                 # 报告里带上中文产业名，前端不必再显示 manufacturer 这类 key
                 stats['industryName'] = entry.get('name') or key
                 report['fieldMigrations'].append(stats)
+                for cycle in stats.get('formulaCycles') or []:
+                    path_text = ' → '.join(list(cycle) + [cycle[0]])
+                    report['warnings'].append(
+                        f'{stats["industryName"]}：公式循环 {path_text}，已拒绝计算'
+                        '（这些字段不会参与重算，请修正公式后重新导入）')
 
             # industries.xlsx 对账（规范 §6）
             _import_industries_sheet(root, industry_modules, report)
+
+            # 区域字段定义（比赛包 region-fields.json）
+            _import_region_fields(root, manifest, report)
 
             # 基础数据不再由比赛包提供：包内若携带旧版数据表格 → 忽略并提示，改由「数据管理」页维护
             for sheet_key in parsers.BASEDATA_SPECS:
@@ -452,6 +477,90 @@ def _import_industries_sheet(root: Path, industry_modules: dict, report: dict):
             report['errors'].append(f'industries!fields：{key}.{field_key} 在插件 FIELDS 中不存在')
         elif row.get('formula') and str(row['formula']) != str(spec.get('formula') or ''):
             report['errors'].append(f'industries!fields：{key}.{field_key} 公式与插件不一致')
+
+
+REGION_FIELD_KEY_RE = re.compile(r'^[A-Za-z0-9_]{1,64}$')
+REGION_FIELD_TYPES = {'NUMBER', 'TEXT', 'BOOL', 'DATE'}
+
+
+def _import_region_fields(root: Path, manifest: dict, report: dict):
+    """比赛包区域字段定义（默认 region-fields.json，manifest.regionFields 可改名）。
+
+    结构：``{"fields": [{"key","name","type","default","condition"}]}``；
+    定义是比赛级（所有区域共用），值按区域存。重导入时以包为准：更新/新增，包中移除的定义删除。
+    """
+    rel = str(manifest.get('regionFields') or 'region-fields.json')
+    report['regionFields'] = {'status': 'SKIPPED', 'file': rel, 'count': 0}
+    path = root / rel
+    if not path.exists():
+        return
+    try:
+        doc = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:  # noqa: BLE001
+        report['regionFields'].update(status='INVALID')
+        report['errors'].append(f'{rel}：JSON 解析失败（{exc}）')
+        return
+
+    specs = doc.get('fields') if isinstance(doc, dict) else doc
+    if not isinstance(specs, list):
+        report['errors'].append(f'{rel}：fields 必须是数组')
+        report['regionFields'].update(status='INVALID')
+        return
+
+    from apps.competition.regions.models import RegionField, RegionFieldValue
+    from apps.competition.regions.services import validate_condition
+
+    cleaned, seen, problems = [], set(), []
+    for index, spec in enumerate(specs):
+        where = f'{rel} fields[{index}]'
+        if not isinstance(spec, dict):
+            problems.append(f'{where} 必须是对象')
+            continue
+        key = str(spec.get('key') or '').strip()
+        if not REGION_FIELD_KEY_RE.match(key):
+            problems.append(f'{where}.key 只能包含字母/数字/下划线（1-64）')
+            continue
+        if key in seen:
+            problems.append(f'{where}.key 重复：{key}')
+            continue
+        seen.add(key)
+        name = str(spec.get('name') or '').strip()
+        if not name:
+            problems.append(f'{where}.name 不能为空')
+            continue
+        field_type = str(spec.get('type') or spec.get('fieldType') or 'NUMBER').upper()
+        if field_type not in REGION_FIELD_TYPES:
+            problems.append(f'{where}.type 必须是 {"|".join(sorted(REGION_FIELD_TYPES))}')
+            continue
+        condition, error = validate_condition(spec.get('condition'))
+        if error:
+            problems.append(f'{where}：{error}')
+            continue
+        cleaned.append({
+            'key': key,
+            'name': name,
+            'field_type': field_type,
+            'default_value': spec.get('default', spec.get('defaultValue')),
+            'condition': condition,
+        })
+
+    if problems:
+        report['errors'] += problems
+        report['regionFields'].update(status='INVALID')
+        return
+
+    keys = {spec['key'] for spec in cleaned}
+    for spec in cleaned:
+        RegionField.objects.update_or_create(
+            field_key=spec['key'],
+            defaults={k: v for k, v in spec.items() if k != 'key'},
+        )
+    stale = RegionField.objects.exclude(field_key__in=keys)
+    if stale.exists():
+        stale_keys = list(stale.values_list('field_key', flat=True))
+        stale.delete()
+        RegionFieldValue.objects.filter(field_key__in=stale_keys).delete()
+    report['regionFields'].update(status='OK', count=len(cleaned))
 
 
 def _store_plugin_file(path: Path, key: str, version: str) -> str:

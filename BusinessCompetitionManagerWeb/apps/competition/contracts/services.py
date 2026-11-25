@@ -1,5 +1,7 @@
 """合同类型暴露与合同实例导入（§9.2）；重导入按「类型+名称+参与方+输入」指纹幂等去重。"""
 
+from django.conf import settings
+
 import json
 
 from apps.competition.companies.models import Company
@@ -43,19 +45,27 @@ def contract_module_for(contract_type_key: str, plugin_version: str = ''):
     return module
 
 
-def contract_number_prefix(contract_type_key: str) -> str:
-    """合同类别前缀（D13 / §18 跟进 #3：随比赛包合同类型插件清单定稿）。"""
-    from apps.common.context import get_competition_id
-    from apps.global_.competitions.models import Competition
-
-    competition = Competition.objects.get(pk=get_competition_id())
-    link = _contract_registry(competition, contract_type_key)
-    if link is not None and link.plugin.number_prefix:
-        return link.plugin.number_prefix
-    return contract_type_key[:2].upper()
-
-
 def contract_types_for_competition(competition) -> list:
+    """合同类型列表（含 inputSchema）。
+
+    每个合同类型都要读插件文件 + AST 扫描 + exec，49 个类型 × 每次页面加载很贵；
+    按「比赛包版本指纹」缓存：指纹（数量 + 最大 id）变化时自动换 key，导入新包立即生效。
+    """
+    from django.db.models import Count, Max
+
+    from apps.common.cache import remember
+
+    stats = (PackagePlugin.objects
+             .filter(package__competition=competition, kind='CONTRACT')
+             .aggregate(count=Count('id'), latest=Max('id')))
+    fingerprint = (stats['count'] or 0, stats['latest'] or 0)
+    return remember(
+        'contract-types', (competition.pk, *fingerprint),
+        lambda: _build_contract_types(competition),
+        timeout=settings.CACHE_TTL_CONTRACT_TYPES)
+
+
+def _build_contract_types(competition) -> list:
     links = (
         PackagePlugin.objects
         .filter(package__competition=competition, kind='CONTRACT')
@@ -130,6 +140,10 @@ def import_contract_instances(rows, contract_modules, *, user=None):
         bad_inputs = [k for k in (inputs or {}) if k not in known_inputs]
         if bad_inputs:
             row_errors.append(f'未知输入项：{", ".join(bad_inputs)}')
+        else:
+            # 2026-11 决策：合同输入项一律必填（导入同样校验）
+            from apps.competition.contracts.engine import _validate_inputs
+            row_errors.extend(_validate_inputs(module, party_entries, inputs or {}))
 
         if row_errors:
             errors.append(f'第 {i} 行：' + '；'.join(row_errors))
