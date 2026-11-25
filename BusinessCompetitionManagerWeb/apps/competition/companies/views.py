@@ -15,6 +15,7 @@ from apps.competition.contracts.engine import ContractError, assert_field_writab
 from apps.competition.fieldlogs.models import FieldLog
 from apps.competition.industries.models import CompanyFieldValue, IndustryField
 from apps.competition.regions.models import Region
+from apps.global_.memberships.models import CompetitionMembership
 
 
 def _company_data(c: Company, team_name: str = '') -> dict:
@@ -48,6 +49,16 @@ class CompanyListView(APIView):
     def get(self, request, cid):
         ids = user_company_ids(request.user)
         assigned = (request.query_params.get('assigned') or '').lower() in ('1', 'true', 'yes')
+        # ?all=1：创建合同时，管理员（主席团）/超级管理员可选全部公司
+        all_requested = (request.query_params.get('all') or '').lower() in ('1', 'true', 'yes')
+        if all_requested:
+            is_chair = CompetitionMembership.objects.filter(
+                user=request.user, competition_id=cid,
+                identity=CompetitionMembership.Identity.ADMIN).exists()
+            if not (request.user.is_superuser or is_chair):
+                return Response(
+                    {'code': 403, 'message': '无权查看全部公司', 'details': ''}, status=403)
+            ids = {'*'}
 
         # 公司列表读多写少：按「可见范围 + assigned」缓存 15s；变更由 companies/teams 广播失效
         from apps.common.cache import remember

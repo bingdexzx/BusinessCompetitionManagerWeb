@@ -529,8 +529,12 @@ export function reviewBackfill(
   })
 }
 
-export function getCompanies(cid: number | string): Promise<Company[]> {
-  return http.get<Company[]>(`/competitions/${cid}/companies`)
+export function getCompanies(
+  cid: number | string,
+  options: { all?: boolean } = {},
+): Promise<Company[]> {
+  // all=1：管理员（主席团）/ 超级管理员在「创建合同」时可选全部公司
+  return http.get<Company[]>(`/competitions/${cid}/companies${options.all ? '?all=1' : ''}`)
 }
 
 /** 已分配公司：组队完成并分配公司后才出现（teamId 非空） */

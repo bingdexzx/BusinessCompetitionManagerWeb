@@ -59,17 +59,37 @@ def _visible_contracts(request):
     qs = Contract.objects.filter(deleted_at__isnull=True)
     if '*' in ids:
         return qs
-    if not ids:
-        return qs.none()
     q = Q()
+    has_scope = False
     for company_id in sorted(ids):
         q |= Q(parties__contains=[{'companyId': int(company_id)}])
+        has_scope = True
+    if _is_competition_chair(request.user):
+        # 主席团创建合同时可为全部公司选参与方，因此也要能看到自己创建的合同
+        q |= Q(created_by=request.user.id)
+        has_scope = True
+    if not has_scope:
+        return qs.none()
     return qs.filter(q)
 
 
 def _visible_contract_or_none(request, pk):
     """按可见性取单个合同（不可见/已删除 → None）：读接口不能裸按 pk 取，调用方按 404 返回。"""
     return _visible_contracts(request).filter(pk=pk).first()
+
+
+def _is_competition_chair(user) -> bool:
+    """当前比赛的主席团（比赛管理员）。"""
+    from apps.common.context import get_competition_id
+    from apps.global_.memberships.models import CompetitionMembership
+
+    competition_id = get_competition_id()
+    if not (user and user.is_authenticated and competition_id):
+        return False
+    return CompetitionMembership.objects.filter(
+        user=user, competition_id=competition_id,
+        identity=CompetitionMembership.Identity.ADMIN,
+    ).exists()
 
 
 def _is_party_actor(user, contract) -> bool:
@@ -144,7 +164,8 @@ class ContractListCreateView(APIView):
         if not contract_type_key:
             return _error('缺少合同类型 contractTypeKey')
         parties = request.data.get('parties') or []
-        if not any(can_act_for_company(request.user, p.get('companyId')) for p in parties):
+        if not (_is_competition_chair(request.user)
+                or any(can_act_for_company(request.user, p.get('companyId')) for p in parties)):
             return _error('只能为可操作的公司创建合同', 403)
 
         fiscal_year = None
