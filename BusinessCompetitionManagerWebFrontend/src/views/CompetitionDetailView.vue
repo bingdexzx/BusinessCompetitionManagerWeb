@@ -621,7 +621,7 @@ onMounted(() => {
       <el-button @click="quickLink('/contracts')">
         <el-icon><Tickets /></el-icon><span>合同工作台</span>
       </el-button>
-      <el-button @click="quickLink('/fiscal')">
+      <el-button v-if="canManage" @click="quickLink('/fiscal')">
         <el-icon><Calendar /></el-icon><span>财年</span>
       </el-button>
       <el-button v-if="canManage" @click="quickLink('/settlement')">

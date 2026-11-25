@@ -114,7 +114,7 @@
             :index="`/competitions/${activeCid}/stocks/admin`"
           >股票管理</el-menu-item>
         </el-sub-menu>
-        <el-menu-item :index="`/competitions/${activeCid}/fiscal`">
+        <el-menu-item v-if="canManageComp" :index="`/competitions/${activeCid}/fiscal`">
           <el-icon><Calendar /></el-icon>
           <span>财年管理</span>
         </el-menu-item>

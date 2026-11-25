@@ -82,6 +82,8 @@ const router = createRouter({
       name: 'competition-fiscal',
       component: () => import('../views/FiscalView.vue'),
       props: true,
+      // 财年管理仅系统超级管理员可见（主席团/参赛选手不可进入）
+      meta: { manager: true },
     },
     {
       path: '/competitions/:cid/basedata',
