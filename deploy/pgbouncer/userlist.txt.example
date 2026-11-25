@@ -1,0 +1,8 @@
+; userlist.txt 格式："用户名" "SCRAM-SHA-256$..."
+; 从 PostgreSQL 直接取现成的哈希（推荐，不用明文密码）：
+;   psql -d business_competition_manager -Atc \
+;     "select '\"'||rolname||'\" \"'||rolpassword||'\"' from pg_authid where rolname='bcm_app'"
+;
+; 注意：PgBouncer 的 auth_file 需要 SCRAM 哈希（auth_type=scram-sha-256）；
+;       若暂时用明文调试，把 auth_type 改成 plain 并把第二列写成明文。
+"bcm_app" "SCRAM-SHA-256$4096:替换成从 pg_authid 查到的内容"
