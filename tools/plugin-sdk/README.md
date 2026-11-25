@@ -1,117 +1,149 @@
-# bcm-plugin-sdk —— 比赛包插件开发提示库
+# bcm-plugin-sdk —— 比赛包插件开发工具包
 
-给编写**合同类型插件 / 产业类型插件**用的类型提示包：装进开发环境后，编辑器里写
-`ctx.` 会有**方法补全、参数签名与中文说明**；写 `INPUT_SCHEMA` / `PARTY_ROLES` 会补全键名；
-`manifest.yaml` 有 JSON Schema 校验。
+给**合同插件 / 产业插件**用的类型提示与开发辅助：`ctx` 补全、参数说明、`INPUT_SCHEMA` /
+`PARTY_ROLES` / `FIELDS` 构造函数、插件源码静态校验。
 
-> 只影响编辑器/类型检查，**不改变插件运行方式**。运行时引擎仍然注入 `ctx` / `Effect`，
-> 插件不需要（也不应该）在运行时 import 本 SDK。
+> 只影响编辑器和开发期校验；插件运行时仍由引擎注入 `ctx` / `Effect`。
 
-## 安装（开发机）
+## 安装
 
 ```powershell
-# 在后端用的同一个 Python 环境里安装（二选一）
-uv pip install -e tools/plugin-sdk
-pip install -e tools/plugin-sdk
+# 与后端同一个 Python 环境（部署脚本也会自动装）
+uv pip install --python .venv\Scripts\python.exe -e tools/plugin-sdk
 ```
 
-或者不安装，把 `tools/plugin-sdk` 加进编辑器分析路径：
+仓库根目录已带 `.vscode/settings.json` / `pyrightconfig.json`（`extraPaths` 指向
+`tools/plugin-sdk`），VS Code 重新加载窗口即可识别。
 
-```jsonc
-// .vscode/settings.json
-{
-  "python.analysis.extraPaths": ["tools/plugin-sdk"]
-}
-```
-
-## 在插件里怎么用
+## 1. 用构造函数写常量（推荐）
 
 ```python
 from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:          # 只在编辑器里生效；运行时不会 import
-    from bcm_plugin_sdk import ContractContext, Effect, InputSchema, PartyRoles
+from bcm_plugin_sdk import (
+    InputSchema, PartyRoles, number_field, list_field, list_sub_field, party_role,
+)
+
+if TYPE_CHECKING:
+    from bcm_plugin_sdk import ContractContext, Effect
+
+CONTRACT_KEY = "purchase"
+CONTRACT_NAME = "采购合同"
+NUMBER_PREFIX = "PO"
 
 PARTY_ROLES: PartyRoles = [
-    {'role': '买方', 'label': '买方'},
+    party_role("buyer", "买方"),
+    party_role("seller", "卖方"),
+    party_role("bank", "银行", optional=True),
 ]
 
 INPUT_SCHEMA: InputSchema = [
-    {'key': '数量', 'label': '数量', 'type': 'NUMBER', 'min': 1},
+    number_field("quantity", "数量", min=1),
+    number_field("unitPrice", "单价", min=0),
+    list_field(
+        "materials", "原料清单", table="materials", item_label="原料", optional=True,
+        fields=[list_sub_field("quantity", "数量", min=1)],
+    ),
 ]
 
+
 def check(ctx: ContractContext) -> list[str]:
-    return [] if ctx.input_number('数量') > 0 else ['数量必须大于 0']
+    problems: list[str] = []
+    total = ctx.input_number("quantity") * ctx.input_number("unitPrice")
+    if ctx.company_field("buyer", "cash", 0) < total:
+        problems.append("买方资金不足")
+    return problems
+
 
 def apply(ctx: ContractContext) -> list[Effect]:
-    amount = ctx.input_number('数量') * 100
+    total = ctx.input_number("quantity") * ctx.input_number("unitPrice")
     return [
-        Effect.sub('买方', 'yinhangzhanghu', amount),
-        Effect.add('卖方', 'yinhangzhanghu', amount),
+        Effect.sub("buyer", "cash", total),
+        Effect.add("seller", "cash", total),
     ]
 ```
 
-要点：
+### 构造函数一览
 
-1. `from __future__ import annotations`（或给注解加引号），避免运行时解析注解；
-2. SDK 的 import 必须放在 `if TYPE_CHECKING:` 里，运行时不会执行；
-3. 函数体里用的 `Effect` 由引擎注入为全局名，和普通插件写法完全一致；
-4. `ctx` 注解写 `ContractContext` / `IndustryContext` 后，输入 `ctx.` 即可看到全部方法。
+| 函数 | 用途 | 关键参数 |
+| --- | --- | --- |
+| `number_field(key, label, min=None, max=None, optional=False)` | 数值输入（NUMBER） | `min/max` |
+| `text_field(key, label, optional=False)` | 文本输入（TEXT） | — |
+| `bool_field(key, label, optional=False)` | 开关（BOOLEAN） | — |
+| `ref_field(key, label, table, optional=False)` | 可搜索下拉（REF:\<表\>） | `table` 只能是合法表名 |
+| `list_field(key, label, table, item_label, fields=None, optional=False)` | 清单（LIST:\<表\>） | `fields=[]` 表示只登记条目 |
+| `list_sub_field(key, label, min=0, max=None)` | 清单行内数量 | — |
+| `party_role(role, label, optional=False)` | 参与方角色 | `role` 是 `ctx.party()` / `Effect` 的键 |
+| `industry_field(key, name, table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段 | `formula` 非空即由引擎重算 |
 
-## 能补全什么
+`table` 的合法值（`TableName` 字面量，编辑器会提示/拦截）：
 
-| 对象 | 内容 |
-| --- | --- |
-| `ContractContext` | `input*` / `party` / `company_field` / `item(s)` / `item_names` / `price(s)` / `price_names` / `node_region(s)` / `node_city(ies)` 等 31 个方法（含已弃用别名），每个都有参数与返回说明 |
-| `IndustryContext` | 上述只读查询 + `basedata` / `number` |
-| `Effect` | `Effect(company, field, op, value)` 与 `add / sub / set` 简写、`region` 说明 |
-| `InputSchema` / `InputField` | 写 `INPUT_SCHEMA` 时补全 `key/label/type/optional/itemLabel/fields/min/max` |
-| `PartyRoles` / `PartyRole` | 参与方角色结构 |
-| `IndustryFieldSpec` | 产业 `FIELDS` 的 `key/name/type/table/default/formula/timerEnabled/timerTrigger` |
-
-字段语义、公式白名单、清单类型（`LIST:materials` 等 13 类）、REF 下拉规则见
-[docs/比赛包格式规范.md](../../docs/比赛包格式规范.md)。
-
-## manifest.yaml 的校验/补全
-
-在 `manifest.yaml` 第一行加：
-
-```yaml
-# yaml-language-server: $schema=../tools/plugin-sdk/bcm_plugin_sdk/schemas/manifest.schema.json
+```
+materials parts products map_nodes cities vehicles companies regions
+fuels tech_nodes infrastructures warehouses production_lines
 ```
 
-VS Code 安装 YAML 插件后即可校验 `packageVersion` / `plugins[]` / `sheets[]` 的必填与格式。
-示例见 [templates/manifest.example.yaml](templates/manifest.example.yaml)。
+## 2. 静态校验插件源码
 
-合同 `INPUT_SCHEMA` 的 JSON Schema 在
-`bcm_plugin_sdk/schemas/input-schema.schema.json`（供工具校验，不强制使用）。
-
-## 模板
-
-| 文件 | 用途 |
-| --- | --- |
-| [templates/contract_template.py](templates/contract_template.py) | 合同类型插件骨架（参与方/输入项/check/apply） |
-| [templates/industry_template.py](templates/industry_template.py) | 产业类型插件骨架（FIELDS/timer_check） |
-| [templates/manifest.example.yaml](templates/manifest.example.yaml) | 带 schema 引用的 manifest 示例 |
-
-## 保持与运行时同步
-
-SDK 内置运行时的 `api.py` / `ops.py` 副本（`bcm_plugin_sdk/_runtime/`），这样不装 Django
-也能获得与真实签名一致的提示。运行时 API 改动后：
+不用起 Django、不用导入插件：
 
 ```powershell
-python tools/plugin-sdk/sync_runtime.py   # 重新同步
-python tools/plugin-sdk/check_sync.py    # 校验是否一致（CI 用，退出码 1 = 有漂移）
+python -m bcm_plugin_sdk check plugins/contract_purchase.py
+python -m bcm_plugin_sdk check --all plugins/
 ```
 
-## 常见问题
+会检查：
+
+- 语法、禁止的 import/调用（`os/sys/subprocess/django/apps`、`eval/exec/open/getattr/__dunder__` 等）；
+- 合同插件必须有的常量/函数：`CONTRACT_KEY/NAME/PARTY_ROLES/INPUT_SCHEMA` + `check(ctx)/apply(ctx)`；
+- 产业插件必须有的 `INDUSTRY_KEY/NAME/FIELDS`；
+- 角色重复、输入项 key 重复、`type` 是否合法、清单表名/子字段是否合法；
+- `check/apply` 必须只有一个 `ctx` 参数。
+
+也可以在代码里调用：
+
+```python
+from bcm_plugin_sdk import validate_source, validate_file
+problems = validate_file(Path("plugins/contract_x.py"))
+```
+
+## 3. 示例
+
+| 文件 | 内容 |
+| --- | --- |
+| [examples/contract_purchase.py](examples/contract_purchase.py) | 清单 + 价格 + Effect 完整合同 |
+| [examples/industry_manufacture.py](examples/industry_manufacture.py) | 产业字段、公式、财年定时器 |
+
+## 4. 类型/补全能力
+
+- `ContractContext` / `IndustryContext`：运行时 API 的全部方法与参数说明（内置运行时副本，保证与真实签名一致）；
+- `Effect`：构造参数 + `add / sub / set` 简写；
+- `TableName` / `FieldType`：表名、输入项类型字面量；
+- `InputField` / `PartyRole` / `IndustryFieldSpec`：required 键必填、可选键 `NotRequired`，写错键会报。
+
+## 5. 运行时说明
+
+- 构造函数（`number_field` 等）只返回 dict/list，**可以在插件运行时 import**；部署脚本会把
+  `tools/plugin-sdk` 装进服务器 venv，因此插件可以安全使用；
+- `Effect` 仍由引擎注入，**不要**在运行时 import `Effect`（放在 `TYPE_CHECKING` 里即可）；
+- `ctx` 参数注解写成 `ContractContext` / `IndustryContext` 才有补全。
+
+## 6. 常见问题
 
 | 现象 | 处理 |
 | --- | --- |
-| `ctx.` 没有补全 | 确认 `ctx` 参数有注解、SDK 装在**当前解释器**（或配了 `extraPaths`）、已 `TYPE_CHECKING` 导入 |
-| Pylance 报 `无法解析导入 "bcm_plugin_sdk"` | 仓库根目录已带 `.vscode/settings.json` 和 `pyrightconfig.json`（`extraPaths` 指向 `tools/plugin-sdk`）；若仍报错：① 把 VS Code 解释器切到 `.venv`；② 或执行 `uv pip install -e tools/plugin-sdk --python .venv/Scripts/python.exe`；③ 或在设置里手动加 `"python.analysis.extraPaths": ["tools/plugin-sdk"]` |
-| 运行时 `ModuleNotFoundError: bcm_plugin_sdk` | 说明 import 不在 `TYPE_CHECKING` 里；插件运行时不需要这个包 |
-| 类型检查报 `Effect` 未定义（函数体内） | 确认 `if TYPE_CHECKING:` 块里有 `Effect`；运行时由引擎注入 |
-| 补全的方法与最新代码不一致 | 跑 `sync_runtime.py` 重新同步 |
+| Pylance 报 `无法解析导入 "bcm_plugin_sdk"` | 重新加载窗口；确认解释器是 `.venv`；或 `uv pip install -e tools/plugin-sdk`；仓库已配 `extraPaths` |
+| `ctx.` 没有补全 | 给 `check/apply` 的 `ctx` 加 `ContractContext` 注解；确认 `TYPE_CHECKING` 导入 |
+| `python -m bcm_plugin_sdk check` 报找不到模块 | 用项目 `.venv` 的 python 执行，或先安装 SDK |
+| 运行时 `ModuleNotFoundError: bcm_plugin_sdk` | 插件在运行时 import 了 SDK，但服务器没装；部署脚本会自动装，手动环境执行上面的安装命令 |
+| 构造函数报参数错误 | 看编辑器提示；`table` 只能用合法表名，`min/max` 是数字 |
+
+## 维护
+
+运行时 `plugins_runtime/api.py` 变化后：
+
+```powershell
+python tools/plugin-sdk/sync_runtime.py
+python tools/plugin-sdk/check_sync.py
+```

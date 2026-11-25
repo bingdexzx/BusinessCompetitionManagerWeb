@@ -644,6 +644,11 @@ def install_python(runner: Runner, cfg: Config) -> None:
     runner.run([uv, 'sync', '--frozen', '--python', '3.12', '--project', str(app_dir)],
                env=uv_env)
     runner.run(['chmod', '-R', 'a+rX', UV_DIR], check=False)
+    # 插件运行时可能 import bcm_plugin_sdk 的构造函数，安装为可编辑包
+    sdk_dir = app_dir / 'tools' / 'plugin-sdk'
+    if sdk_dir.exists():
+        runner.run([uv, 'pip', 'install', '--python', str(venv_python),
+                    '-e', str(sdk_dir)], env=uv_env, check=False)
     if runner.dry_run:
         return
     if not venv_python.exists():

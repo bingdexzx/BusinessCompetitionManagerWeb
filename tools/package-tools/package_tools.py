@@ -82,21 +82,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # 仅编辑器类型检查；运行时不 import
-    from bcm_plugin_sdk import ContractContext, Effect, InputSchema, PartyRoles
+from bcm_plugin_sdk import InputSchema, PartyRoles, number_field, party_role
+
+if TYPE_CHECKING:  # 类型提示用；Effect 由引擎注入
+    from bcm_plugin_sdk import ContractContext, Effect
 
 CONTRACT_KEY = "example_purchase"
 CONTRACT_NAME = "示例采购合同"
 NUMBER_PREFIX = "EX"
 
 PARTY_ROLES: PartyRoles = [
-    {"role": "buyer", "label": "买方"},
-    {"role": "seller", "label": "卖方"},
+    party_role("buyer", "买方"),
+    party_role("seller", "卖方"),
 ]
 
 INPUT_SCHEMA: InputSchema = [
-    {"key": "quantity", "label": "数量", "type": "NUMBER", "min": 1},
-    {"key": "unitPrice", "label": "单价", "type": "NUMBER", "min": 0},
+    number_field("quantity", "数量", min=1),
+    number_field("unitPrice", "单价", min=0),
 ]
 
 
@@ -122,17 +124,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bcm_plugin_sdk import IndustryFieldSpec, industry_field
+
 if TYPE_CHECKING:
-    from bcm_plugin_sdk import IndustryContext, IndustryFieldSpec
+    from bcm_plugin_sdk import IndustryContext
 
 INDUSTRY_KEY = "example_industry"
 INDUSTRY_NAME = "示例产业"
 
 FIELDS: list[IndustryFieldSpec] = [
-    {"key": "cash", "name": "现金", "type": "NUMBER", "default": 100000,
-     "table": "finance"},
-    {"key": "capacity", "name": "产能", "type": "NUMBER", "default": 10,
-     "table": "entity"},
+    industry_field("cash", "现金", table="finance", default=100000),
+    industry_field("capacity", "产能", table="entity", default=10),
 ]
 '''
 
@@ -289,6 +291,42 @@ def scan_plugin(path: Path) -> ast.Module | None:
     return tree
 
 
+try:
+    from bcm_plugin_sdk import (
+        bool_field, industry_field, list_field, list_sub_field, number_field,
+        party_role, ref_field, text_field,
+    )
+except ImportError:  # 允许在没装 SDK 的环境里校验纯 dict 写法的插件
+    BUILDERS: dict = {}
+else:
+    BUILDERS = {
+        'number_field': number_field, 'text_field': text_field,
+        'bool_field': bool_field, 'ref_field': ref_field,
+        'list_field': list_field, 'list_sub_field': list_sub_field,
+        'party_role': party_role, 'industry_field': industry_field,
+    }
+
+
+def _safe_eval(node):
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.List):
+        return [_safe_eval(item) for item in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(_safe_eval(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return {_safe_eval(k): _safe_eval(v) for k, v in zip(node.keys, node.values)}
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return -_safe_eval(node.operand)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        builder = BUILDERS.get(node.func.id)
+        if builder is not None:
+            args = [_safe_eval(arg) for arg in node.args]
+            kwargs = {kw.arg: _safe_eval(kw.value) for kw in node.keywords if kw.arg}
+            return builder(*args, **kwargs)
+    raise ValueError('unsupported expression')
+
+
 def module_constants(tree: ast.Module) -> dict:
     values = {}
     for node in tree.body:
@@ -305,7 +343,7 @@ def module_constants(tree: ast.Module) -> dict:
                 values[target.id] = None
                 continue
             try:
-                values[target.id] = ast.literal_eval(value)
+                values[target.id] = _safe_eval(value)
             except (ValueError, SyntaxError):
                 values[target.id] = None
     return values

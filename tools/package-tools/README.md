@@ -34,8 +34,14 @@ my_package/
 └── README.md
 ```
 
-插件模板带 `TYPE_CHECKING` 的 `bcm_plugin_sdk` 类型注解，配合
-[tools/plugin-sdk](../plugin-sdk/README.md) 可获得 `ctx.` 补全与参数说明。
+模板使用 [tools/plugin-sdk](../plugin-sdk/README.md) 的构造函数
+（`number_field` / `party_role` / `industry_field` 等）写 `INPUT_SCHEMA`、`PARTY_ROLES`、`FIELDS`；部署脚本会把它装进服务器 venv，因此插件运行时也能 import。
+
+写完后可用 SDK 单独校验插件源码：
+
+```bash
+python -m bcm_plugin_sdk check --all plugins/
+```
 
 ## check 校验什么
 
