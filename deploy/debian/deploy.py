@@ -269,6 +269,7 @@ class Config:
     site_dir: str = ''          # 1Panel 站点根目录（把 dist 同步进去，绕开面板的目录限制）
     http_port: int = 80         # system 模式下 nginx 监听端口
     stop_openresty: bool = False  # system 模式下是否停掉 1Panel 的 OpenResty 占用
+    reset_admin_password: bool = False  # 管理员已存在时重置密码
     pg_detected: bool = False
     nginx_detected: bool = False
     onepanel: bool = False
@@ -316,6 +317,7 @@ def collect(cli) -> Config:
     cfg.site_dir = str(Path(raw_site_dir).expanduser().resolve()).rstrip('/') if raw_site_dir else ''
     cfg.http_port = int(cli.http_port or 80)
     cfg.stop_openresty = bool(cli.stop_openresty)
+    cfg.reset_admin_password = bool(cli.reset_admin_password)
     cfg.admin_user = cli.admin_user or (ask('管理员用户名', 'admin') if not cli.yes else 'admin')
     # 纯 IP 的 admin@203.0.113.10 过不了邮箱校验，默认用 example.com 占位
     default_email = 'admin@example.com' if cfg.ip_mode else f'admin@{cfg.domain}'
@@ -323,7 +325,9 @@ def collect(cli) -> Config:
         ask('管理员邮箱', default_email) if not cli.yes else default_email)
 
     generated = gen_token(12)
-    if cli.yes:
+    if cli.admin_password:
+        cfg.admin_password = cli.admin_password
+    elif cli.yes:
         cfg.admin_password = generated
         info('管理员初始密码已自动生成')
     else:
@@ -842,20 +846,50 @@ def migrate(runner: Runner, cfg: Config) -> None:
 def create_superuser(runner: Runner, cfg: Config) -> None:
     step('创建管理员账号')
     app_dir = Path(cfg.app_dir)
+    python = str(app_dir / '.venv' / 'bin' / 'python')
+    manage_dir = app_dir / 'BusinessCompetitionManagerWeb'
     env = {
         'DJANGO_SUPERUSER_PASSWORD': cfg.admin_password,
         'DJANGO_SUPERUSER_EMAIL': cfg.admin_email,
     }
-    result = runner.run(
-        [str(app_dir / '.venv' / 'bin' / 'python'), 'manage.py', 'createsuperuser',
-         '--noinput', '--username', cfg.admin_user],
-        cwd=app_dir / 'BusinessCompetitionManagerWeb', env=env, check=False, capture=True)
     if runner.dry_run:
+        info(f'[dry-run] 确保超级管理员 {cfg.admin_user} 存在（不存在则创建）')
         return
-    if result.returncode == 0:
-        ok(f'管理员 {cfg.admin_user} 已创建')
-    else:
-        warn('管理员账号可能已存在（跳过创建）；如需重置密码请用 manage.py changepassword')
+
+    runner.run(
+        [python, 'manage.py', 'createsuperuser', '--noinput',
+         '--username', cfg.admin_user],
+        cwd=manage_dir, env=env, check=False, capture=True)
+
+    check = runner.run(
+        [python, 'manage.py', 'shell', '-c',
+         "from apps.global_.accounts.models import User;"
+         f"print(User.objects.filter(username={cfg.admin_user!r}, is_superuser=True).count())"],
+        cwd=manage_dir, check=False, capture=True)
+    lines = (check.stdout or '').strip().splitlines()
+    count = lines[-1] if lines else '0'
+
+    if count != '1':
+        die(f'管理员账号 {cfg.admin_user} 创建失败或不存在。\n'
+            '  请手动执行：\n'
+            f'  cd {manage_dir}\n'
+            f'  sudo -u {SERVICE_USER} {python} manage.py createsuperuser --username {cfg.admin_user}')
+
+    if cfg.reset_admin_password:
+        reset = runner.run(
+            [python, 'manage.py', 'shell', '-c',
+             "from apps.global_.accounts.models import User;"
+             f"u=User.objects.get(username={cfg.admin_user!r});"
+             f"u.set_password({cfg.admin_password!r});u.is_active=True;u.save();"
+             "print('RESET')"],
+            cwd=manage_dir, check=False, capture=True)
+        if reset.returncode == 0:
+            ok(f'管理员 {cfg.admin_user} 密码已重置')
+        else:
+            warn('管理员密码重置失败：' + (reset.stdout or '').strip())
+
+    ok(f'管理员 {cfg.admin_user} 已存在')
+
 
 
 def build_frontend(runner: Runner, cfg: Config) -> None:
@@ -1189,6 +1223,9 @@ def main() -> int:
     parser.add_argument('--site-dir',
                         help='1Panel 站点根目录（如 .../www/sites/<站点>/index），构建后自动同步 dist 进去')
     parser.add_argument('--admin-user', help='管理员用户名')
+    parser.add_argument('--admin-password', help='指定管理员密码（不填则自动生成）')
+    parser.add_argument('--reset-admin-password', action='store_true',
+                        help='管理员已存在时，把密码重置为本次生成/输入的管理员密码')
     parser.add_argument('--admin-email', help='管理员邮箱')
     parser.add_argument('--db-mode', choices=['local', 'existing'], help='数据库模式')
     parser.add_argument('--nginx-mode', choices=['system', 'manage', 'manual'],
