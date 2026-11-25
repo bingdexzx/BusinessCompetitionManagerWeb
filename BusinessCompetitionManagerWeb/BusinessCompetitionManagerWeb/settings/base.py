@@ -1,6 +1,8 @@
 """全局域 / 公共设置（重构方案 §5.3）。"""
 
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
 import os
 import warnings
 
@@ -10,12 +12,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 REPO_ROOT = BASE_DIR.parent
 load_dotenv(REPO_ROOT / '.env')
 
-SECRET_KEY = os.getenv('SECRET_KEY')
-if not SECRET_KEY or len(SECRET_KEY) < 32:
-    warnings.warn(
-        'SECRET_KEY 未设置或长度不足 32 字符：正在使用弱/不安全默认，切勿用于生产环境',
-        RuntimeWarning,
-    )
+SECRET_KEY = os.getenv('SECRET_KEY', '').strip()
+if not SECRET_KEY or len(SECRET_KEY) < 32 or SECRET_KEY.startswith('django-insecure-'):
+    # 开发（DEBUG）只告警；生产必须显式配置强密钥，否则直接拒绝启动
+    if os.getenv('DEBUG', 'false').strip().lower() in ('1', 'true', 'yes', 'on'):
+        warnings.warn(
+            'SECRET_KEY 未设置或为弱密钥：仅限本地开发，切勿用于生产环境',
+            RuntimeWarning,
+        )
+    else:
+        raise ImproperlyConfigured(
+            'SECRET_KEY 必须通过环境变量配置为 ≥32 字符的随机值（不能以 django-insecure- 开头）')
 
 DEBUG = os.getenv('DEBUG', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
 
@@ -26,6 +33,19 @@ elif DEBUG:
     ALLOWED_HOSTS = ['*']
 else:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]']
+
+# ---------------------------------------------------------------- 安全响应头
+X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'DENY')
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = os.getenv('SECURE_REFERRER_POLICY', 'same-origin')
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if origin.strip()
+]
+# HTTPS 部署时开启（反代终止 TLS 时配合 TRUST_X_FORWARDED_PROTO=1）
+SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0') or 0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = os.getenv('SECURE_HSTS_PRELOAD', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
 
 # 是否信任 X-Forwarded-For（默认 False）：仅在受信任反代之后才开启，否则客户端可伪造该头
 # 绕过登录限流 / 污染审计日志 IP（见 apps.common.devices.client_ip）
@@ -48,6 +68,7 @@ INSTALLED_APPS = [
     'apps.global_.useradmin',
     'apps.global_.schools',
     'apps.global_.competitions',
+    'apps.global_.jobs',
     'apps.global_.memberships',
     'apps.global_.logs',
     'apps.global_.plugins',
@@ -72,6 +93,7 @@ INSTALLED_APPS = [
     'apps.competition.settlement',
     'apps.competition.stock',  # 股票模块（契约：股票模块与同步优化.md §2）
     'apps.competition.regions',  # 区域与消费者需求（2026-10 决策：补齐旧功能）
+    'apps.competition.tools',  # 工具箱（计时器等）
     'corsheaders',
     'rest_framework',
     'django.contrib.admin',
@@ -125,6 +147,21 @@ WSGI_APPLICATION = 'BusinessCompetitionManagerWeb.wsgi.application'
 
 ASGI_APPLICATION = 'BusinessCompetitionManagerWeb.asgi.application'
 
+# ---------------------------------------------------------------- 缓存层（进程内）
+# 决策（2026-11）：不引入 Redis，用 Django 进程内缓存。
+# 代价：每个 waitress worker 各一份缓存（N 个 worker 各有一份，命中率按 worker 摊薄）；
+# 收益：零外部依赖、零运维，且目录型接口的冷启动开销被完全消除。
+# 缓存内容仅限「读多写少」的目录数据（合同类型 schema、公司列表），实时数据不缓存。
+CACHE_DEFAULT_TIMEOUT = int(os.getenv('CACHE_DEFAULT_TIMEOUT', '300'))
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'bcm-locmem',
+        'TIMEOUT': CACHE_DEFAULT_TIMEOUT,
+    },
+}
+
 # 通道层（跨进程推送）：**多进程/多核下内存层不可用**——HTTP worker 与 WS 进程各自独立，
 # InMemoryChannelLayer 的 group_send 只在本进程有效。默认 PG 实现（apps/common/pg_channel_layer.py，
 # 零新增中间件）；可选 CHANNEL_LAYER_BACKEND=redis|memory。
@@ -174,8 +211,12 @@ MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173',
+    ).split(',')
+    if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
@@ -215,6 +256,61 @@ SIMPLE_JWT = {
     'TOKEN_OBTAIN_SERIALIZER': 'apps.global_.accounts.serializers.GipfelTokenObtainPairSerializer',
 }
 
+# ---------------------------------------------------------------- 业务限制（.env 可调）
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, '') or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_list(name: str, default: str) -> list:
+    return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
+
+
+# 上传（通用文件 / 站内信图片）
+UPLOAD_MAX_BYTES = _env_int('UPLOAD_MAX_BYTES', 100 * 1024 * 1024)
+MESSAGE_IMAGE_MAX_BYTES = _env_int('MESSAGE_IMAGE_MAX_BYTES', 5 * 1024 * 1024)
+UPLOAD_ALLOWED_EXTENSIONS = _env_list(
+    'UPLOAD_ALLOWED_EXTENSIONS',
+    'png,jpg,jpeg,gif,webp,pdf,xlsx,csv,zip,txt,md',
+)
+
+# 比赛包导入（上传体积 / 解压后体积 / 文件数）
+PACKAGE_MAX_BYTES = _env_int('PACKAGE_MAX_BYTES', 100 * 1024 * 1024)
+PACKAGE_MAX_FILES = _env_int('PACKAGE_MAX_FILES', 3000)
+PACKAGE_MAX_UNCOMPRESSED_BYTES = _env_int(
+    'PACKAGE_MAX_UNCOMPRESSED_BYTES', 300 * 1024 * 1024)
+
+# 合同列表/同步/详情
+CONTRACT_PAGE_SIZE = _env_int('CONTRACT_PAGE_SIZE', 50)
+CONTRACT_PAGE_SIZE_MAX = _env_int('CONTRACT_PAGE_SIZE_MAX', 200)
+CONTRACT_SYNC_LIMIT = _env_int('CONTRACT_SYNC_LIMIT', 500)
+CONTRACT_SYNC_LIMIT_MAX = _env_int('CONTRACT_SYNC_LIMIT_MAX', 1000)
+CONTRACT_TIMELINE_MAX = _env_int('CONTRACT_TIMELINE_MAX', 300)
+CONTRACT_CHECKS_MAX = _env_int('CONTRACT_CHECKS_MAX', 200)
+CONTRACT_OVERDUE_HOURS = _env_int('CONTRACT_OVERDUE_HOURS', 24)
+CONTRACT_FREEZE_TIMEOUT_HOURS = _env_int('CONTRACT_FREEZE_TIMEOUT_HOURS', 24)
+
+# 工具箱计时器
+TIMER_MAX_DURATION_DAYS = _env_int('TIMER_MAX_DURATION_DAYS', 30)
+
+# 基础数据列表分页
+BASEDATA_PAGE_SIZE = _env_int('BASEDATA_PAGE_SIZE', 200)
+BASEDATA_PAGE_SIZE_MAX = _env_int('BASEDATA_PAGE_SIZE_MAX', 500)
+
+# 进程内缓存 TTL（秒）
+CACHE_TTL_CONTRACT_TYPES = _env_int('CACHE_TTL_CONTRACT_TYPES', 600)
+CACHE_TTL_COMPANY_LIST = _env_int('CACHE_TTL_COMPANY_LIST', 15)
+CACHE_TTL_BASEDATA = _env_int('CACHE_TTL_BASEDATA', 20)
+CACHE_TTL_INDUSTRY_FIELDS = _env_int('CACHE_TTL_INDUSTRY_FIELDS', 60)
+
+# 日志留存（prune 命令默认值）
+NETWORK_LOG_RETENTION_DAYS = _env_int('NETWORK_LOG_RETENTION_DAYS', 30)
+NETWORK_LOG_KEEP_ROWS = _env_int('NETWORK_LOG_KEEP_ROWS', 200000)
+BROADCAST_EVENT_RETENTION_DAYS = _env_int('BROADCAST_EVENT_RETENTION_DAYS', 7)
+BROADCAST_EVENT_KEEP_ROWS = _env_int('BROADCAST_EVENT_KEEP_ROWS', 100000)
+
 # 脱敏字段黑名单（决策 D18：密码/token/邀请码原文一律不入日志）
 LOG_REDACTED_KEYS = {
     'password', 'new_password', 'old_password', 'token', 'refresh', 'access',
@@ -222,7 +318,9 @@ LOG_REDACTED_KEYS = {
     'code', 'invite_code', 'join_code', 'team_code', 'activation_code',
 }
 
-LOG_DIGEST_MAX_LENGTH = 2000
+# 网络日志里请求/响应摘要的最大长度（字节数级字符）：400 人规模下日志行宽直接影响
+# 表体积与清理成本，可用环境变量调小（如 500）；调小不丢可追溯性，只压缩摘要。
+LOG_DIGEST_MAX_LENGTH = int(os.getenv('LOG_DIGEST_MAX_LENGTH', '2000'))
 
 # web worker 进程数（scripts/run_servers.py 启动时自动写入）；多核吞吐 = worker 数 × 单核吞吐（GIL）
 WEB_CONCURRENCY = max(1, int(os.getenv('WEB_CONCURRENCY', '1')))
