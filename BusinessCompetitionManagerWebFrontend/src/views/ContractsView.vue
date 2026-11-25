@@ -197,6 +197,20 @@ interface ListRow {
   [key: string]: unknown
 }
 const createLists = ref<Record<string, ListRow[]>>({})
+/** 创建表单的内联校验错误（显示在字段下方，替代 toast） */
+const createErrors = ref<Record<string, string>>({})
+
+function setCreateError(key: string, message: string): void {
+  createErrors.value = { ...createErrors.value, [key]: message }
+}
+
+function clearCreateError(prefix: string): void {
+  const next = { ...createErrors.value }
+  for (const key of Object.keys(next)) {
+    if (key.startsWith(prefix)) delete next[key]
+  }
+  createErrors.value = next
+}
 // 清单行选项按引用表取（原料/零件/产品/地图节点），不再写死原料
 const { optionsFor, ensure: ensureListOptions } = useListOptions(Number(props.cid))
 
@@ -269,7 +283,13 @@ function isBoolField(type: string | undefined): boolean {
   return t === 'BOOLEAN' || t === 'BOOL'
 }
 
+watch(createParties, () => clearCreateError('party:'), { deep: true })
+watch([createNumbers, createTexts, createBools, createLists],
+  () => clearCreateError('input:'), { deep: true })
+watch(createFiscalYearId, () => clearCreateError('fiscal'))
+
 function onTypeChange(): void {
+  createErrors.value = {}
   createParties.value = {}
   createTexts.value = {}
   createNumbers.value = {}
@@ -283,6 +303,7 @@ function onTypeChange(): void {
 }
 
 function openCreate(): void {
+  createErrors.value = {}
   createTypeKey.value = ''
   createName.value = ''
   createIsBackfill.value = false
@@ -294,12 +315,12 @@ function openCreate(): void {
 async function submitCreate(): Promise<void> {
   const type = selectedType.value
   if (!type) {
-    ElMessage.warning('请选择合同类型')
+    setCreateError('type', '请选择合同类型')
     return
   }
   for (const p of type.partyRoles) {
     if (!p.optional && !createParties.value[p.role]) {
-      ElMessage.warning(`请选择「${p.label || p.role}」对应的公司`)
+      setCreateError(`party:${p.role}`, `请选择「${p.label || p.role}」对应的公司`)
       return
     }
   }
@@ -311,17 +332,19 @@ async function submitCreate(): Promise<void> {
       listRowsTotal += rows.filter((row) => row.item).length
       if (!rows.length) {
         if (f.optional) continue
-        ElMessage.warning(`请添加「${f.label || f.key}」`)
+        setCreateError(`input:${f.key}`, `请添加「${f.label || f.key}」`)
         return
       }
       for (const row of rows) {
         if (!row.item) {
-          ElMessage.warning(`「${f.label || f.key}」有未选择${f.itemLabel || '明细'}的行`)
+          setCreateError(`input:${f.key}`,
+            `「${f.label || f.key}」有未选择${f.itemLabel || '明细'}的行`)
           return
         }
         for (const sub of f.fields ?? []) {
           if (listRowNumber(row, sub.key) === undefined) {
-            ElMessage.warning(`「${f.label || f.key}」有未填写${sub.label || sub.key}的行`)
+            setCreateError(`input:${f.key}`,
+              `「${f.label || f.key}」有未填写${sub.label || sub.key}的行`)
             return
           }
         }
@@ -333,16 +356,17 @@ async function submitCreate(): Promise<void> {
       ? createNumbers.value[f.key] === undefined
       : !(createTexts.value[f.key] ?? '').trim()
     if (empty) {
-      ElMessage.warning(`请输入「${f.label || f.key}」`)
+      setCreateError(`input:${f.key}`, `请输入「${f.label || f.key}」`)
       return
     }
   }
   if (type.inputSchema.some((f) => f.optional && isListField(f.type)) && listRowsTotal === 0) {
-    ElMessage.warning('至少填写一项采购清单')
+    const target = type.inputSchema.find((f) => f.optional && isListField(f.type))
+    if (target) setCreateError(`input:${target.key}`, '至少填写一项采购清单')
     return
   }
   if (createIsBackfill.value && !createFiscalYearId.value) {
-    ElMessage.warning('补录合同必须选择财年')
+    setCreateError('fiscal', '补录合同必须选择财年')
     return
   }
 
@@ -558,7 +582,7 @@ watch(
 
     <el-dialog v-model="showCreate" title="创建合同" width="720px" append-to-body>
       <el-form>
-        <el-form-item label="合同类型" required>
+        <el-form-item label="合同类型" required :error="createErrors.type">
           <el-select
             v-model="createTypeKey"
             filterable
@@ -586,6 +610,7 @@ watch(
             :key="p.role"
             :required="!p.optional"
             :label="`${p.label || p.role}${p.optional ? '（可选）' : ''}`"
+            :error="createErrors[`party:${p.role}`]"
           >
             <el-select
               v-model="createParties[p.role]"
@@ -604,6 +629,7 @@ watch(
             :key="f.key"
             :required="!f.optional"
             :label="`${f.label || f.key}${f.optional ? '（选填）' : ''}${f.min !== undefined ? `（最小值 ${f.min}）` : ''}`"
+            :error="createErrors[`input:${f.key}`]"
           >
             <el-input-number
               v-if="isNumberField(f.type)"
@@ -677,7 +703,7 @@ watch(
           <el-form-item>
             <el-checkbox v-model="createIsBackfill">补录合同（需超级管理员审核）</el-checkbox>
           </el-form-item>
-          <el-form-item v-if="createIsBackfill" label="补录财年" required>
+          <el-form-item v-if="createIsBackfill" label="补录财年" required :error="createErrors.fiscal">
             <el-select
               v-model="createFiscalYearId"
               placeholder="选择已结束的财年"
