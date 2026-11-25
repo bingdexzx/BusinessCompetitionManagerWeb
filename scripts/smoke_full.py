@@ -63,7 +63,7 @@ def cleanup_previous():
 def main():
     tmp_root = Path(tempfile.mkdtemp(prefix='gipfel_full_'))
     cleanup_previous()
-    call_command('bootstrap_superadmin', 'full_admin', password='FullAdmin12345!', verbosity=0)
+    call_command('bootstrap_superadmin', 'full_admin', password=os.getenv('SMOKE_PASSWORD') or '', verbosity=0)
     for username in ('full_p1', 'full_p2', 'full_p3'):
         user, _ = User.objects.get_or_create(username=username, defaults={
             'email': f'{username}@smoke.local', 'display_name': username})

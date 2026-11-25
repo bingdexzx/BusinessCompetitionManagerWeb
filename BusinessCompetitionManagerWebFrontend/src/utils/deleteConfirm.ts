@@ -36,6 +36,16 @@ export interface DeleteImpact {
  * @param name   数据名称（用于提示文案）
  * @param impact 后端返回的级联影响信息（GET .../impact），失败或为空时按普通删除处理
  */
+/** HTML 转义：名字/标签来自数据库（可能含 < > & 引号），不能直接拼进 dangerouslyUseHTMLString。 */
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export async function confirmDeleteWithImpact(
   name: string,
   impact?: DeleteImpact | null,
@@ -49,10 +59,10 @@ export async function confirmDeleteWithImpact(
     const lines =
       refs
         .filter((c) => (c.count || 0) > 0)
-        .map((c) => `• ${c.label}：${c.count} 条`)
+        .map((c) => `• ${escapeHtml(c.label)}：${c.count} 条`)
         .join("<br/>") || "• 未知引用";
     const msg =
-      `「<b>${name}</b>」正在被以下数据引用，<b>无法删除</b>：<br/><br/>` +
+      `「<b>${escapeHtml(name)}</b>」正在被以下数据引用，<b>无法删除</b>：<br/><br/>` +
       `${lines}<br/><br/>请先解除引用后重试。`;
     await ElMessageBox.alert(msg, "无法删除", {
       type: "warning",
@@ -70,8 +80,8 @@ export async function confirmDeleteWithImpact(
       .map((c) => `• ${c.label}：${c.count} 条`)
       .join("<br/>");
     const msg =
-      `删除「<b>${name}</b>」将<b>级联删除</b>以下关联数据，且不可恢复：<br/><br/>` +
-      `${lines}<br/><br/>确定继续删除吗？`;
+      `删除「<b>${escapeHtml(name)}</b>」将<b>级联删除</b>以下关联数据，且不可恢复：<br/><br/>` +
+      `${lines}<br/><br/>确定继续删除？`;
     await ElMessageBox.confirm(msg, "级联删除警告", {
       type: "warning",
       dangerouslyUseHTMLString: true,
@@ -83,5 +93,9 @@ export async function confirmDeleteWithImpact(
 
   // 3) 普通删除确认
   const msg = options?.baseMessage || `确定删除「${name}」？删除后不可恢复。`;
-  await ElMessageBox.confirm(msg, "确认删除", { type: "warning" });
+  await ElMessageBox.confirm(msg, "删除", {
+    type: "warning",
+    confirmButtonText: "删除",
+    cancelButtonText: "取消",
+  });
 }

@@ -5,7 +5,7 @@ async function login() {
   const res = await fetch('http://127.0.0.1:8123/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'full_admin', password: 'FullAdmin12345!' }),
+    body: JSON.stringify({ username: 'full_admin', password: process.env.SMOKE_PASSWORD || '' }),
   })
   const data = await res.json()
   return data.access

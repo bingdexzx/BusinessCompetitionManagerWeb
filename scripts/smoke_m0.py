@@ -39,7 +39,7 @@ def check(name, ok, detail=''):
 
 def main():
     # ------------------------------------------------------------ 0. 引导
-    call_command('bootstrap_superadmin', 'smoke_admin', password='Smoke12345!', verbosity=0)
+    call_command('bootstrap_superadmin', 'smoke_admin', password=os.getenv('SMOKE_PASSWORD') or '', verbosity=0)
     client = Client()
 
     # ------------------------------------------------------------ 1. 登录

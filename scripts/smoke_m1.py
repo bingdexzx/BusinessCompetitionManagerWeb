@@ -3,7 +3,6 @@
 运行：.venv\\Scripts\\python.exe scripts\\smoke_m1.py
 """
 
-import io
 import json
 import os
 import shutil
@@ -76,7 +75,7 @@ def build_bad_package(path: Path):
 
 def main():
     tmp_root = Path(tempfile.mkdtemp(prefix='gipfel_m1_'))
-    call_command('bootstrap_superadmin', 'm1_admin', password='M1Admin12345!', verbosity=0)
+    call_command('bootstrap_superadmin', 'm1_admin', password=os.getenv('SMOKE_PASSWORD') or '', verbosity=0)
     client = Client()
 
     # ---------------------------------------------------------- 0. 登录

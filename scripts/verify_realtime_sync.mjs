@@ -104,7 +104,7 @@ try {
   const created = await api('/api/users', {
     method: 'POST',
     token,
-    body: { username: uname, password: 'SyncProbe12345!', displayName: '同步探针' },
+    body: { username: uname, password: process.env.SMOKE_PASSWORD || '', displayName: '同步探针' },
   })
   if (created.status !== 201) fail(`创建用户失败 ${created.status} ${created.text.slice(0, 200)}`)
   const userEvent = await waitFor(

@@ -140,7 +140,7 @@ try {
     const r = await api('/api/users', {
       method: 'POST',
       token,
-      body: { username: `rt_probe_${stamp}`, password: 'ProbePass12345!', displayName: '实时探针' },
+      body: { username: `rt_probe_${stamp}`, password: process.env.SMOKE_PASSWORD || '', displayName: '实时探针' },
     })
     createdUser = r.json
     if (r.status < 300 && r.json?.id) cleanup.push(() => api(`/api/users/${r.json.id}`, { method: 'DELETE', token }))
