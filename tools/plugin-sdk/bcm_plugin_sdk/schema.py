@@ -92,7 +92,7 @@ class IndustryFieldSpec(TypedDict):
 
 
 # ---------------------------------------------------------------- 构造函数
-def number_field(key: str, label: str, *, min: float | None = None,
+def number_field(key: str, label: str, min: float | None = None,
                  max: float | None = None, optional: bool = False) -> InputField:
     """数值输入项（NUMBER）。"""
     field: InputField = {'key': key, 'label': label, 'type': 'NUMBER'}
@@ -105,7 +105,7 @@ def number_field(key: str, label: str, *, min: float | None = None,
     return field
 
 
-def text_field(key: str, label: str, *, optional: bool = False) -> InputField:
+def text_field(key: str, label: str, optional: bool = False) -> InputField:
     """文本输入项（TEXT）。"""
     field: InputField = {'key': key, 'label': label, 'type': 'TEXT'}
     if optional:
@@ -113,7 +113,7 @@ def text_field(key: str, label: str, *, optional: bool = False) -> InputField:
     return field
 
 
-def bool_field(key: str, label: str, *, optional: bool = False) -> InputField:
+def bool_field(key: str, label: str, optional: bool = False) -> InputField:
     """开关输入项（BOOLEAN）。"""
     field: InputField = {'key': key, 'label': label, 'type': 'BOOLEAN'}
     if optional:
@@ -121,7 +121,8 @@ def bool_field(key: str, label: str, *, optional: bool = False) -> InputField:
     return field
 
 
-def ref_field(key: str, label: str, table: TableName, *, optional: bool = False) -> InputField:
+def ref_field(key: str, label: str, table: TableName,
+              optional: bool = False) -> InputField:
     """可搜索下拉（REF:<表>）：值是条目名称字符串。"""
     field: InputField = {'key': key, 'label': label, 'type': f'REF:{table}'}
     if optional:
@@ -129,7 +130,7 @@ def ref_field(key: str, label: str, table: TableName, *, optional: bool = False)
     return field
 
 
-def list_sub_field(key: str, label: str, *, min: float | None = 0,
+def list_sub_field(key: str, label: str, min: float | None = 0,
                    max: float | None = None) -> ListSubField:
     """清单行内的数量字段。"""
     sub: ListSubField = {'key': key, 'label': label, 'type': 'NUMBER'}
@@ -140,7 +141,7 @@ def list_sub_field(key: str, label: str, *, min: float | None = 0,
     return sub
 
 
-def list_field(key: str, label: str, table: TableName, item_label: str, *,
+def list_field(key: str, label: str, table: TableName, item_label: str,
                fields: list[ListSubField] | None = None,
                optional: bool = False) -> InputField:
     """清单（LIST:<表>）：fields=[] 表示只登记条目、不填数量。"""
@@ -154,7 +155,7 @@ def list_field(key: str, label: str, table: TableName, item_label: str, *,
     return field
 
 
-def party_role(role: str, label: str, *, optional: bool = False) -> PartyRole:
+def party_role(role: str, label: str, optional: bool = False) -> PartyRole:
     """参与方角色；role 会作为 ctx.party(role) / Effect(company=role) 的键。"""
     item: PartyRole = {'role': role, 'label': label}
     if optional:

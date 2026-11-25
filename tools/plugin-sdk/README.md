@@ -77,6 +77,9 @@ def apply(ctx: ContractContext) -> list[Effect]:
 | `party_role(role, label, optional=False)` | 参与方角色 | `role` 是 `ctx.party()` / `Effect` 的键 |
 | `industry_field(key, name, type='NUMBER', table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段 | 参数均可按顺序位置传；`formula` 非空即由引擎重算 |
 
+> 以上所有构造器的可选参数都**支持按表格顺序位置传入**，也支持关键字传入；例如
+> `number_field("q", "数量", 1, 99)` 与 `number_field("q", "数量", min=1, max=99)` 等价。
+
 ### 区域字段定义（`region-fields.json`）
 
 ```python

@@ -49,7 +49,7 @@ class RegionFieldsDocument(TypedDict):
     fields: list[RegionFieldSpec]
 
 
-def region_condition(field_key: str, value: Any, *, op: ConditionOp = 'eq',
+def region_condition(field_key: str, value: Any, op: ConditionOp = 'eq',
                      source: ConditionSource = 'COMPANY') -> RegionCondition:
     """构造修改条件：公司/区域字段 ``op`` ``value`` 时允许通过合同修改。"""
     return {'source': source, 'fieldKey': field_key, 'op': op, 'value': value}
