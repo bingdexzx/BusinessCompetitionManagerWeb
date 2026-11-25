@@ -70,14 +70,34 @@ sudo bash deploy/debian/install.sh \
 
 脚本会：
 
-- **自动检测** 1Panel / Nginx / PostgreSQL 是否已存在，已存在就**跳过安装**；
+- **自动检测** 1Panel / Nginx / OpenResty / PostgreSQL 是否已存在，已存在就**跳过安装**；
 - `--nginx-mode manual`：不修改系统 nginx，只把站点配置导出到
   `/opt/bcm/deploy/nginx/bcm.site.conf`，并打印 1Panel 里的两种配法
   （替换站点配置，或反向代理 `/api`→8000、`/ws`→8001 并开启 WebSocket）；
 - 跳过 certbot（在 1Panel 网站设置里一键申请 SSL）与 ufw（1Panel 自带防火墙）。
 
-> 不带 `--nginx-mode` 时：检测到 Nginx 会询问 `manage`（脚本写配置）还是
+> 不带 `--nginx-mode` 时：检测到 Nginx/OpenResty 会询问 `manage`（脚本写配置）还是
 > `manual`（1Panel 里配）；检测到 1Panel 时默认 `manual`，防火墙默认交给 1Panel。
+
+### 1Panel 用的是 OpenResty（不是系统 nginx）
+
+脚本**不会改** `/etc/nginx`（那里即使写了也不生效），需要在 1Panel 里配：
+
+1. 网站 → 创建网站 → **静态网站**，根目录：
+   `/opt/bcm/BusinessCompetitionManagerWebFrontend/dist`；
+2. 打开站点 → **配置文件**，用 `/opt/bcm/deploy/nginx/bcm.site.conf`
+   的内容整体替换（里面已含 SPA 回退、`/api`、`/ws` 升级、上传上限）；
+   若文件不存在，用仓库的 `deploy/nginx/bcm.conf`，把 `server_name` 改成服务器 IP、
+   `root` 改成上面的 dist 路径；
+3. 保存后 1Panel 会自动 reload OpenResty，用下面命令验证：
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: <IP>' http://127.0.0.1/
+curl -s -H 'Host: <IP>' http://127.0.0.1/api/health
+```
+
+> 1Panel 建站点时如果域名输入框不接受纯 IP：随便填一个占位域名，
+> 保存后在「配置文件」里把 `server_name` 改成 `_` 或服务器 IP 即可。
 
 ### 检测逻辑
 

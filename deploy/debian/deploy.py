@@ -203,7 +203,9 @@ def detect_system(assume: list[str]) -> dict:
     facts = {
         'onepanel': Path('/opt/1panel').exists() or bool(shutil.which('1pctl')),
         'nginx': bool(shutil.which('nginx')) or Path('/usr/sbin/nginx').exists(),
-        'openresty': bool(shutil.which('openresty')),
+        'openresty': bool(shutil.which('openresty')) or Path('/usr/local/openresty').exists(),
+        'openresty_conf': str(
+            Path('/opt/1panel/apps/openresty/openresty/conf/conf.d')),
         'psql': bool(shutil.which('psql')),
         'postgres_port': port_open('127.0.0.1', 5432),
         'node': bool(shutil.which('node')),
@@ -230,7 +232,8 @@ def print_detection(facts: dict) -> None:
     info('系统检测结果：')
     rows = [
         ('1Panel', facts['onepanel']),
-        ('Nginx / OpenResty', facts['nginx']),
+        ('Nginx', facts['nginx'] and not facts['openresty']),
+        ('OpenResty（1Panel 网站使用）', facts['openresty']),
         ('PostgreSQL（5432 端口在监听）', facts['postgres_port']),
         ('psql 客户端', facts['psql']),
         ('Node.js', facts['node']),
@@ -861,11 +864,22 @@ server {{
 
     if cfg.nginx_mode == 'manual':
         info(f'已导出站点配置：{export_path}')
-        info('请在 1Panel 中配置该站点（任选其一）：')
-        print('  1) 1Panel → 网站 → 创建站点（PHP/静态），把上面的 server 内容替换进站点配置；')
-        print('  2) 1Panel → 网站 → 反向代理：/api 指向 http://127.0.0.1:8000、'
-              '/ws 指向 http://127.0.0.1:8001（需开启 WebSocket）；')
-        print(f'  3) 前端根目录填：{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist')
+        if cfg.facts.get('openresty') or cfg.onepanel:
+            info('检测到 1Panel 的 OpenResty：脚本不会改 /etc/nginx，需在面板里配置：')
+            print('  1) 1Panel → 网站 → 创建网站（静态），域名填服务器 IP（或先填占位再改配置），')
+            print(f'     根目录填：{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist')
+            print('  2) 打开该站点 → 配置文件，用下面文件的内容覆盖（server_name 已写成 IP）：')
+            print(f'     {export_path}')
+            print('  3) 或者用「反向代理」加两条：/api → http://127.0.0.1:8000，'
+                  '/ws → http://127.0.0.1:8001（需支持 WebSocket）')
+            print('  4) 保存后 1Panel 会自动 reload；用 curl -H "Host: %s" http://127.0.0.1/api/health 验证'
+                  % cfg.domain)
+        else:
+            info('请在 1Panel 中配置该站点（任选其一）：')
+            print('  1) 1Panel → 网站 → 创建站点（PHP/静态），把上面的 server 内容替换进站点配置；')
+            print('  2) 1Panel → 网站 → 反向代理：/api 指向 http://127.0.0.1:8000、'
+                  '/ws 指向 http://127.0.0.1:8001（需开启 WebSocket）；')
+            print(f'  3) 前端根目录填：{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist')
         return
 
     # manage 模式：优先 conf.d（1Panel/OpenResty 也常包含该目录），否则 sites-available
