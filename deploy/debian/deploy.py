@@ -250,6 +250,7 @@ class Config:
     admin_password: str = ''
     reset_admin: bool = False
     force_cert: bool = False
+    pgbouncer: bool = True          # 部署时自动启动 PgBouncer（--no-pgbouncer 关闭）
     db_mode: str = 'auto'          # auto | local | existing
     db_name: str = 'business_competition_manager'
     db_user: str = 'bcm_app'
@@ -360,6 +361,7 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
             cfg.admin_password = ask('管理员密码', secret=True, required=True)
     cfg.reset_admin = bool(args.reset_admin_password)
     cfg.force_cert = bool(args.force_cert)
+    cfg.pgbouncer = bool(args.pgbouncer)
 
     # ---- 数据库
     reuse = bool(existing.get('DATABASES_PASSWORD')) and not args.db_password
@@ -490,6 +492,8 @@ TRUST_X_FORWARDED_PROTO = '{'true' if secure == 'true' else 'false'}'
 SESSION_COOKIE_SECURE = '{secure}'
 CSRF_COOKIE_SECURE = '{secure}'
 
+DATABASES_DISABLE_SERVER_SIDE_CURSORS = '{'true' if cfg.pgbouncer else 'false'}'
+
 WEB_CONCURRENCY = '{cfg.workers}'
 DB_MAX_CONCURRENT_REQUESTS = '{db_max}'
 DB_BACKPRESSURE_TIMEOUT = '10'
@@ -559,6 +563,8 @@ def install_system(runner: Runner, cfg: Config) -> None:
         need.append('nginx')
     if cfg.db_mode == 'local' and not cfg.facts.postgres_port:
         need += ['postgresql', 'postgresql-contrib']
+    if cfg.pgbouncer and cfg.db_port != '6432':
+        need.append('pgbouncer')
     if cfg.tls and not cfg.facts.certbot:
         need += ['certbot', 'python3-certbot-nginx']
     missing = [p for p in need if not (runner.dry_run or pkg_installed(p))]
@@ -677,6 +683,59 @@ def setup_database(runner: Runner, cfg: Config) -> None:
     if not runner.dry_run and (exists.stdout or '').strip() != '1':
         runner.run(['sudo', '-u', 'postgres', 'createdb', '-O', cfg.db_user, cfg.db_name])
     UI.ok('数据库就绪')
+
+
+def setup_pgbouncer(runner: Runner, cfg: Config) -> None:
+    """配置并启动 PgBouncer（transaction pooling），随后让应用连 6432。"""
+    if not cfg.pgbouncer or cfg.db_port == '6432':
+        return
+    UI.step('PgBouncer')
+    direct_host = '127.0.0.1' if cfg.db_host in ('localhost', '') else cfg.db_host
+    direct_port = cfg.db_port
+
+    if runner.dry_run:
+        UI.info(f'[dry-run] 配置 PgBouncer：监听 127.0.0.1:6432 → {direct_host}:{direct_port}')
+        cfg.db_host, cfg.db_port = '127.0.0.1', '6432'
+        return
+
+    ini = Path('/etc/pgbouncer/pgbouncer.ini')
+    userlist = Path('/etc/pgbouncer/userlist.txt')
+    ini.parent.mkdir(parents=True, exist_ok=True)
+    ini.write_text(f"""[databases]
+* = host={direct_host} port={direct_port}
+
+[pgbouncer]
+listen_addr = 127.0.0.1
+listen_port = 6432
+auth_type = plain
+auth_file = {userlist}
+pool_mode = transaction
+max_client_conn = 1000
+default_pool_size = 30
+min_pool_size = 5
+reserve_pool_size = 5
+server_reset_query = DISCARD ALL
+ignore_startup_parameters = extra_float_digits,options
+""", encoding='utf-8')
+    userlist.write_text(f'"{cfg.db_user}" "{cfg.db_password}"\n', encoding='utf-8')
+    userlist.chmod(0o600)
+    try:
+        import pwd
+        pwd.getpwnam('pgbouncer')
+        runner.run(['chown', 'pgbouncer:pgbouncer', str(ini), str(userlist)], check=False)
+    except KeyError:
+        pass
+
+    runner.run(['systemctl', 'enable', '--now', 'pgbouncer'])
+    # 等端口就绪
+    for _ in range(10):
+        if port_open('127.0.0.1', 6432):
+            break
+        time.sleep(0.5)
+    if not port_open('127.0.0.1', 6432):
+        die('PgBouncer 未监听 6432，请检查：journalctl -u pgbouncer -n 50 --no-pager')
+    cfg.db_host, cfg.db_port = '127.0.0.1', '6432'
+    UI.ok('PgBouncer 已启动：127.0.0.1:6432（transaction pooling）')
 
 
 def db_env(cfg: Config) -> dict:
@@ -1118,6 +1177,7 @@ def health(runner: Runner, cfg: Config) -> None:
 def run_install(runner: Runner, cfg: Config) -> None:
     install_system(runner, cfg)
     setup_database(runner, cfg)
+    setup_pgbouncer(runner, cfg)
     ensure_user(runner, cfg)
     sync_code(runner, cfg)
     write_env(runner, cfg)
@@ -1136,6 +1196,8 @@ def run_install(runner: Runner, cfg: Config) -> None:
 
 
 def run_upgrade(runner: Runner, cfg: Config) -> None:
+    if cfg.db_port == '6432':
+        runner.run(['systemctl', 'enable', '--now', 'pgbouncer'], check=False)
     sync_code(runner, cfg)
     install_python(runner, cfg)
     verify_database(runner, cfg)
@@ -1181,6 +1243,9 @@ def run_doctor(cfg: Config) -> int:
     check('8000 监听', port_open('127.0.0.1', HTTP_PORT))
     check('8001 监听', port_open('127.0.0.1', WS_PORT))
     env_data = read_env(env_path) if env_path.exists() else {}
+    if env_data.get('DATABASES_PORT') == '6432':
+        check('PgBouncer 6432 监听', port_open('127.0.0.1', 6432))
+        check('pgbouncer 服务运行', service_state('pgbouncer') == 'active')
     if env_data.get('SECURE_SSL_REDIRECT') == 'true':
         check('443 监听（HTTPS 已启用）', port_open('127.0.0.1', 443))
     if facts.system_nginx:
@@ -1283,6 +1348,10 @@ def build_parser() -> argparse.ArgumentParser:
     tls_group.add_argument('--no-tls', dest='tls', action='store_false')
     parser.add_argument('--no-frontend-build', dest='build_frontend', action='store_false',
                         default=None, help='不构建前端（使用现有 dist）')
+    pgb_group = parser.add_mutually_exclusive_group()
+    pgb_group.add_argument('--pgbouncer', dest='pgbouncer', action='store_true', default=True,
+                           help='部署时启动 PgBouncer（默认开启）')
+    pgb_group.add_argument('--no-pgbouncer', dest='pgbouncer', action='store_false')
     fw_group = parser.add_mutually_exclusive_group()
     fw_group.add_argument('--firewall', dest='firewall', action='store_true', default=None)
     fw_group.add_argument('--no-firewall', dest='firewall', action='store_false')

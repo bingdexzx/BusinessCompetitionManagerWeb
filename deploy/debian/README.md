@@ -37,6 +37,7 @@ python3 deploy/debian/deploy.py status
 | 前端站点目录受限（1Panel） | `--site-dir` 自动 `rsync` dist 进去并 `chown www:www` |
 | 机器没有 Node.js | 询问后装 Node 20；`--no-frontend-build` 可跳过 |
 | 数据库不存在 | 自动建库；无权限时提示去 1Panel 建库或 `ALTER ROLE ... CREATEDB` |
+| PgBouncer | **默认自动安装并启动**（127.0.0.1:6432，transaction pooling），应用自动改连 6432 |
 | 数据库连不上 | 迁移前单独校验，报错直接给出当前 `用户@主机:端口/库` 与修复命令 |
 | 管理员不存在 | 自动创建并**校验确实存在**；`--reset-admin-password` 可重置已有账号 |
 | 证书申请失败 | 自动回退 HTTP（关闭 Cookie Secure/HSTS）并给出原因；修好 DNS/80 后重跑即可 |
@@ -60,6 +61,7 @@ python3 deploy/debian/deploy.py status
 | `--admin-user/--admin-email/--admin-password` | 管理员账号 |
 | `--reset-admin-password` | 已存在时重置密码为本次密码 |
 | `--no-frontend-build` | 使用现有 dist，不构建 |
+| `--pgbouncer` / `--no-pgbouncer` | 是否安装并启动 PgBouncer（默认开启） |
 | `--firewall` / `--no-firewall` | 是否启用 ufw |
 | `--yes` | 全部默认值/自动生成，不逐项询问 |
 | `--dry-run` | 只打印计划，不执行 |
@@ -69,7 +71,7 @@ python3 deploy/debian/deploy.py status
 
 1. 环境探测（Debian/root/1Panel/OpenResty/nginx/PostgreSQL/Node/磁盘/内存/IP）；
 2. 只安装缺失的系统包；
-3. 数据库：复用或创建库/用户；
+3. 数据库：复用或创建库/用户；**安装并启动 PgBouncer（127.0.0.1:6432）**；
 4. 创建 `bcm` 系统用户与安装目录；
 5. `rsync` 同步代码（保留 `.env`、media、日志）；
 6. 生成 `.env`（自动生成 `SECRET_KEY` / 数据库密码 / 管理员密码）；
@@ -111,5 +113,6 @@ nginx 站点配置。退出码 `1` 表示有问题。
 | 登录/接口 502 | `systemctl status bcm` + `journalctl -u bcm -n 100` |
 | 前端 404 | 确认 `dist/index.html` 存在；重新 `upgrade` |
 | 证书失败 | 确认域名解析与 80 端口；稍后 `certbot --nginx -d 域名` |
+| PgBouncer 起不来 | `journalctl -u pgbouncer -n 50`；确认 `/etc/pgbouncer/userlist.txt` 权限 600；不需要可加 `--no-pgbouncer` |
 
 > 本脚本只在 Debian 上执行真实系统操作；`--dry-run` / `doctor` / `status` 可在其它系统预览。

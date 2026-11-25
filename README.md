@@ -120,6 +120,7 @@ npx vue-tsc --build ; npx eslint src ; npm run build
 
 ```bash
 sudo bash deploy/debian/install.sh
+# 默认自动安装并启动 PgBouncer（127.0.0.1:6432）；不需要可加 --no-pgbouncer
 # 域名部署默认自动申请 Let's Encrypt 证书（--no-tls 可关闭）
 # 没有域名、纯 IP 部署（不写 --ip 会自动检测本机 IP）：
 # sudo bash deploy/debian/install.sh --ip 203.0.113.10 --yes

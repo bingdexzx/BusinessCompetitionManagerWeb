@@ -25,6 +25,10 @@ GLOBAL_DB = {
     'CONN_MAX_AGE': int(os.getenv('DATABASES_CONN_MAX_AGE', '60')),
     # 取出连接前先健康探测，避免复用到已被服务端断开的死连接。
     'CONN_HEALTH_CHECKS': True,
+    # 走 PgBouncer transaction pooling 时必须禁用服务端游标（Django 官方建议）
+    'DISABLE_SERVER_SIDE_CURSORS': os.getenv(
+        'DATABASES_DISABLE_SERVER_SIDE_CURSORS', 'false').strip().lower()
+        in ('1', 'true', 'yes', 'on'),
     'OPTIONS': {
         # 连接建立超时（秒）：DB 不可用时快速失败，避免请求线程长时间挂起。
         'connect_timeout': int(os.getenv('DATABASES_CONNECT_TIMEOUT', '5')),
