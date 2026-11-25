@@ -8,7 +8,7 @@ from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -90,6 +90,25 @@ def _is_competition_chair(user) -> bool:
         user=user, competition_id=competition_id,
         identity=CompetitionMembership.Identity.ADMIN,
     ).exists()
+
+
+class IsContractOperator(BasePermission):
+    """合同的写操作（提交/确认/拒绝/终止/修改/补录审核）：仅超管或比赛主席团。"""
+
+    message = '参赛选手只能查看合同'
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(
+            user and user.is_authenticated
+            and (user.is_superuser or _is_competition_chair(user))
+        )
+
+
+class ContractWriteView(APIView):
+    """合同写操作基类：参赛选手一律只读。"""
+
+    permission_classes = [IsAuthenticated, IsContractOperator]
 
 
 def _is_party_actor(user, contract) -> bool:
@@ -209,6 +228,8 @@ class ContractDetailView(APIView):
                                        company_map=_company_map_for([contract])))
 
     def patch(self, request, cid, pk):
+        if not (request.user.is_superuser or _is_competition_chair(request.user)):
+            return _error('参赛选手只能查看合同', 403)
         """草稿编辑：拒绝确认退回草稿后，发起方改内容再重新提交。"""
         denied = _require_capability(request, cid, 'act.contracts')
         if denied:
@@ -238,6 +259,8 @@ class ContractDetailView(APIView):
                                        company_map=_company_map_for([contract])))
 
     def delete(self, request, cid, pk):
+        if not (request.user.is_superuser or _is_competition_chair(request.user)):
+            return _error('参赛选手只能查看合同', 403)
         denied = _require_capability(request, cid, 'act.contracts')
         if denied:
             return denied
@@ -315,8 +338,7 @@ class ContractPluginDryRunView(APIView):
         return Response(result)
 
 
-class ContractSubmitView(APIView):
-    permission_classes = [IsAuthenticated]
+class ContractSubmitView(ContractWriteView):
 
     def post(self, request, cid, pk):
         denied = _require_capability(request, cid, 'act.contracts')
@@ -334,7 +356,7 @@ class ContractSubmitView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
-class ContractConfirmView(APIView):
+class ContractConfirmView(ContractWriteView):
     """T3/T4：按参与方顺序确认；确认链完成自动生成编号并自动执行。"""
 
     permission_classes = [IsAuthenticated]
@@ -359,7 +381,7 @@ class ContractConfirmView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
-class ContractTerminateView(APIView):
+class ContractTerminateView(ContractWriteView):
     """终止合同：参与方可操作者或超级管理员；已落账的先回滚当前轮次。"""
 
     permission_classes = [IsAuthenticated]
@@ -385,7 +407,7 @@ class ContractTerminateView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
-class ContractRejectView(APIView):
+class ContractRejectView(ContractWriteView):
     """T3'：任一参与方拒绝确认 → 退回草稿，发起方可改后重提。"""
 
     permission_classes = [IsAuthenticated]
@@ -409,8 +431,7 @@ class ContractRejectView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
-class ContractRetryExecuteView(APIView):
-    permission_classes = [IsAuthenticated]
+class ContractRetryExecuteView(ContractWriteView):
 
     def post(self, request, cid, pk):
         denied = _require_capability(request, cid, 'act.contracts')
@@ -488,8 +509,7 @@ class ContractLedgerView(APIView):
         return Response(data)
 
 
-class ContractRequestModifyView(APIView):
-    permission_classes = [IsAuthenticated]
+class ContractRequestModifyView(ContractWriteView):
 
     def post(self, request, cid, pk):
         denied = _require_capability(request, cid, 'act.contracts_modify')
@@ -511,7 +531,7 @@ class ContractRequestModifyView(APIView):
                         status=status.HTTP_201_CREATED)
 
 
-class ContractModifyReviewView(APIView):
+class ContractModifyReviewView(ContractWriteView):
     """T7/T7'：超级管理员通过/驳回修改申请。"""
 
     permission_classes = [IsAuthenticated]
@@ -532,8 +552,7 @@ class ContractModifyReviewView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
-class ContractModifySubmitView(APIView):
-    permission_classes = [IsAuthenticated]
+class ContractModifySubmitView(ContractWriteView):
 
     def post(self, request, cid, pk):
         denied = _require_capability(request, cid, 'act.contracts_modify')
@@ -555,8 +574,7 @@ class ContractModifySubmitView(APIView):
                                        company_map=_company_map_for([contract])))
 
 
-class ContractBackfillReviewView(APIView):
-    permission_classes = [IsAuthenticated]
+class ContractBackfillReviewView(ContractWriteView):
 
     def post(self, request, cid, pk):
         if not can_manage_competition(request.user, cid):

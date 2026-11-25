@@ -314,6 +314,12 @@ const timelineNodes = computed<DisplayNode[]>(() => {
 })
 // 权限仅前端预判，最终以后端校验为准
 const canReview = computed(() => auth.isSuperuser)
+/** 合同写操作：仅系统超级管理员 / 本比赛主席团；参赛选手只读 */
+const canOperateContract = computed(
+  () =>
+    auth.isSuperuser ||
+    auth.memberships.some((m) => String(m.id) === props.cid && m.identity === 'ADMIN'),
+)
 // 管理员（主席团）：审计信息只到所辖公司（后端按 audit_company_ids 过滤）
 const isCommitteeAdmin = computed(() =>
   auth.memberships.some(
@@ -761,7 +767,7 @@ async function terminate(): Promise<void> {
             </span>
           </div>
         </div>
-        <div class="head-actions" role="group" aria-label="合同操作">
+        <div v-if="canOperateContract" class="head-actions" role="group" aria-label="合同操作">
           <template v-if="contract?.status === 'DRAFT'">
             <el-button :loading="actionLoading" @click="openDraftEdit">编辑草稿</el-button>
             <el-button type="primary" :loading="actionLoading" @click="doSubmit">提交</el-button>
