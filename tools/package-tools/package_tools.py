@@ -159,6 +159,15 @@ DASHBOARD_TEMPLATE = {
     },
 }
 
+REGION_FIELDS_TEMPLATE = {
+    'fields': [
+        {'key': 'market_capacity', 'name': '市场容量', 'type': 'NUMBER', 'default': 100,
+         'condition': {'source': 'COMPANY', 'fieldKey': 'license', 'op': 'eq', 'value': True}},
+        {'key': 'license', 'name': '经营许可', 'type': 'BOOL', 'default': False},
+        {'key': 'level', 'name': '等级', 'type': 'TEXT', 'default': '二线'},
+    ],
+}
+
 PACKAGE_README = '''# 比赛包工程
 
 ```bash
@@ -215,6 +224,8 @@ def cmd_init(args) -> int:
     (root / 'README.md').write_text(PACKAGE_README, encoding='utf-8')
     (root / 'dashboard.json').write_text(
         json.dumps(DASHBOARD_TEMPLATE, ensure_ascii=False, indent=2), encoding='utf-8')
+    (root / 'region-fields.json').write_text(
+        json.dumps(REGION_FIELDS_TEMPLATE, ensure_ascii=False, indent=2), encoding='utf-8')
 
     sdk_path = str((Path(__file__).resolve().parents[2] / 'tools' / 'plugin-sdk'))
     (root / '.vscode').mkdir(exist_ok=True)
@@ -250,6 +261,7 @@ def cmd_init(args) -> int:
     manifest = {
         'packageVersion': '1.0',
         'dashboard': 'dashboard.json',
+        'regionFields': 'region-fields.json',
         'competition': {'name': '新的比赛'},
         'plugins': [
             {'file': 'plugins/contract_example.py', 'kind': 'CONTRACT',
@@ -657,15 +669,67 @@ def validate_dashboard(root: Path, manifest: dict) -> None:
     ok(f'{rel} 仪表盘结构合法')
 
 
+REGION_FIELD_TYPES = {'NUMBER', 'TEXT', 'BOOL', 'DATE'}
+REGION_CONDITION_OPS = {'eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in'}
+REGION_CONDITION_SOURCES = {'COMPANY', 'REGION'}
+
+
+def validate_region_fields(root: Path, manifest: dict) -> None:
+    rel = str(manifest.get('regionFields') or 'region-fields.json')
+    path = root / rel
+    if manifest.get('regionFields') and not path.exists():
+        error(f'manifest 声明的区域字段文件不存在：{rel}')
+        return
+    if not path.exists():
+        return
+    try:
+        doc = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        error(f'{rel}: JSON 解析失败：{exc}')
+        return
+    specs = doc.get('fields') if isinstance(doc, dict) else doc
+    if not isinstance(specs, list):
+        error(f'{rel}: fields 必须是数组')
+        return
+    seen = set()
+    for index, spec in enumerate(specs):
+        where = f'{rel} fields[{index}]'
+        if not isinstance(spec, dict):
+            error(f'{where} 必须是对象')
+            continue
+        key = str(spec.get('key') or '').strip()
+        if not re.match(r'^[A-Za-z0-9_]{1,64}$', key):
+            error(f'{where}.key 只能包含字母/数字/下划线（1-64）')
+        elif key in seen:
+            error(f'{where}.key 重复：{key}')
+        else:
+            seen.add(key)
+        if not str(spec.get('name') or '').strip():
+            error(f'{where}.name 不能为空')
+        field_type = str(spec.get('type') or spec.get('fieldType') or 'NUMBER').upper()
+        if field_type not in REGION_FIELD_TYPES:
+            error(f'{where}.type 必须是 {"|".join(sorted(REGION_FIELD_TYPES))}')
+        condition = spec.get('condition')
+        if condition:
+            if not isinstance(condition, dict):
+                error(f'{where}.condition 必须是对象')
+                continue
+            source = str(condition.get('source') or 'COMPANY').upper()
+            if source not in REGION_CONDITION_SOURCES:
+                error(f'{where}.condition.source 必须是 COMPANY|REGION')
+            if not str(condition.get('fieldKey') or condition.get('field') or '').strip():
+                error(f'{where}.condition.fieldKey 必填')
+            op = str(condition.get('op') or 'eq')
+            if op not in REGION_CONDITION_OPS:
+                error(f'{where}.condition.op 必须是 {"|".join(sorted(REGION_CONDITION_OPS))}')
+            if 'value' not in condition:
+                error(f'{where}.condition.value 必填')
+    ok(f'{rel} 区域字段定义合法（{len(specs)} 个）')
+
+
 def validate_optional_files(root: Path, manifest: dict) -> None:
     validate_dashboard(root, manifest)
-    path = root / 'region-fields.json'
-    if path.exists():
-        try:
-            json.loads(path.read_text(encoding='utf-8'))
-            ok('region-fields.json JSON 合法')
-        except json.JSONDecodeError as exc:
-            error(f'region-fields.json: JSON 解析失败：{exc}')
+    validate_region_fields(root, manifest)
 
 
 def check_directory(root: Path) -> int:

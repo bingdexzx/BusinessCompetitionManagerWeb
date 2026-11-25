@@ -77,6 +77,26 @@ def apply(ctx: ContractContext) -> list[Effect]:
 | `party_role(role, label, optional=False)` | 参与方角色 | `role` 是 `ctx.party()` / `Effect` 的键 |
 | `industry_field(key, name, table='entity', default=None, formula='', group='', timer_enabled=False, timer_trigger='FY_START')` | 产业字段 | `formula` 非空即由引擎重算 |
 
+### 区域字段定义（`region-fields.json`）
+
+```python
+from bcm_plugin_sdk import (
+    region_field, region_condition, region_fields_document,
+)
+
+doc = region_fields_document([
+    region_field("market_capacity", "市场容量", "NUMBER", default=100,
+                 condition=region_condition("license", True)),
+    region_field("level", "等级", "TEXT", default="二线"),
+])
+# json.dump(doc, open("region-fields.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+```
+
+- `type` 只能是 `NUMBER | TEXT | BOOL | DATE`；
+- `condition` 可选：`source` 默认 `COMPANY`（公司实体字段），`REGION` 表示引用同区域其他字段；
+- `op` 支持 `eq/ne/gt/gte/lt/lte/in`；`value` 必填；
+- 条件含义：合同修改该区域字段时，只有满足条件才允许通过。
+
 `table` 的合法值（`TableName` 字面量，编辑器会提示/拦截）：
 
 ```

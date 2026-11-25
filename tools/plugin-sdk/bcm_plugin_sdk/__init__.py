@@ -25,6 +25,17 @@
 """
 
 from ._runtime.api import ContractContext, Effect, IndustryContext
+from .regions import (
+    ConditionOp,
+    ConditionSource,
+    RegionCondition,
+    RegionFieldSpec,
+    RegionFieldType,
+    RegionFieldsDocument,
+    region_condition,
+    region_field,
+    region_fields_document,
+)
 from .schema import (
     FieldType,
     IndustryFieldSpec,
@@ -65,6 +76,15 @@ __all__ = [
     'list_sub_field',
     'party_role',
     'industry_field',
+    'RegionFieldType',
+    'RegionFieldSpec',
+    'RegionCondition',
+    'RegionFieldsDocument',
+    'ConditionOp',
+    'ConditionSource',
+    'region_field',
+    'region_condition',
+    'region_fields_document',
     'validate_source',
     'validate_file',
 ]
