@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
 import { ElMessage } from 'element-plus'
 import { useListOptions } from '@/composables/useListOptions'
 import {
@@ -20,14 +19,6 @@ import { errorMessage } from '@/utils/errors'
 
 const props = defineProps<{ cid: string }>()
 const router = useRouter()
-const auth = useAuthStore()
-
-// 管理员（主席团）/ 超级管理员创建合同时，参与方可选全部公司（后端 all=1 同样校验）
-const canPickAllCompanies = computed(() => {
-  if (auth.isSuperuser) return true
-  const membership = auth.memberships.find((m) => String(m.id) === String(props.cid))
-  return membership?.identity === 'ADMIN'
-})
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 
@@ -313,6 +304,8 @@ function onTypeChange(): void {
 
 function openCreate(): void {
   createErrors.value = {}
+  // 每次打开都重拉基础数据：避免首屏加载失败/权限变化后参与方下拉一直「无数据」
+  void loadBaseData()
   createTypeKey.value = ''
   createName.value = ''
   createIsBackfill.value = false
@@ -428,7 +421,8 @@ async function loadBaseData(): Promise<void> {
   try {
     const [types, comps, fys] = await Promise.all([
       getContractTypes(props.cid),
-      getCompanies(props.cid, { all: canPickAllCompanies.value }),
+      // all=1：管理员/超管拿全部公司；无权限的角色后端自动退回其可见范围
+      getCompanies(props.cid, { all: true }),
       getFiscalYears(props.cid),
     ])
     contractTypes.value = types
