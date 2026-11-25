@@ -162,7 +162,7 @@ def party_role(role: str, label: str, *, optional: bool = False) -> PartyRole:
     return item
 
 
-def industry_field(key: str, name: str, *, type: str = 'NUMBER',
+def industry_field(key: str, name: str, type: str = 'NUMBER', *,
                    table: Literal['entity', 'finance'] = 'entity',
                    default: Any = None, formula: str = '', group: str = '',
                    timer_enabled: bool = False,
