@@ -28,3 +28,6 @@ BusinessCompetitionManagerWebFrontend/pnpm-workspace.yaml
 # 本地数据备份 / 压测报告（运行时产物，不入库）
 /backup/
 /reports/
+
+.vscode/
+skills/
