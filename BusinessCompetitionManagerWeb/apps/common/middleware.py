@@ -183,7 +183,8 @@ class NetworkLogMiddleware(MiddlewareMixin):
     def _write_log(self, request, response, started):
         from apps.global_.logs.models import NetworkLog
 
-        if request.path.startswith('/static/') or request.path == '/favicon.ico':
+        if (request.path.startswith('/static/') or request.path == '/favicon.ico'
+                or request.path == '/api/health'):
             return
 
         duration_ms = None

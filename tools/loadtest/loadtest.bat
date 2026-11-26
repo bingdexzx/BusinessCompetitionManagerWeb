@@ -706,6 +706,11 @@ def summarize(stats: Stats) -> dict:
 
 def verdict(summary: dict) -> list[str]:
     notes = []
+    timeouts = sum(row['statuses'].get(504, 0) for row in summary['rows'])
+    if timeouts:
+        notes.append(f'出现 {timeouts} 个 504：上游排队超时，先降并发/查慢请求，不要只调大超时。')
+    if summary['p99'] >= 30_000:
+        notes.append('P99 ≥ 30s：大概率是代理超时或线程队列积压，按「容量问题」处理。')
     if summary['errors']:
         notes.append(f'出现 {summary["errors"]} 个错误（5xx/连接失败），先查服务端日志与数据库连接数。')
     if summary['p95'] > 500:
@@ -730,6 +735,8 @@ def render_markdown(summary, config, endpoints) -> str:
         f'- 比赛范围：`{config.get("cid") or "未指定"}`',
         f'- 开始时间：{config["started_at"]}',
         f'- 模式：{ {"requests": "按请求总数", "rps": "固定 RPS（开环）"}.get(config.get("mode"), "按时长") }',
+        (f'- 计划时长：{config["duration"]:.0f}s'
+         if config.get('mode') in ('duration', 'rps') else ''),
         (f'- 目标请求数：{config["requests"]}'
          if config.get('mode') in ('requests', 'rps') else ''),
         (f'- 目标 RPS：{config["rps"]:.1f}'

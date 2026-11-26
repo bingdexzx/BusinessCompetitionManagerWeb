@@ -4,6 +4,10 @@
 只增不删（决策 D20）：日志无修改/删除接口；导出动作本身也入网络日志。
 """
 
+import hashlib
+import json
+
+from django.core.cache import cache
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -39,7 +43,20 @@ class NetworkLogListView(APIView):
 
         limit = min(int(params.get('limit', 50) or 50), 200)
         offset = int(params.get('offset', 0) or 0)
-        total = qs.count()
+        # COUNT(*) 在按月分区的日志表上很贵；同一组筛选条件 10 秒内复用结果。
+        filter_key = {
+            key: params.get(key) for key in (
+                'userId', 'competitionId', 'deviceId', 'traceId', 'status',
+                'method', 'path', 'from', 'to',
+            ) if params.get(key)
+        }
+        cache_key = 'netlog:total:' + hashlib.sha256(
+            json.dumps(filter_key, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+        total = cache.get(cache_key)
+        if total is None:
+            total = qs.count()
+            cache.set(cache_key, total, 10)
         rows = qs.order_by('-occurred_at')[offset:offset + limit]
         return Response({
             'total': total,
