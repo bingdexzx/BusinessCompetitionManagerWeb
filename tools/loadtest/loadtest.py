@@ -20,6 +20,7 @@ import getpass
 import http.client
 import json
 import os
+import queue
 import random
 import socket
 import ssl
@@ -404,6 +405,35 @@ def build_endpoints(cid: int | None, samples: dict | None = None) -> list[dict]:
         })
     return endpoints
 
+def load_weights(path: str, endpoints: list[dict]) -> list[float]:
+    """读取流量权重 JSON：{"接口label": 权重}；未列出的接口权重为 1。"""
+    try:
+        with open(path, 'r', encoding='utf-8-sig') as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        raise SystemExit(f'权重文件读取失败：{exc}')
+    except ValueError as exc:
+        raise SystemExit(f'权重文件不是合法 JSON：{exc}')
+    if not isinstance(data, dict):
+        raise SystemExit('权重文件顶层必须是对象：{"合同列表": 20, ...}')
+    labels = {endpoint['label'] for endpoint in endpoints}
+    unknown = sorted(set(data) - labels)
+    if unknown:
+        print(f'  [警告] 权重里有未探测到的接口：{", ".join(unknown)}')
+    weights = []
+    for endpoint in endpoints:
+        try:
+            weight = float(data.get(endpoint['label'], 1.0))
+        except (TypeError, ValueError):
+            raise SystemExit(f'接口 {endpoint["label"]} 的权重不是数字')
+        if weight < 0:
+            raise SystemExit(f'接口 {endpoint["label"]} 的权重不能为负数')
+        weights.append(weight)
+    if sum(weights) <= 0:
+        raise SystemExit('所有权重都是 0，至少保留一个接口的权重 > 0')
+    return weights
+
+
 def probe(client: HttpClient, token: str, endpoints: list[dict], cid: int | None,
           progress: ProgressBar | None = None) -> list[dict]:
     available = []
@@ -481,36 +511,46 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[index]
 
 
+def hit_endpoint(client, endpoint, token_holder, local_token, headers_base, stats,
+                 scheduled=None):
+    """发一个请求并记录延迟；RPS 模式从“计划发出时间”起算，含排队等待。"""
+    headers = dict(headers_base) if endpoint['scope'] else {}
+    started = time.perf_counter()
+    status = 0
+    try:
+        status, _ = client.request(
+            endpoint['method'], endpoint['path'],
+            token=local_token, headers=headers)
+        if status == 401:
+            with token_holder['lock']:
+                if token_holder.get('credentials'):
+                    username, password = token_holder['credentials']
+                    try:
+                        data = api_login(client, username, password)
+                        local_token = data['access']
+                        token_holder['token'] = local_token
+                    except SystemExit:
+                        pass
+    except Exception:  # noqa: BLE001 —— 连接错误记 status 0
+        status = 0
+    finished = time.perf_counter()
+    origin = scheduled if scheduled is not None else started
+    latency = max(0.0, (finished - origin) * 1000)
+    stats.record(endpoint['label'], latency, status)
+    return local_token
+
+
+def pick_endpoint(endpoints, weights):
+    if weights:
+        return random.choices(endpoints, weights=weights, k=1)[0]
+    return random.choice(endpoints)
+
+
 def worker(base_url, insecure, endpoints, token_holder, stop_at, think, stats, cid,
-           timeout=60, budget=None):
+           timeout=60, budget=None, weights=None):
     client = HttpClient(base_url, insecure=insecure, timeout=timeout)
     local_token = token_holder['token']
     headers_base = {'X-Competition-Id': str(cid)} if cid else {}
-
-    def hit(endpoint):
-        nonlocal local_token
-        headers = dict(headers_base) if endpoint['scope'] else {}
-        started = time.perf_counter()
-        status = 0
-        try:
-            status, _ = client.request(
-                endpoint['method'], endpoint['path'],
-                token=local_token, headers=headers)
-            if status == 401:
-                # token 过期：重新登录一次（共享最新 token）
-                with token_holder['lock']:
-                    if token_holder.get('credentials'):
-                        username, password = token_holder['credentials']
-                        try:
-                            data = api_login(client, username, password)
-                            local_token = data['access']
-                            token_holder['token'] = local_token
-                        except SystemExit:
-                            pass
-        except Exception:  # noqa: BLE001 —— 连接错误记 status 0
-            status = 0
-        elapsed = (time.perf_counter() - started) * 1000
-        stats.record(endpoint['label'], elapsed, status)
 
     def sleep_think():
         if think > 0:
@@ -520,18 +560,59 @@ def worker(base_url, insecure, endpoints, token_holder, stop_at, think, stats, c
         if budget is not None:
             index = 0
             while budget.take():
-                hit(endpoints[index % len(endpoints)])
-                index += 1
+                if weights:
+                    endpoint = pick_endpoint(endpoints, weights)
+                else:
+                    endpoint = endpoints[index % len(endpoints)]
+                    index += 1
+                local_token = hit_endpoint(
+                    client, endpoint, token_holder, local_token, headers_base, stats)
+                sleep_think()
+        elif weights:
+            while time.time() < stop_at:
+                endpoint = pick_endpoint(endpoints, weights)
+                local_token = hit_endpoint(
+                    client, endpoint, token_holder, local_token, headers_base, stats)
                 sleep_think()
         else:
             while time.time() < stop_at:
                 for endpoint in endpoints:
                     if time.time() >= stop_at:
                         break
-                    hit(endpoint)
+                    local_token = hit_endpoint(
+                        client, endpoint, token_holder, local_token, headers_base, stats)
                 sleep_think()
     finally:
         client.close()
+
+
+def rps_worker(task_queue, base_url, insecure, token_holder, stats, cid, timeout=60):
+    client = HttpClient(base_url, insecure=insecure, timeout=timeout)
+    local_token = token_holder['token']
+    headers_base = {'X-Competition-Id': str(cid)} if cid else {}
+    try:
+        while True:
+            item = task_queue.get()
+            if item is None:
+                break
+            scheduled, endpoint = item
+            local_token = hit_endpoint(
+                client, endpoint, token_holder, local_token, headers_base, stats,
+                scheduled=scheduled)
+    finally:
+        client.close()
+
+
+def rps_scheduler(task_queue, endpoints, weights, total, rps, start, workers):
+    interval = 1.0 / rps
+    for index in range(total):
+        target = start + index * interval
+        delay = target - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+        task_queue.put((target, pick_endpoint(endpoints, weights)))
+    for _ in range(workers):
+        task_queue.put(None)
 
 # ---------------------------------------------------------------- 报告
 def summarize(stats: Stats) -> dict:
@@ -592,9 +673,11 @@ def render_markdown(summary, config, endpoints) -> str:
         f'- 登录账号：`{config["username"]}`（{config["role"]}）',
         f'- 比赛范围：`{config.get("cid") or "未指定"}`',
         f'- 开始时间：{config["started_at"]}',
-        f'- 模式：{"按请求总数" if config.get("mode") == "requests" else "按时长"}',
+        f'- 模式：{ {"requests": "按请求总数", "rps": "固定 RPS（开环）"}.get(config.get("mode"), "按时长") }',
         (f'- 目标请求数：{config["requests"]}'
-         if config.get('mode') == 'requests' else ''),
+         if config.get('mode') in ('requests', 'rps') else ''),
+        (f'- 目标 RPS：{config["rps"]:.1f}'
+         if config.get('mode') == 'rps' else ''),
         f'- 并发用户：{config["users"]}　思考时间：{config["think"]}s',
         f'- 实际耗时：{summary["duration"]:.1f}s',
         f'- 可用接口：{len(endpoints)} 个（{"、".join(e["label"] for e in endpoints)}）',
@@ -705,14 +788,16 @@ def prompt_if_missing(args):
         args.users = (_ask_number('并发用户数', 10, int) if interactive else 10)
 
     if args.mode is None:
-        if args.requests is not None:
+        if args.rps is not None:
+            args.mode = 'rps'
+        elif args.requests is not None:
             args.mode = 'requests'
         elif args.duration is not None:
             args.mode = 'duration'
         elif interactive:
-            print('压测模式：1 = 按时长（持续 N 秒）  2 = 按请求总数（发完 N 个看耗时）')
+            print('压测模式：1 = 按时长  2 = 按请求总数  3 = 固定 RPS（开环）')
             choice = input('选择（默认 1）：').strip()
-            args.mode = 'requests' if choice == '2' else 'duration'
+            args.mode = {'2': 'requests', '3': 'rps'}.get(choice, 'duration')
         else:
             args.mode = 'duration'
 
@@ -720,6 +805,13 @@ def prompt_if_missing(args):
         if args.requests is None:
             default = max(100, args.users * 10)
             args.requests = (_ask_number('请求总数', default, int) if interactive else default)
+    elif args.mode == 'rps':
+        if args.rps is None:
+            args.rps = (_ask_number('目标 RPS（请求/秒）', 50.0, float)
+                        if interactive else 50.0)
+        if args.duration is None:
+            args.duration = (_ask_number('持续压测秒数', 30, float)
+                             if interactive else 30.0)
     else:
         if args.duration is None:
             args.duration = (_ask_number('持续压测秒数', 30, float) if interactive else 30.0)
@@ -732,10 +824,14 @@ def main() -> int:
     parser.add_argument('--base-url', help='目标网址，如 http://127.0.0.1:8000')
     parser.add_argument('--username', help='超级管理员账号')
     parser.add_argument('--password', help='密码（不传则交互输入）')
-    parser.add_argument('--mode', choices=('duration', 'requests'), default=None,
-                        help='压测模式：duration=按时长（默认），requests=固定请求总数')
+    parser.add_argument('--mode', choices=('duration', 'requests', 'rps'), default=None,
+                        help='压测模式：duration=按时长，requests=固定请求总数，rps=固定 RPS（开环）')
     parser.add_argument('--requests', type=int, default=None,
                         help='固定请求总数（设置后默认进入 requests 模式）')
+    parser.add_argument('--rps', type=float, default=None,
+                        help='固定 RPS（设置后默认进入 rps 模式，需配合 --duration）')
+    parser.add_argument('--weights', default=None,
+                        help='流量权重 JSON：{"接口label": 权重}；未列出接口默认 1')
     parser.add_argument('--users', type=int, default=None,
                         help='并发虚拟用户数（不传则交互询问，默认 10）')
     parser.add_argument('--duration', type=float, default=None,
@@ -762,9 +858,18 @@ def main() -> int:
             parser.error('请求总数必须 ≥ 1')
         if args.duration is not None:
             parser.error('--duration 与 --requests 只能选一个')
-    else:
+        if args.rps is not None:
+            parser.error('--rps 与 --requests 只能选一个')
+    elif args.mode == 'rps':
+        if not args.rps or args.rps <= 0:
+            parser.error('RPS 必须 > 0')
+        if args.duration is None or args.duration <= 0:
+            parser.error('RPS 模式必须指定 > 0 的持续秒数')
         if args.requests is not None:
-            parser.error('固定请求数请使用 --mode requests（或不指定 --mode）')
+            parser.error('--requests 与 --rps 只能选一个')
+    else:
+        if args.requests is not None or args.rps is not None:
+            parser.error('固定请求数/RPS 请使用对应 --mode（或不指定 --mode）')
         if args.duration is None or args.duration <= 0:
             parser.error('压测时长必须 > 0 秒')
     if args.think < 0:
@@ -775,6 +880,10 @@ def main() -> int:
     print(f'\n目标：{args.base_url}　账号：{args.username}')
     if args.mode == 'requests':
         print(f'计划：{args.users} 并发 × {args.requests} 请求（思考 {args.think}s）')
+    elif args.mode == 'rps':
+        total = max(1, int(round(args.rps * args.duration)))
+        print(f'计划：{args.users} 并发 × {args.rps:.1f} RPS × {args.duration:.0f}s'
+              f'（约 {total} 请求，思考 {args.think}s）')
     else:
         print(f'计划：{args.users} 并发 × {args.duration}s（思考 {args.think}s）')
     if not args.yes:
@@ -807,12 +916,20 @@ def main() -> int:
     finally:
         client.close()
 
+    weights = None
+    if args.weights:
+        weights = load_weights(args.weights, endpoints)
+        print(f'✓ 流量权重：{args.weights}（{len(weights)} 个接口）')
+
     stats = Stats()
     token_holder = {'token': token, 'lock': threading.Lock(),
                     'credentials': (args.username, args.password)}
     stats.started_at = time.time()
-    budget = RequestBudget(args.requests) if args.mode == 'requests' else None
-    stop_at = stats.started_at + (args.duration or 0)
+    target_requests = 0
+    if args.mode == 'requests':
+        target_requests = args.requests
+    elif args.mode == 'rps':
+        target_requests = max(1, int(round(args.rps * args.duration)))
     config = {
         'base_url': args.base_url,
         'username': args.username,
@@ -822,46 +939,90 @@ def main() -> int:
         'users': args.users,
         'think': args.think,
         'mode': args.mode,
-        'requests': args.requests or 0,
+        'requests': target_requests or (args.requests or 0),
+        'rps': args.rps or 0,
         'duration': args.duration or 0,
+        'weights': args.weights or '',
     }
 
-    threads = [
-        threading.Thread(
-            target=worker,
-            args=(args.base_url, args.insecure, endpoints, token_holder,
-                  stop_at, args.think, stats, cid, args.timeout, budget),
+    if args.mode == 'rps':
+        task_queue: queue.Queue = queue.Queue()
+        threads = [
+            threading.Thread(
+                target=rps_worker,
+                args=(task_queue, args.base_url, args.insecure, token_holder,
+                      stats, cid, args.timeout),
+                daemon=True,
+            )
+            for _ in range(max(1, args.users))
+        ]
+        for thread in threads:
+            thread.start()
+        perf_start = time.perf_counter()
+        scheduler = threading.Thread(
+            target=rps_scheduler,
+            args=(task_queue, endpoints, weights, target_requests, args.rps,
+                  perf_start, len(threads)),
             daemon=True,
         )
-        for _ in range(max(1, args.users))
-    ]
-    for thread in threads:
-        thread.start()
-    progress = ProgressBar(args.requests if budget else args.duration, '压测')
-    while True:
-        now = time.time()
-        elapsed = now - stats.started_at
-        total, errors = stats.snapshot()
-        if budget is not None:
+        scheduler.start()
+        progress = ProgressBar(target_requests, '压测')
+        while True:
+            total, errors = stats.snapshot()
+            elapsed = time.time() - stats.started_at
             progress.render(
                 total,
-                f'{total}/{args.requests} 请求  已用 {elapsed:.1f}s  错误 {errors}  '
-                f'QPS {total / max(elapsed, 0.5):.1f}',
+                f'{total}/{target_requests} 请求  已用 {elapsed:.1f}s  错误 {errors}  '
+                f'计划 {args.rps:.1f}/s',
             )
-            if total >= args.requests or not any(thread.is_alive() for thread in threads):
+            if total >= target_requests:
                 break
-        else:
-            clamped = min(elapsed, args.duration)
-            progress.render(
-                clamped,
-                f'{clamped:0.0f}/{args.duration:.0f}s  请求 {total}  错误 {errors}  '
-                f'QPS {total / max(clamped, 0.5):.1f}',
+            if not scheduler.is_alive() and not any(t.is_alive() for t in threads):
+                break
+            time.sleep(0.1)
+        scheduler.join()
+        for thread in threads:
+            thread.join()
+    else:
+        budget = RequestBudget(args.requests) if args.mode == 'requests' else None
+        stop_at = stats.started_at + (args.duration or 0)
+        threads = [
+            threading.Thread(
+                target=worker,
+                args=(args.base_url, args.insecure, endpoints, token_holder,
+                      stop_at, args.think, stats, cid, args.timeout, budget, weights),
+                daemon=True,
             )
-            if now >= stop_at and not any(thread.is_alive() for thread in threads):
-                break
-        time.sleep(0.1 if budget else 0.25)
-    for thread in threads:
-        thread.join()
+            for _ in range(max(1, args.users))
+        ]
+        for thread in threads:
+            thread.start()
+        progress = ProgressBar(args.requests if budget else args.duration, '压测')
+        while True:
+            now = time.time()
+            elapsed = now - stats.started_at
+            total, errors = stats.snapshot()
+            if budget is not None:
+                progress.render(
+                    total,
+                    f'{total}/{args.requests} 请求  已用 {elapsed:.1f}s  错误 {errors}  '
+                    f'QPS {total / max(elapsed, 0.5):.1f}',
+                )
+                if total >= args.requests or not any(t.is_alive() for t in threads):
+                    break
+            else:
+                clamped = min(elapsed, args.duration)
+                progress.render(
+                    clamped,
+                    f'{clamped:0.0f}/{args.duration:.0f}s  请求 {total}  错误 {errors}  '
+                    f'QPS {total / max(clamped, 0.5):.1f}',
+                )
+                if now >= stop_at and not any(t.is_alive() for t in threads):
+                    break
+            time.sleep(0.1 if budget else 0.25)
+        for thread in threads:
+            thread.join()
+
     stats.ended_at = time.time()
     progress.finish(f'{stats.total} 请求 / {stats.ended_at - stats.started_at:.1f}s 完成')
 

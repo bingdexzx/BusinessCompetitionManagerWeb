@@ -23,6 +23,17 @@ loadtest.bat --base-url http://127.0.0.1:8000 ^
 loadtest.bat --base-url http://127.0.0.1:8000 ^
   --username full_admin --password "***" ^
   --mode requests --users 50 --requests 20000 --think 0 --timeout 30 --yes
+
+# 模式三：固定 RPS（开环，每秒 100 个请求，持续 60 秒）
+loadtest.bat --base-url http://127.0.0.1:8000 ^
+  --username full_admin --password "***" ^
+  --mode rps --rps 100 --duration 60 --users 50 --timeout 30 --yes
+
+# 按生产访问占比加权（权重文件见 weights.example.json）
+loadtest.bat --base-url http://127.0.0.1:8000 ^
+  --username full_admin --password "***" ^
+  --mode duration --users 30 --duration 60 ^
+  --weights weights.example.json --yes
 ```
 
 > 只要系统有 `py` 启动器或 `python` 在 PATH 里即可；脚本会优先用 `py -3`，
@@ -35,10 +46,12 @@ loadtest.bat --base-url http://127.0.0.1:8000 ^
 | `--base-url` | 目标网址（http/https） | 交互询问 |
 | `--username` | 超级管理员账号 | 交互询问 |
 | `--password` | 密码（建议交互输入，避免进历史） | 交互询问 |
-| `--mode` | `duration`（按时长）/ `requests`（按请求总数） | 交互询问，默认 duration |
+| `--mode` | `duration`（按时长）/ `requests`（按请求总数）/ `rps`（固定 RPS 开环） | 交互询问，默认 duration |
 | `--users` | 并发虚拟用户数 | 交互询问，默认 10 |
 | `--duration` | 持续压测秒数（duration 模式） | 交互询问，默认 30 |
 | `--requests` | 固定请求总数（requests 模式） | 交互询问，默认 `max(100, 并发×10)` |
+| `--rps` | 固定 RPS（rps 模式，需配合 `--duration`） | 交互询问，默认 50 |
+| `--weights` | 流量权重 JSON：`{"接口label": 权重}`；未列出接口默认 1 | 不使用（均匀轮询） |
 | `--think` | 每轮请求后的思考时间（秒） | 交互询问，默认 1.0 |
 | `--timeout` | 单请求超时秒数 | 60 |
 | `--cid` | 指定比赛 ID | 自动挑第一个可用比赛 |
@@ -48,12 +61,13 @@ loadtest.bat --base-url http://127.0.0.1:8000 ^
 | `--yes` | 跳过开始前确认 | 关闭 |
 | `--fail-on-error` | 有错误时退出码非 0（CI 门禁） | 关闭 |
 
-## 两种模式与「巅峰性能」怎么测
+## 三种模式与「巅峰性能」怎么测
 
 | 模式 | 指标 | 适合 |
 | --- | --- | --- |
 | `duration` 固定时长 | 稳态 QPS、P50/P95/P99 | 模拟持续在线压力、观察长尾与稳定性 |
 | `requests` 固定请求数 | **完成 N 个请求的总耗时**、折算 QPS、分接口延迟 | 对比不同并发下的「处理能力上限」、版本前后性能回归 |
+| `rps` 固定 RPS（开环） | **实际完成 RPS**、从计划发出时间起算的延迟（含排队） | 验证限流、超时与过载表现；接近真实入口流量 |
 
 `requests` 模式的正确打开方式：
 
@@ -68,7 +82,8 @@ loadtest.bat --base-url http://127.0.0.1:8000 ^
 
 - `requests` 是**闭环**模式，并发数包含客户端等待时间；它回答的是「这些并发能多快干完 N 个活」，
   不是严格的「每秒固定打 N 个请求」；
-- 如果要做 SLO/限流验证（固定 RPS、看超时），用 `duration` 模式先跑稳态；
+- 如果要做 SLO/限流验证（固定 RPS、看超时），用 `rps` 模式；它按固定间隔派发，
+  延迟从「计划发出时间」起算，队列等待会体现在 P95/P99 上；
 - 短请求数会受 TCP 建连、JIT/缓存预热影响，结论优先看多次运行的中位数。
 
 ## 结果能代表生产吗？
@@ -80,7 +95,7 @@ loadtest.bat --base-url http://127.0.0.1:8000 ^
 | --- | --- | --- |
 | 链路 | 直连 Django（可能绕过 nginx/TLS/PgBouncer） | nginx/证书/PgBouncer/网络延迟全在链路上 |
 | 数据量 | 开发库小、缓存热 | 生产库大、冷热不均、索引与统计信息不同 |
-| 流量 | 80 个只读接口轮流打、均匀分布 | 读写混合、接口权重不均、用户行为有突发 |
+| 流量 | 默认 80 个只读接口均匀轮询（可用 `--weights` 加权） | 读写混合、接口权重不均、用户行为有突发 |
 | 并发 | 单个压测进程的线程 | 多入口、长连接、WebSocket、限流/WAF |
 | 客户端 | 压测机与服务器可能同机，争抢 CPU | 压测机应独立，避免先压垮客户端 |
 | 写路径 | 无写请求 | 合同创建/执行/回滚、结算、导入等事务与锁 |
@@ -107,7 +122,7 @@ loadtest.bat --base-url http://127.0.0.1:8000 ^
 4. **按访问日志配权重**：真实用户不会均匀轮询 80 个接口，按生产请求占比给接口加权；
 5. **补写场景**：在可回滚的 staging 上压合同创建/执行/回滚、结算预览等写路径；
 6. **同时看服务端**：CPU、内存、PG 连接数/锁等待、PgBouncer `SHOW POOLS`、nginx 5xx；
-7. **固定 RPS 的开环压测**：验证限流与超时；本工具的固定并发是闭环，不产生固定 RPS；
+7. **固定 RPS 的开环压测**：用 `--mode rps --rps N --duration T` 验证限流与超时；
 8. **多轮取中位数**：每档并发至少 3 次，排除预热和偶发抖动。
 
 > 结论写法建议：「在当前 staging（4 worker × 8 线程、PgBouncer、数据量 X）下，
