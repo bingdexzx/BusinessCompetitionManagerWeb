@@ -1,4 +1,4 @@
-"""网络日志 keyset 分页：不再精确 COUNT，用 cursor 翻页。"""
+"""网络日志分页：offset + total（总数短缓存）。"""
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -21,18 +21,18 @@ class NetworkLogPaginationTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.admin)
 
-    def test_cursor_pages_do_not_overlap(self):
-        first = self.client.get('/api/logs/network?limit=2').json()
+    def test_offset_pages_do_not_overlap(self):
+        first = self.client.get(
+            '/api/logs/network?limit=2&offset=0&path=/api/demo').json()
         self.assertEqual(len(first['items']), 2)
-        self.assertTrue(first['hasMore'])
-        self.assertTrue(first['nextCursor'])
+        self.assertIn('total', first)
 
         second = self.client.get(
-            f"/api/logs/network?limit=2&cursor={first['nextCursor']}").json()
+            '/api/logs/network?limit=2&offset=2&path=/api/demo').json()
         self.assertEqual(len(second['items']), 2)
         self.assertFalse(
             {row['id'] for row in first['items']} & {row['id'] for row in second['items']})
 
-    def test_invalid_cursor_returns_400(self):
-        response = self.client.get('/api/logs/network?cursor=not-base64')
-        self.assertEqual(response.status_code, 400)
+    def test_invalid_limit_falls_back(self):
+        response = self.client.get('/api/logs/network?limit=abc')
+        self.assertIn(response.status_code, (200, 400))

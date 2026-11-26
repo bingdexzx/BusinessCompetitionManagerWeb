@@ -782,10 +782,8 @@ export interface NetworkLogItem {
 }
 
 export interface NetworkLogPage {
-  total?: number
+  total: number
   items: NetworkLogItem[]
-  hasMore: boolean
-  nextCursor: string
 }
 
 export interface NetworkLogQuery {
@@ -800,7 +798,6 @@ export interface NetworkLogQuery {
   to?: string
   limit?: number
   offset?: number
-  cursor?: string
 }
 
 export interface AdminDevice {

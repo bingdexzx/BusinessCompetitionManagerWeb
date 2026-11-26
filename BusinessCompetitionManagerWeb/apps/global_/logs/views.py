@@ -4,11 +4,10 @@
 只增不删（决策 D20）：日志无修改/删除接口；导出动作本身也入网络日志。
 """
 
-import base64
+import hashlib
 import json
-from datetime import datetime
 
-from django.db.models import Q
+from django.core.cache import cache
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -42,36 +41,28 @@ class NetworkLogListView(APIView):
         if params.get('to'):
             qs = qs.filter(occurred_at__lte=params['to'])
 
-        limit = min(int(params.get('limit', 50) or 50), 200)
-        qs = qs.order_by('-occurred_at', '-id')
-        cursor = params.get('cursor') or ''
-        if cursor:
-            try:
-                decoded = base64.urlsafe_b64decode(
-                    cursor + '=' * (-len(cursor) % 4)).decode()
-                payload = json.loads(decoded)
-                cursor_time = datetime.fromisoformat(payload['t'])
-                cursor_id = int(payload['id'])
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-                return Response(
-                    {'code': 400, 'message': 'cursor 非法', 'details': ''}, status=400)
-            qs = qs.filter(
-                Q(occurred_at__lt=cursor_time)
-                | Q(occurred_at=cursor_time, id__lt=cursor_id))
-        else:
-            offset = int(params.get('offset', 0) or 0)
-            if offset:
-                qs = qs[offset:]
-
-        rows = list(qs[:limit + 1])
-        has_more = len(rows) > limit
-        rows = rows[:limit]
-        next_cursor = ''
-        if has_more and rows:
-            last = rows[-1]
-            next_cursor = base64.urlsafe_b64encode(json.dumps(
-                {'t': last.occurred_at.isoformat(), 'id': last.id},
-                separators=(',', ':')).encode()).decode().rstrip('=')
+        try:
+            limit = min(int(params.get('limit', 50) or 50), 200)
+            offset = max(0, int(params.get('offset', 0) or 0))
+        except (TypeError, ValueError):
+            return Response(
+                {'code': 400, 'message': 'limit/offset 必须是整数', 'details': ''},
+                status=400)
+        # COUNT(*) 在按月分区表上较贵：同一组筛选条件 10 秒内复用总数。
+        filter_key = {
+            key: params.get(key) for key in (
+                'userId', 'competitionId', 'deviceId', 'traceId', 'status',
+                'method', 'path', 'from', 'to',
+            ) if params.get(key)
+        }
+        cache_key = 'netlog:total:' + hashlib.sha256(
+            json.dumps(filter_key, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+        total = cache.get(cache_key)
+        if total is None:
+            total = qs.count()
+            cache.set(cache_key, total, 10)
+        rows = list(qs.order_by('-occurred_at', '-id')[offset:offset + limit])
 
         return Response({
             'items': [
@@ -94,8 +85,7 @@ class NetworkLogListView(APIView):
                 }
                 for r in rows
             ],
-            'hasMore': has_more,
-            'nextCursor': next_cursor,
+            'total': total,
         })
 
 
