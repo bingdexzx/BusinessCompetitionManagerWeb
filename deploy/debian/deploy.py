@@ -1121,20 +1121,40 @@ def write_nginx(runner: Runner, cfg: Config) -> None:
     web_root = cfg.site_dir or f'{cfg.app_dir}/BusinessCompetitionManagerWebFrontend/dist'
     port = cfg.http_port if cfg.nginx_mode in ('system', 'manage') else 80
     if cfg.nginx_mode == 'system' and not runner.dry_run and port_open('127.0.0.1', port):
-        if port == 80 and _openresty_running():
-            if cfg.stop_openresty or (not cfg.yes and confirm(
-                    '80 被 1Panel OpenResty 占用，停掉它并改用系统 nginx？', True)):
+        owner, pid = _port_owner(port)
+        unit = _pid_unit(pid)
+        if _openresty_running() or owner == 'openresty':
+            if cfg.stop_openresty or cfg.yes or confirm(
+                    f'80 被 {owner or "OpenResty"} 占用，停掉它并改用系统 nginx？', True):
                 runner.run(['systemctl', 'stop', 'openresty'], check=False)
                 runner.run(['systemctl', 'disable', 'openresty'], check=False)
                 time.sleep(1)
+                UI.ok('已停止 OpenResty，80 交给系统 nginx')
             else:
                 cfg.http_port = 8080
                 port = 8080
-                UI.warn(f'80 被占用，改用 http://{cfg.domain}:{port}')
+                UI.warn(f'保留 OpenResty，改用 http://{cfg.domain}:{port}')
+        elif owner == 'nginx':
+            # 旧 BCM/系统 nginx 正在 80：更新配置后 reload，不切端口
+            UI.info('80 已被 nginx 使用：更新站点配置并 reload（保持 80）')
+        elif owner:
+            if not unit:
+                cfg.http_port = 8080
+                port = 8080
+                UI.warn(f'80 被 {owner} 占用但无法识别 systemd 单元，改用 '
+                        f'http://{cfg.domain}:{port}（可手工停掉后重跑）')
+            elif cfg.yes or confirm(
+                    f'80 被 {owner}（{unit}）占用，停掉它并继续用 80？', True):
+                _stop_unit(runner, unit)
+                UI.ok(f'已停止 {unit}，继续使用 80')
+            else:
+                cfg.http_port = 8080
+                port = 8080
+                UI.warn(f'保留 {owner}，改用 http://{cfg.domain}:{port}')
         else:
             cfg.http_port = 8080
             port = 8080
-            UI.warn(f'80 被占用，改用 http://{cfg.domain}:{port}')
+            UI.warn(f'80 被未知进程占用（ss 无法识别），改用 http://{cfg.domain}:{port}')
 
     conf = f"""upstream bcm_http {{
     server 127.0.0.1:{HTTP_PORT};
@@ -1232,6 +1252,38 @@ def service_state(name: str = SERVICE) -> str:
         return (out.stdout or '').strip() or 'unknown'
     except OSError:
         return 'unavailable'
+
+
+def _port_owner(port: int) -> tuple[str, int]:
+    """返回监听端口的进程名与 PID（ss 不可用时返回空）。"""
+    try:
+        result = subprocess.run(
+            ['ss', '-ltnp', f'sport = :{port}'], capture_output=True, text=True)
+        match = re.search(r'users:\(\("([^"]+)",pid=(\d+)', result.stdout or '')
+        if match:
+            return match.group(1), int(match.group(2))
+    except OSError:
+        pass
+    return '', 0
+
+
+def _pid_unit(pid: int) -> str:
+    """PID 所属 systemd 单元（取不到返回空）。"""
+    if not pid:
+        return ''
+    try:
+        result = subprocess.run(
+            ['ps', '-o', 'unit=', '-p', str(pid)], capture_output=True, text=True)
+        return (result.stdout or '').strip()
+    except OSError:
+        return ''
+
+
+def _stop_unit(runner: Runner, unit: str) -> None:
+    if unit:
+        runner.run(['systemctl', 'stop', unit], check=False)
+        runner.run(['systemctl', 'disable', unit], check=False)
+        time.sleep(1)
 
 
 def _openresty_running() -> bool:
