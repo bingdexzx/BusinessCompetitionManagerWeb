@@ -19,7 +19,11 @@ import type { AddressBook, InmailKind, InmailMessage, SendInmailPayload } from '
 import { formatDateTime } from '@/utils/format'
 import { useAuthStore } from '@/stores/auth'
 import { errorMessage } from '@/utils/errors'
-import { useNotifications, useResourceRefresh } from '@/composables/useNotifications'
+import {
+  setUnread,
+  useNotifications,
+  useResourceRefresh,
+} from '@/composables/useNotifications'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -52,6 +56,7 @@ async function loadInbox(): Promise<void> {
     inbox.value = page.items
     inboxTotal.value = page.total
     unreadCount.value = page.unread
+    setUnread(page.unread)
   } catch (e) {
     ElMessage.error(errorMessage(e, '加载失败'))
   } finally {
@@ -65,6 +70,7 @@ async function markRead(item: InmailMessage & { recipientId?: number }): Promise
     await readInmail(item.recipientId) // 收件人记录 id（MessageRecipient）
     item.readAt = new Date().toISOString()
     unreadCount.value = Math.max(0, unreadCount.value - 1)
+    setUnread(unreadCount.value)
   } catch (e) {
     ElMessage.error(errorMessage(e, '操作失败'))
   }
@@ -74,6 +80,7 @@ async function markAllRead(): Promise<void> {
   try {
     const result = await readAllInmails()
     ElMessage.success(`消息已标记 ${result.updated} 条为已读`)
+    setUnread(0)
     await loadInbox()
   } catch (e) {
     ElMessage.error(errorMessage(e, '操作失败'))

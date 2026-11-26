@@ -68,7 +68,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import * as api from '@/api'
@@ -78,10 +78,18 @@ import { errorMessage } from '@/utils/errors'
 import { pageTitleOf } from '@/utils/pageTitles'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 
-const { unreadCount, resetUnread } = useNotifications()
+const { unreadCount, setUnread } = useNotifications()
+
+onMounted(async () => {
+  try {
+    const page = await api.getInbox({ limit: 1 })
+    setUnread(page.unread)
+  } catch {
+    // 未登录/接口暂不可用时保持 0，不阻塞顶栏
+  }
+})
 
 function goMessages(): void {
-  resetUnread()
   void router.push({ name: 'messages' })
 }
 

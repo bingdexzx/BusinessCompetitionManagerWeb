@@ -335,8 +335,12 @@ export function useResourceRefresh(
   return { connected }
 }
 
+export function setUnread(count: number): void {
+  unreadCount.value = Math.max(0, Math.trunc(count) || 0)
+}
+
 export function resetUnread(): void {
-  unreadCount.value = 0
+  setUnread(0)
 }
 
 export function useNotifications(handler?: Handler) {
@@ -351,5 +355,6 @@ export function useNotifications(handler?: Handler) {
     startNotifications,
     stopNotifications,
     resetUnread,
+    setUnread,
   }
 }
