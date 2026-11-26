@@ -3,6 +3,7 @@
 import hashlib
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -250,6 +251,7 @@ class UpdateLogListView(APIView):
         # 发布人默认已读，避免下次登录看到自己刚发布的更新
         request.user.update_log_seen_id = log.id
         request.user.save(update_fields=['update_log_seen_id'])
+        cache.delete('updatelog:latest:v1')
         return Response(_update_log_data(log), status=status.HTTP_201_CREATED)
 
 
@@ -259,11 +261,18 @@ class UpdateLogLatestView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        log = UpdateLog.objects.order_by('-published_at', '-id').first()
+        cached = cache.get('updatelog:latest:v1')
+        if cached is None:
+            log = UpdateLog.objects.order_by('-published_at', '-id').first()
+            cached = {
+                'id': log.id if log is not None else 0,
+                'data': _update_log_data(log) if log is not None else None,
+            }
+            cache.set('updatelog:latest:v1', cached, 15)
         seen = request.user.update_log_seen_id or 0
         return Response({
-            'log': _update_log_data(log) if log is not None else None,
-            'shouldShow': bool(log is not None and log.id > seen),
+            'log': cached['data'],
+            'shouldShow': bool(cached['id'] and cached['id'] > seen),
         })
 
 

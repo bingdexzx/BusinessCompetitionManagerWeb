@@ -7,6 +7,7 @@ import uuid
 
 from django.conf import settings
 from django.http import JsonResponse
+from django.utils import timezone
 from django.utils.deprecation import MiddlewareMixin
 
 from apps.common import context as ctx
@@ -36,7 +37,7 @@ class DatabaseBackpressureMiddleware(MiddlewareMixin):
         return cls._semaphore
 
     def process_request(self, request):
-        if not request.path.startswith('/api/'):
+        if not request.path.startswith('/api/') or request.path == '/api/health':
             return None
         timeout = getattr(settings, 'DB_BACKPRESSURE_TIMEOUT', 10.0)
         if not self._sem().acquire(timeout=timeout):
@@ -200,20 +201,27 @@ class NetworkLogMiddleware(MiddlewareMixin):
         payload = self._request_digest(request)
         resp_digest = self._response_digest(response)
 
-        NetworkLog.objects.create(
-            trace_id=getattr(request, '_gipfel_trace_id', ctx.get_trace_id() or ''),
-            user=user if user and getattr(user, 'pk', None) else None,
-            competition_id=ctx.get_competition_id(),
-            device_snapshot=getattr(request, '_gipfel_device', ctx.get_device_snapshot()) or {},
-            method=request.method or '',
-            path=request.path[:500],
-            query=digest(dict(request.GET)) if request.GET else '',
-            status=response.status_code,
-            duration_ms=duration_ms,
-            ip=client_ip(request),
-            payload_digest=payload,
-            response_digest=resp_digest,
-        )
+        data = {
+            'trace_id': getattr(request, '_gipfel_trace_id', ctx.get_trace_id() or ''),
+            'user_id': user.pk if user and getattr(user, 'pk', None) else None,
+            'competition_id': ctx.get_competition_id(),
+            'device_snapshot': getattr(request, '_gipfel_device', ctx.get_device_snapshot()) or {},
+            'method': request.method or '',
+            'path': request.path[:500],
+            'query': digest(dict(request.GET)) if request.GET else '',
+            'status': response.status_code,
+            'duration_ms': duration_ms,
+            'ip': client_ip(request),
+            'payload_digest': payload,
+            'response_digest': resp_digest,
+            'occurred_at': timezone.now(),
+        }
+        if getattr(settings, 'NETWORK_LOG_ASYNC', True):
+            from apps.common.network_log_buffer import enqueue_network_log
+
+            enqueue_network_log(data)
+        else:
+            NetworkLog.objects.create(**data)
 
     def _request_digest(self, request):
         content_type = request.META.get('CONTENT_TYPE', '')

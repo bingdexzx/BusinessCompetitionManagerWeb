@@ -86,7 +86,7 @@ class RateLimitMiddleware(MiddlewareMixin):
     """API 每分钟限流（注册位置见模块文档：AuthenticationMiddleware 之后）。"""
 
     def process_request(self, request):
-        if not request.path.startswith(API_PREFIX):
+        if not request.path.startswith(API_PREFIX) or request.path == '/api/health':
             return None
         try:
             return self._throttle(request)

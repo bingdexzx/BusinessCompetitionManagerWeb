@@ -12,7 +12,9 @@ from django.test.runner import DiscoverRunner
 
 class GipfelTestRunner(DiscoverRunner):
     def teardown_databases(self, old_config, **kwargs):
+        from apps.common.network_log_buffer import flush_network_logs
         from apps.common.pg_channel_layer import close_open_layers
 
+        flush_network_logs()
         close_open_layers()
         return super().teardown_databases(old_config, **kwargs)
