@@ -1082,9 +1082,18 @@ def build_frontend(runner: Runner, cfg: Config) -> None:
                 runner.run(['apt-get', 'install', '-y', 'nodejs'])
             else:
                 die('缺少 Node.js，无法构建前端（可用 --no-frontend-build）')
-        runner.run(['npm', 'ci'], cwd=front)
-        runner.run(['npm', 'run', 'build'], cwd=front)
-        UI.ok('前端已构建')
+        # 小内存机器上 `npm run build` 会并行跑 vue-tsc + vite，容易 OOM/换页卡死。
+        # 这里串行执行，并限制 Node 堆大小与总耗时。
+        node_mb = max(512, min(4096, int(cfg.facts.memory_gb * 1024 * 0.6)))
+        env = {'NODE_OPTIONS': f'--max-old-space-size={node_mb}'}
+        UI.info(f'Node 内存上限 {node_mb}MB；类型检查与 vite 构建串行执行')
+        runner.run(['timeout', '--kill-after=30', '900', 'npm', 'ci'],
+                   cwd=front, env=env)
+        runner.run(['timeout', '--kill-after=30', '600', 'npm', 'run', 'type-check'],
+                   cwd=front, env=env)
+        runner.run(['timeout', '--kill-after=30', '900', 'npm', 'run', 'build-only'],
+                   cwd=front, env=env)
+        UI.ok('前端已构建（类型检查 + vite 串行）')
     else:
         UI.info('跳过构建（使用现有 dist）')
 
@@ -1364,9 +1373,21 @@ WantedBy=multi-user.target
 
 
 def fix_permissions(runner: Runner, cfg: Config) -> None:
+    """只 chown 运行必需目录；跳过 node_modules（几万个文件，chown 会像卡死）。"""
     if runner.dry_run:
         return
-    runner.run(['chown', '-R', f'{SERVICE_USER}:{SERVICE_USER}', cfg.app_dir])
+    base = Path(cfg.app_dir)
+    targets = [
+        base / 'BusinessCompetitionManagerWeb',
+        base / '.venv',
+        base / 'logs',
+        base / '.env',
+        base / 'BusinessCompetitionManagerWebFrontend' / 'dist',
+    ]
+    UI.info('调整运行目录权限（跳过 node_modules / .bootstrap）…')
+    for target in targets:
+        if target.exists():
+            runner.run(['chown', '-R', f'{SERVICE_USER}:{SERVICE_USER}', str(target)])
     UI.ok('目录权限已交给 ' + SERVICE_USER)
 
 

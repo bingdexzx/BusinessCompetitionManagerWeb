@@ -113,7 +113,10 @@ python3 deploy/debian/deploy.py status
 6. 生成 `.env`（自动生成 `SECRET_KEY` / 数据库密码 / 管理员密码）；
 7. `uv` 安装 Python 3.12 与依赖（固定 `/opt/uv-python`）；
 8. 建库/校验连接 → 迁移 → 确保管理员存在；
-9. 构建前端（可选同步到 `--site-dir`）；
+9. 构建前端（可选同步到 `--site-dir`）：
+   - `npm ci` → `vue-tsc` → `vite build` **串行**执行，避免小内存机器并行 OOM；
+   - 自动设置 `NODE_OPTIONS=--max-old-space-size=<内存×60%>`；
+   - 每步有 600–900s 超时，卡住会失败退出而不是无限等待；
 10. 写 systemd 服务并启动（waitress :8000 + daphne :8001，仅监听 127.0.0.1）；
 11. 写 nginx 站点（SPA 回退、`/api`、`/ws`、上传上限、安全头）；
 12. **自动申请 HTTPS 证书**（域名模式默认开启：certbot + 自动续期 timer，失败回退 HTTP）
