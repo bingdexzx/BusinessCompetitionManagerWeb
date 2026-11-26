@@ -226,38 +226,239 @@ def pick_competition(client: HttpClient, token: str, cid: int | None) -> int | N
     return int(rows[0]['id'])
 
 
-def build_endpoints(cid: int | None) -> list[dict]:
-    """候选只读接口（探测后只保留可用的）。"""
+def _first_item(data):
+    rows = data.get('items') if isinstance(data, dict) else data
+    if not isinstance(rows, list) or not rows:
+        return None
+    return rows[0]
+
+
+def discover_samples(client: HttpClient, token: str, cid: int) -> dict:
+    """取每个列表的第一条，用于探测详情类只读接口（取不到就跳过）。"""
+    samples: dict = {}
+
+    def get(path: str):
+        try:
+            status, raw = client.request(
+                'GET', path, token=token,
+                headers={'X-Competition-Id': str(cid)})
+        except Exception:  # noqa: BLE001
+            return None
+        if status != 200:
+            return None
+        try:
+            return json.loads(raw.decode('utf-8', errors='replace'))
+        except ValueError:
+            return None
+
+    company = _first_item(get(f'/api/competitions/{cid}/companies?page=1&pageSize=1'))
+    if company and company.get('id'):
+        samples['company_id'] = int(company['id'])
+    contract = _first_item(get(f'/api/competitions/{cid}/contracts?page=1&pageSize=1'))
+    if contract and contract.get('id'):
+        samples['contract_id'] = int(contract['id'])
+    region = _first_item(get(f'/api/competitions/{cid}/regions?page=1&pageSize=1'))
+    if region and region.get('id'):
+        samples['region_id'] = int(region['id'])
+    fiscal = _first_item(get(f'/api/competitions/{cid}/fiscal-years'))
+    if fiscal and fiscal.get('id'):
+        samples['fiscal_id'] = int(fiscal['id'])
+    stock = _first_item(get(f'/api/competitions/{cid}/stock/stocks?page=1&pageSize=1'))
+    if stock and stock.get('code'):
+        samples['stock_code'] = str(stock['code'])
+    team = _first_item(get(f'/api/competitions/{cid}/teams?page=1&pageSize=1'))
+    if team and team.get('id'):
+        samples['team_id'] = int(team['id'])
+    return samples
+
+
+def build_endpoints(cid: int | None, samples: dict | None = None) -> list[dict]:
+    """候选只读接口（探测后只保留可用的）。
+
+    覆盖全局域、比赛域、数据管理、股票、结算、日志等 GET 接口；
+    详情类接口用列表第一条作为样本（samples 由 discover_samples 提供）。
+    """
+    samples = samples or {}
     endpoints = [
         {'label': '健康检查', 'method': 'GET', 'path': '/api/health', 'scope': False},
         {'label': '比赛列表', 'method': 'GET', 'path': '/api/competitions', 'scope': False},
         {'label': '当前用户', 'method': 'GET', 'path': '/api/me', 'scope': False},
+        {'label': '版本信息', 'method': 'GET', 'path': '/api/version', 'scope': False},
+        {'label': '更新日志', 'method': 'GET',
+         'path': '/api/update-logs?page=1&pageSize=20', 'scope': False},
+        {'label': '最新更新日志', 'method': 'GET', 'path': '/api/update-logs/latest',
+         'scope': False},
+        {'label': '我的获奖', 'method': 'GET', 'path': '/api/me/awards', 'scope': False},
+        {'label': '我的票据', 'method': 'GET', 'path': '/api/me/tickets', 'scope': False},
+        {'label': '我的奖牌', 'method': 'GET', 'path': '/api/me/medals', 'scope': False},
+        {'label': '我的设备', 'method': 'GET', 'path': '/api/me/devices', 'scope': False},
+        {'label': '收件箱', 'method': 'GET', 'path': '/api/messages?limit=50',
+         'scope': False},
+        {'label': '发件箱', 'method': 'GET', 'path': '/api/messages/sent', 'scope': False},
+        {'label': '通讯录', 'method': 'GET', 'path': '/api/messages/address-book',
+         'scope': False},
+        {'label': '学校列表', 'method': 'GET', 'path': '/api/schools', 'scope': False},
+        {'label': '用户列表', 'method': 'GET', 'path': '/api/users?page=1&pageSize=50',
+         'scope': False},
+        {'label': '插件注册表', 'method': 'GET', 'path': '/api/plugins', 'scope': False},
+        {'label': '网络日志', 'method': 'GET', 'path': '/api/logs/network?limit=50',
+         'scope': False},
+        {'label': '设备列表', 'method': 'GET', 'path': '/api/logs/devices', 'scope': False},
+        {'label': '限流配置', 'method': 'GET', 'path': '/api/system/rate-limit',
+         'scope': False},
+        {'label': '限流记录', 'method': 'GET',
+         'path': '/api/system/rate-limit/records?page=1&pageSize=50', 'scope': False},
+        {'label': '奖牌管理', 'method': 'GET', 'path': '/api/medals', 'scope': False},
     ]
     if not cid:
         return endpoints
+
     since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     endpoints += [
+        {'label': '比赛详情', 'method': 'GET', 'path': f'/api/competitions/{cid}',
+         'scope': True},
+        {'label': '比赛元信息', 'method': 'GET', 'path': f'/api/competitions/{cid}/meta',
+         'scope': True},
+        {'label': '比赛权限', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/permissions', 'scope': True},
+        {'label': '仪表盘布局', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/dashboard', 'scope': True},
         {'label': '公司列表', 'method': 'GET',
          'path': f'/api/competitions/{cid}/companies', 'scope': True},
+        {'label': '队伍列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/teams', 'scope': True},
+        {'label': '成员列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/members', 'scope': True},
+        {'label': '邀请列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/invites', 'scope': True},
+        {'label': '作业列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/jobs', 'scope': True},
         {'label': '合同类型', 'method': 'GET',
          'path': f'/api/competitions/{cid}/contract-types', 'scope': True},
+        {'label': '产业列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/industries', 'scope': True},
+        {'label': '产业字段', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/industry-fields', 'scope': True},
+        {'label': '比赛包列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/packages', 'scope': True},
         {'label': '合同列表', 'method': 'GET',
          'path': f'/api/competitions/{cid}/contracts?page=1&pageSize=50', 'scope': True},
         {'label': '合同增量同步', 'method': 'GET',
          'path': f'/api/competitions/{cid}/contracts?updatedAfter={since}', 'scope': True},
+        {'label': '财年列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/fiscal-years', 'scope': True},
+        {'label': '区域列表', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/regions', 'scope': True},
+        {'label': '区域地图概览', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/regions/map-overview', 'scope': True},
+        {'label': '区域字段定义', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/region-fields', 'scope': True},
+        {'label': '消费者需求', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/consumer-demands?page=1&pageSize=50',
+         'scope': True},
         {'label': '股票行情', 'method': 'GET',
          'path': f'/api/competitions/{cid}/stock/stocks?page=1&pageSize=50', 'scope': True},
         {'label': '股票同步', 'method': 'GET',
          'path': f'/api/competitions/{cid}/stock/sync', 'scope': True},
-        {'label': '基础数据(原料)', 'method': 'GET',
-         'path': f'/api/competitions/{cid}/basedata/materials?page=1&pageSize=50', 'scope': True},
+        {'label': '股票市场', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/stock/market', 'scope': True},
+        {'label': '股票盘口', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/stock/book', 'scope': True},
+        {'label': '股票委托', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/stock/orders?page=1&pageSize=50', 'scope': True},
+        {'label': '股票账户', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/stock/accounts', 'scope': True},
         {'label': '字段日志', 'method': 'GET',
          'path': f'/api/competitions/{cid}/logs/fields?page=1&pageSize=50', 'scope': True},
+        {'label': '字段日志公司选项', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/logs/fields/companies', 'scope': True},
         {'label': '审计流水', 'method': 'GET',
          'path': f'/api/competitions/{cid}/audit-logs?page=1&pageSize=50', 'scope': True},
+        {'label': '结算配置', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/settlement/config', 'scope': True},
+        {'label': '获奖候选', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/settlement/candidates', 'scope': True},
+        {'label': '结算结果', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/settlement/result', 'scope': True},
+        {'label': '获奖名单', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/awards', 'scope': True},
+        {'label': '奖项发放', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/awards/grants', 'scope': True},
+        {'label': '比赛定时器', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/timers', 'scope': True},
+        {'label': '比赛消息', 'method': 'GET',
+         'path': f'/api/competitions/{cid}/messages', 'scope': True},
     ]
-    return endpoints
 
+    for table in ('fuels', 'warehouses', 'vehicles', 'maps', 'materials',
+                  'products', 'parts', 'infrastructures', 'tech_tree',
+                  'production_lines'):
+        endpoints.append({
+            'label': f'基础数据({table})', 'method': 'GET',
+            'path': f'/api/competitions/{cid}/basedata/{table}?page=1&pageSize=50',
+            'scope': True,
+        })
+
+    company_id = samples.get('company_id')
+    if company_id:
+        endpoints += [
+            {'label': '公司实体表', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/companies/{company_id}/tables/entity',
+             'scope': True},
+            {'label': '公司财务报表', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/companies/{company_id}/tables/finance',
+             'scope': True},
+            {'label': '公司产业字段', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/companies/{company_id}/industry-fields',
+             'scope': True},
+            {'label': '公司区域', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/companies/{company_id}/region',
+             'scope': True},
+        ]
+    contract_id = samples.get('contract_id')
+    if contract_id:
+        endpoints += [
+            {'label': '合同详情', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/contracts/{contract_id}', 'scope': True},
+            {'label': '合同效果', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/contracts/{contract_id}/effects',
+             'scope': True},
+            {'label': '合同台账', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/contracts/{contract_id}/ledger',
+             'scope': True},
+        ]
+    region_id = samples.get('region_id')
+    if region_id:
+        endpoints += [
+            {'label': '区域详情', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/regions/{region_id}', 'scope': True},
+            {'label': '区域总览卡片', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/regions/{region_id}/overview-cards',
+             'scope': True},
+        ]
+    fiscal_id = samples.get('fiscal_id')
+    if fiscal_id:
+        endpoints.append({
+            'label': '财年备份', 'method': 'GET',
+            'path': f'/api/competitions/{cid}/fiscal-years/{fiscal_id}/backups',
+            'scope': True,
+        })
+    stock_code = samples.get('stock_code')
+    if stock_code:
+        endpoints += [
+            {'label': '股票详情', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/stock/stocks/{stock_code}', 'scope': True},
+            {'label': '股票K线', 'method': 'GET',
+             'path': f'/api/competitions/{cid}/stock/stocks/{stock_code}/candles',
+             'scope': True},
+        ]
+    team_id = samples.get('team_id')
+    if team_id:
+        endpoints.append({
+            'label': '队伍详情', 'method': 'GET',
+            'path': f'/api/competitions/{cid}/teams/{team_id}', 'scope': True,
+        })
+    return endpoints
 
 def probe(client: HttpClient, token: str, endpoints: list[dict], cid: int | None,
           progress: ProgressBar | None = None) -> list[dict]:
@@ -583,7 +784,9 @@ def main() -> int:
         print(f'✓ 比赛范围：{cid or "未指定（仅全局接口）"}')
 
         print('探测接口：')
-        candidates = build_endpoints(cid)
+        print('  （先取列表首条，用于详情类接口）')
+        samples = discover_samples(client, token, cid) if cid else {}
+        candidates = build_endpoints(cid, samples)
         endpoints = probe(client, token, candidates, cid,
                           ProgressBar(len(candidates), '探测'))
         if not endpoints:
