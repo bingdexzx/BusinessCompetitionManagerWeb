@@ -32,7 +32,7 @@ python3 deploy/debian/deploy.py status
 | 已装依赖 | `dpkg -s` 逐个判断，只 apt 安装缺的 |
 | 已有 `.env` | 复用数据库连接与 `SECRET_KEY`，部署/升级不会改密、不会让登录态失效 |
 | 本机已有 PostgreSQL | 默认复用；自动创建数据库（用输入的用户/密码，owner 为该用户） |
-| 1Panel / OpenResty 占着 80 | **默认使用系统 nginx**；有 `--stop-openresty` 或确认时停掉 OpenResty，否则自动改用 8080 |
+| 1Panel / OpenResty / 旧服务占着 80 | **默认优先保留 80**：nginx 只更新配置并 reload；OpenResty/其他旧服务会尝试停掉；无法识别或拒绝停止才改用 8080 |
 | uv 的 Python 在 /root 下 | 固定装到 `/opt/uv-python`，并检测到旧 venv 指向 `/root` 时自动重建 |
 | 前端站点目录受限（1Panel） | `--site-dir` 自动 `rsync` dist 进去并 `chown www:www` |
 | 机器没有 Node.js | 询问后装 Node 20；`--no-frontend-build` 可跳过 |
@@ -53,7 +53,7 @@ python3 deploy/debian/deploy.py status
 | `--db-mode local\|existing` | 本机装 PostgreSQL / 使用已有库 |
 | `--db-name/--db-user/--db-password/--db-host/--db-port` | 数据库连接 |
 | `--nginx-mode system\|manage\|manual` | **默认 system（系统 nginx）**；manage=写现有 nginx；manual=只导出配置（1Panel） |
-| `--http-port` | nginx 端口，默认 80；被占用自动换 8080 |
+| `--http-port` | nginx 端口，默认 80；优先停旧服务保留 80，无法停止才换 8080 |
 | `--stop-openresty` | 80 被 1Panel OpenResty 占用时停掉它 |
 | `--tls` / `--no-tls` | 是否申请 Let's Encrypt 证书（**域名默认自动申请**；`--no-tls` 关闭） |
 | `--force-cert` | 域名解析与本机 IP 不一致时仍尝试申请 |
@@ -146,7 +146,7 @@ nginx 站点配置。退出码 `1` 表示有问题。
 
 | 现象 | 处理 |
 | --- | --- |
-| 80 被占用 | 加 `--stop-openresty`，或让脚本自动用 8080（`--http-port 8080`） |
+| 80 被占用 | 脚本会识别并停掉旧 nginx/OpenResty/服务；无法识别时加 `--http-port 8080` 或手工停掉占用进程后重跑 |
 | 1Panel 站点目录受限 | 用 `--site-dir /opt/1panel/.../sites/<站点>/index` |
 | 数据库不存在 | 脚本会自动建；失败时去 1Panel 建库，或给用户 `CREATEDB` |
 | 登录/接口 502 | `systemctl status bcm` + `journalctl -u bcm -n 100` |
