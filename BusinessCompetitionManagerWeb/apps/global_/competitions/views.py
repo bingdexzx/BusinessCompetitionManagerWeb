@@ -1,5 +1,7 @@
 """比赛 API（§12：创建比赛（图片/名称/办赛学校/地点/人员安排）、meta、生命周期）。"""
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Case, IntegerField, Value, When
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
@@ -62,6 +64,11 @@ class CompetitionListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        cache_key = f'competitions:list:v1:{request.user.pk}'
+        if not settings.TESTING:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
         if request.user.is_superuser:
             qs = Competition.objects.all()
         else:
@@ -74,7 +81,10 @@ class CompetitionListCreateView(APIView):
                 output_field=IntegerField(),
             ),
         ).order_by('_ended_last', '-created_at')
-        return Response([_competition_data(c) for c in qs.distinct()[:200]])
+        data = [_competition_data(c) for c in qs.distinct()[:200]]
+        if not settings.TESTING:
+            cache.set(cache_key, data, 10)
+        return Response(data)
 
     def post(self, request):
         if not request.user.is_superuser:
@@ -108,6 +118,7 @@ class CompetitionListCreateView(APIView):
                 {'code': 400, 'message': '比赛代码已存在，请指定一个比赛代码后重试', 'details': ''},
                 status=400,
             )
+        cache.delete(f'competitions:list:v1:{request.user.pk}')
         return Response(_competition_data(competition), status=status.HTTP_201_CREATED)
 
 

@@ -7,6 +7,8 @@
 删除学校不删账号：``User.school`` 为 ``SET_NULL``，仅把账号的学校置空。
 """
 
+from django.conf import settings
+from django.core.cache import cache
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -43,10 +45,18 @@ class SchoolListCreateView(APIView):
 
     def get(self, request):
         keyword = (request.query_params.get('q') or '').strip()
+        cache_key = 'schools:all:v1'
+        if not keyword and not settings.TESTING:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
         qs = School.objects.all()
         if keyword:
             qs = qs.filter(name__icontains=keyword)
-        return Response([_school_data(s) for s in qs[:200]])
+        data = [_school_data(s) for s in qs[:200]]
+        if not keyword and not settings.TESTING:
+            cache.set(cache_key, data, 30)
+        return Response(data)
 
     def post(self, request):
         name, error = _clean_name(request.data.get('name'))
@@ -56,6 +66,7 @@ class SchoolListCreateView(APIView):
             return _error('学校名称已存在')
         school = School.objects.create(
             name=name, region=(request.data.get('region') or '').strip())
+        cache.delete('schools:all:v1')
         return Response(_school_data(school), status=201)
 
 
@@ -85,6 +96,7 @@ class SchoolDetailView(APIView):
         if 'region' in request.data:
             school.region = (request.data.get('region') or '').strip()
         school.save()
+        cache.delete('schools:all:v1')
         return Response(_school_data(school))
 
     def delete(self, request, pk):
@@ -92,4 +104,5 @@ class SchoolDetailView(APIView):
         if school is None:
             return _error('学校不存在', 404)
         school.delete()  # User.school 走 SET_NULL：账号保留，仅清空学校
+        cache.delete('schools:all:v1')
         return Response({'ok': True})
