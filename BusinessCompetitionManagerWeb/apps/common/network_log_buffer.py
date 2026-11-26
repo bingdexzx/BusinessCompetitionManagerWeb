@@ -16,10 +16,11 @@ import time
 
 logger = logging.getLogger(__name__)
 
-QUEUE_MAX = 10_000
+QUEUE_MAX = 50_000
 BATCH_MAX = 100
 BATCH_WINDOW = 0.2
 SHUTDOWN_TIMEOUT = 3.0
+FLUSH_RETRIES = 3
 
 _queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAX)
 _lock = threading.Lock()
@@ -27,16 +28,36 @@ _thread: threading.Thread | None = None
 _dropped = 0
 
 
+def _write_sync(item: dict) -> bool:
+    """队列满/批量失败时的兜底：同步写一条，尽量不丢。"""
+    from apps.global_.logs.models import NetworkLog
+
+    try:
+        NetworkLog.objects.using('default').create(**item)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception('网络日志同步兜底写入失败')
+        return False
+
+
 def _flush(batch: list[dict]) -> None:
     if not batch:
         return
     from apps.global_.logs.models import NetworkLog
 
-    try:
-        NetworkLog.objects.using('default').bulk_create(
-            [NetworkLog(**item) for item in batch])
-    except Exception:  # noqa: BLE001 —— 日志失败不影响业务
-        logger.exception('网络日志批量写入失败，本批 %s 条已丢弃', len(batch))
+    for attempt in range(1, FLUSH_RETRIES + 1):
+        try:
+            NetworkLog.objects.using('default').bulk_create(
+                [NetworkLog(**item) for item in batch])
+            return
+        except Exception:  # noqa: BLE001 —— 日志失败不影响业务
+            if attempt == FLUSH_RETRIES:
+                logger.exception('网络日志批量写入失败（重试 %s 次），本批 %s 条',
+                                 FLUSH_RETRIES, len(batch))
+                for item in batch:
+                    _write_sync(item)
+            else:
+                time.sleep(0.2 * attempt)
 
 
 def _close_db() -> None:
@@ -96,10 +117,17 @@ def enqueue_network_log(payload: dict) -> None:
     _ensure_thread()
     try:
         _queue.put_nowait(payload)
+        return
+    except queue.Full:
+        pass
+    # 不直接丢弃：短暂等待后台消费；仍满则同步兜底，优先保证日志完整。
+    try:
+        _queue.put(payload, timeout=0.5)
     except queue.Full:
         _dropped += 1
-        if _dropped == 1 or _dropped % 1000 == 0:
-            logger.warning('网络日志队列已满，已丢弃 %s 条（审计降级）', _dropped)
+        if _dropped == 1 or _dropped % 100 == 0:
+            logger.warning('网络日志队列持续满，已同步兜底 %s 条', _dropped)
+        _write_sync(payload)
 
 
 def flush_network_logs(timeout: float = SHUTDOWN_TIMEOUT) -> None:
