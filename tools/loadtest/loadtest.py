@@ -457,6 +457,22 @@ class Stats:
             self.total += 1
 
 
+class RequestBudget:
+    """固定请求数模式：所有 worker 共享一个总预算，发完即止（不超发）。"""
+
+    def __init__(self, total: int):
+        self.total = max(1, int(total))
+        self.remaining = self.total
+        self.lock = threading.Lock()
+
+    def take(self) -> bool:
+        with self.lock:
+            if self.remaining <= 0:
+                return False
+            self.remaining -= 1
+            return True
+
+
 def percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -466,41 +482,56 @@ def percentile(values: list[float], pct: float) -> float:
 
 
 def worker(base_url, insecure, endpoints, token_holder, stop_at, think, stats, cid,
-           timeout=60):
+           timeout=60, budget=None):
     client = HttpClient(base_url, insecure=insecure, timeout=timeout)
     local_token = token_holder['token']
     headers_base = {'X-Competition-Id': str(cid)} if cid else {}
-    try:
-        while time.time() < stop_at:
-            for endpoint in endpoints:
-                if time.time() >= stop_at:
-                    break
-                headers = dict(headers_base) if endpoint['scope'] else {}
-                started = time.perf_counter()
-                status = 0
-                try:
-                    status, _ = client.request(
-                        endpoint['method'], endpoint['path'],
-                        token=local_token, headers=headers)
-                    if status == 401:
-                        # token 过期：重新登录一次（共享最新 token）
-                        with token_holder['lock']:
-                            if token_holder.get('credentials'):
-                                username, password = token_holder['credentials']
-                                try:
-                                    data = api_login(client, username, password)
-                                    local_token = data['access']
-                                    token_holder['token'] = local_token
-                                except SystemExit:
-                                    pass
-                except Exception:  # noqa: BLE001 —— 连接错误记 status 0
-                    status = 0
-                elapsed = (time.perf_counter() - started) * 1000
-                stats.record(endpoint['label'], elapsed, status)
+
+    def hit(endpoint):
+        nonlocal local_token
+        headers = dict(headers_base) if endpoint['scope'] else {}
+        started = time.perf_counter()
+        status = 0
+        try:
+            status, _ = client.request(
+                endpoint['method'], endpoint['path'],
+                token=local_token, headers=headers)
+            if status == 401:
+                # token 过期：重新登录一次（共享最新 token）
+                with token_holder['lock']:
+                    if token_holder.get('credentials'):
+                        username, password = token_holder['credentials']
+                        try:
+                            data = api_login(client, username, password)
+                            local_token = data['access']
+                            token_holder['token'] = local_token
+                        except SystemExit:
+                            pass
+        except Exception:  # noqa: BLE001 —— 连接错误记 status 0
+            status = 0
+        elapsed = (time.perf_counter() - started) * 1000
+        stats.record(endpoint['label'], elapsed, status)
+
+    def sleep_think():
+        if think > 0:
             time.sleep(max(0.0, think * (1 + random.uniform(-THINK_JITTER, THINK_JITTER))))
+
+    try:
+        if budget is not None:
+            index = 0
+            while budget.take():
+                hit(endpoints[index % len(endpoints)])
+                index += 1
+                sleep_think()
+        else:
+            while time.time() < stop_at:
+                for endpoint in endpoints:
+                    if time.time() >= stop_at:
+                        break
+                    hit(endpoint)
+                sleep_think()
     finally:
         client.close()
-
 
 # ---------------------------------------------------------------- 报告
 def summarize(stats: Stats) -> dict:
@@ -561,7 +592,11 @@ def render_markdown(summary, config, endpoints) -> str:
         f'- 登录账号：`{config["username"]}`（{config["role"]}）',
         f'- 比赛范围：`{config.get("cid") or "未指定"}`',
         f'- 开始时间：{config["started_at"]}',
-        f'- 并发用户：{config["users"]}　思考时间：{config["think"]}s　持续：{config["duration"]}s',
+        f'- 模式：{"按请求总数" if config.get("mode") == "requests" else "按时长"}',
+        (f'- 目标请求数：{config["requests"]}'
+         if config.get('mode') == 'requests' else ''),
+        f'- 并发用户：{config["users"]}　思考时间：{config["think"]}s',
+        f'- 实际耗时：{summary["duration"]:.1f}s',
         f'- 可用接口：{len(endpoints)} 个（{"、".join(e["label"] for e in endpoints)}）',
         '',
         '## 总体',
@@ -664,21 +699,43 @@ def prompt_if_missing(args):
         args.username = input('超级管理员账号：').strip()
     if not args.password:
         args.password = getpass.getpass('密码（输入不回显）：')
-    # 并发/时长/思考时间：未显式传参时交互询问；--yes 或非交互环境用默认值
+
     interactive = sys.stdin.isatty() and not args.yes
     if args.users is None:
         args.users = (_ask_number('并发用户数', 10, int) if interactive else 10)
-    if args.duration is None:
-        args.duration = (_ask_number('持续压测秒数', 30, float) if interactive else 30.0)
+
+    if args.mode is None:
+        if args.requests is not None:
+            args.mode = 'requests'
+        elif args.duration is not None:
+            args.mode = 'duration'
+        elif interactive:
+            print('压测模式：1 = 按时长（持续 N 秒）  2 = 按请求总数（发完 N 个看耗时）')
+            choice = input('选择（默认 1）：').strip()
+            args.mode = 'requests' if choice == '2' else 'duration'
+        else:
+            args.mode = 'duration'
+
+    if args.mode == 'requests':
+        if args.requests is None:
+            default = max(100, args.users * 10)
+            args.requests = (_ask_number('请求总数', default, int) if interactive else default)
+    else:
+        if args.duration is None:
+            args.duration = (_ask_number('持续压测秒数', 30, float) if interactive else 30.0)
+
     if args.think is None:
         args.think = (_ask_number('每轮思考时间（秒）', 1.0, float) if interactive else 1.0)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='独立压测工具（只读接口）')
     parser.add_argument('--base-url', help='目标网址，如 http://127.0.0.1:8000')
     parser.add_argument('--username', help='超级管理员账号')
     parser.add_argument('--password', help='密码（不传则交互输入）')
+    parser.add_argument('--mode', choices=('duration', 'requests'), default=None,
+                        help='压测模式：duration=按时长（默认），requests=固定请求总数')
+    parser.add_argument('--requests', type=int, default=None,
+                        help='固定请求总数（设置后默认进入 requests 模式）')
     parser.add_argument('--users', type=int, default=None,
                         help='并发虚拟用户数（不传则交互询问，默认 10）')
     parser.add_argument('--duration', type=float, default=None,
@@ -700,15 +757,26 @@ def main() -> int:
         parser.error('缺少网址 / 账号 / 密码')
     if args.users < 1:
         parser.error('并发数必须 ≥ 1')
-    if args.duration <= 0:
-        parser.error('压测时长必须 > 0 秒')
+    if args.mode == 'requests':
+        if not args.requests or args.requests < 1:
+            parser.error('请求总数必须 ≥ 1')
+        if args.duration is not None:
+            parser.error('--duration 与 --requests 只能选一个')
+    else:
+        if args.requests is not None:
+            parser.error('固定请求数请使用 --mode requests（或不指定 --mode）')
+        if args.duration is None or args.duration <= 0:
+            parser.error('压测时长必须 > 0 秒')
     if args.think < 0:
         parser.error('思考时间不能为负数')
     if args.timeout <= 0:
         parser.error('请求超时必须 > 0 秒')
 
     print(f'\n目标：{args.base_url}　账号：{args.username}')
-    print(f'计划：{args.users} 并发 × {args.duration}s（思考 {args.think}s）')
+    if args.mode == 'requests':
+        print(f'计划：{args.users} 并发 × {args.requests} 请求（思考 {args.think}s）')
+    else:
+        print(f'计划：{args.users} 并发 × {args.duration}s（思考 {args.think}s）')
     if not args.yes:
         confirm = input('将产生真实请求，确认开始？[y/N] ').strip().lower()
         if confirm not in ('y', 'yes'):
@@ -743,7 +811,8 @@ def main() -> int:
     token_holder = {'token': token, 'lock': threading.Lock(),
                     'credentials': (args.username, args.password)}
     stats.started_at = time.time()
-    stop_at = stats.started_at + args.duration
+    budget = RequestBudget(args.requests) if args.mode == 'requests' else None
+    stop_at = stats.started_at + (args.duration or 0)
     config = {
         'base_url': args.base_url,
         'username': args.username,
@@ -752,37 +821,49 @@ def main() -> int:
         'started_at': datetime.now().astimezone().isoformat(timespec='seconds'),
         'users': args.users,
         'think': args.think,
-        'duration': args.duration,
+        'mode': args.mode,
+        'requests': args.requests or 0,
+        'duration': args.duration or 0,
     }
 
     threads = [
         threading.Thread(
             target=worker,
             args=(args.base_url, args.insecure, endpoints, token_holder,
-                  stop_at, args.think, stats, cid, args.timeout),
+                  stop_at, args.think, stats, cid, args.timeout, budget),
             daemon=True,
         )
         for _ in range(max(1, args.users))
     ]
     for thread in threads:
         thread.start()
-    progress = ProgressBar(args.duration, '压测')
+    progress = ProgressBar(args.requests if budget else args.duration, '压测')
     while True:
         now = time.time()
-        elapsed = min(now - stats.started_at, args.duration)
+        elapsed = now - stats.started_at
         total, errors = stats.snapshot()
-        progress.render(
-            elapsed,
-            f'{elapsed:0.0f}/{args.duration:.0f}s  请求 {total}  错误 {errors}  '
-            f'QPS {total / max(elapsed, 0.5):.1f}',
-        )
-        if now >= stop_at and not any(thread.is_alive() for thread in threads):
-            break
-        time.sleep(0.25)
+        if budget is not None:
+            progress.render(
+                total,
+                f'{total}/{args.requests} 请求  已用 {elapsed:.1f}s  错误 {errors}  '
+                f'QPS {total / max(elapsed, 0.5):.1f}',
+            )
+            if total >= args.requests or not any(thread.is_alive() for thread in threads):
+                break
+        else:
+            clamped = min(elapsed, args.duration)
+            progress.render(
+                clamped,
+                f'{clamped:0.0f}/{args.duration:.0f}s  请求 {total}  错误 {errors}  '
+                f'QPS {total / max(clamped, 0.5):.1f}',
+            )
+            if now >= stop_at and not any(thread.is_alive() for thread in threads):
+                break
+        time.sleep(0.1 if budget else 0.25)
     for thread in threads:
         thread.join()
     stats.ended_at = time.time()
-    progress.finish(f'{args.duration:.0f}s 完成')
+    progress.finish(f'{stats.total} 请求 / {stats.ended_at - stats.started_at:.1f}s 完成')
 
     summary = summarize(stats)
     print('\n=== 压测结果 ===')
