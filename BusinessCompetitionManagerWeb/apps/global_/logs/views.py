@@ -4,10 +4,11 @@
 只增不删（决策 D20）：日志无修改/删除接口；导出动作本身也入网络日志。
 """
 
-import hashlib
+import base64
 import json
+from datetime import datetime
 
-from django.core.cache import cache
+from django.db.models import Q
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -42,24 +43,37 @@ class NetworkLogListView(APIView):
             qs = qs.filter(occurred_at__lte=params['to'])
 
         limit = min(int(params.get('limit', 50) or 50), 200)
-        offset = int(params.get('offset', 0) or 0)
-        # COUNT(*) 在按月分区的日志表上很贵；同一组筛选条件 10 秒内复用结果。
-        filter_key = {
-            key: params.get(key) for key in (
-                'userId', 'competitionId', 'deviceId', 'traceId', 'status',
-                'method', 'path', 'from', 'to',
-            ) if params.get(key)
-        }
-        cache_key = 'netlog:total:' + hashlib.sha256(
-            json.dumps(filter_key, sort_keys=True, ensure_ascii=False).encode()
-        ).hexdigest()
-        total = cache.get(cache_key)
-        if total is None:
-            total = qs.count()
-            cache.set(cache_key, total, 10)
-        rows = qs.order_by('-occurred_at')[offset:offset + limit]
+        qs = qs.order_by('-occurred_at', '-id')
+        cursor = params.get('cursor') or ''
+        if cursor:
+            try:
+                decoded = base64.urlsafe_b64decode(
+                    cursor + '=' * (-len(cursor) % 4)).decode()
+                payload = json.loads(decoded)
+                cursor_time = datetime.fromisoformat(payload['t'])
+                cursor_id = int(payload['id'])
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                return Response(
+                    {'code': 400, 'message': 'cursor 非法', 'details': ''}, status=400)
+            qs = qs.filter(
+                Q(occurred_at__lt=cursor_time)
+                | Q(occurred_at=cursor_time, id__lt=cursor_id))
+        else:
+            offset = int(params.get('offset', 0) or 0)
+            if offset:
+                qs = qs[offset:]
+
+        rows = list(qs[:limit + 1])
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = ''
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps(
+                {'t': last.occurred_at.isoformat(), 'id': last.id},
+                separators=(',', ':')).encode()).decode().rstrip('=')
+
         return Response({
-            'total': total,
             'items': [
                 {
                     'id': r.id,
@@ -80,6 +94,8 @@ class NetworkLogListView(APIView):
                 }
                 for r in rows
             ],
+            'hasMore': has_more,
+            'nextCursor': next_cursor,
         })
 
 

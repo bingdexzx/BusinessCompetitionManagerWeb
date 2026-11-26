@@ -4,6 +4,7 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 import os
+import sys
 import warnings
 
 from dotenv import load_dotenv
@@ -308,8 +309,10 @@ CACHE_TTL_INDUSTRY_FIELDS = _env_int('CACHE_TTL_INDUSTRY_FIELDS', 60)
 # 日志留存（prune 命令默认值）
 NETWORK_LOG_RETENTION_DAYS = _env_int('NETWORK_LOG_RETENTION_DAYS', 30)
 NETWORK_LOG_KEEP_ROWS = _env_int('NETWORK_LOG_KEEP_ROWS', 200000)
-# 网络日志异步批量写：请求线程不直接写全局库；设为 0 可退回同步（排障/测试用）
-NETWORK_LOG_ASYNC = os.getenv('NETWORK_LOG_ASYNC', '1') == '1'
+# 测试运行器会回滚事务，异步线程写入会引用已回滚的用户；测试环境强制同步。
+TESTING = 'test' in sys.argv
+# 网络日志异步批量写：请求线程不直接写全局库；设为 0 可退回同步（排障用）
+NETWORK_LOG_ASYNC = os.getenv('NETWORK_LOG_ASYNC', '1') == '1' and not TESTING
 BROADCAST_EVENT_RETENTION_DAYS = _env_int('BROADCAST_EVENT_RETENTION_DAYS', 7)
 BROADCAST_EVENT_KEEP_ROWS = _env_int('BROADCAST_EVENT_KEEP_ROWS', 100000)
 

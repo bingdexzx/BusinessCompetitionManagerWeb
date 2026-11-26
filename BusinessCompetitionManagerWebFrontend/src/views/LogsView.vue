@@ -11,11 +11,12 @@ import { formatDateTime, truncate } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
 const activeTab = ref<'network' | 'devices'>('network')
 // ---------- 网络日志 ----------
-const PAGE_SIZE = 20
+const PAGE_SIZE = 50
 const logs = ref<NetworkLogItem[]>([])
-const total = ref(0)
-const page = ref(1)
+const nextCursor = ref('')
+const hasMore = ref(false)
 const loading = ref(false)
+const loadingMore = ref(false)
 /** 首屏骨架 → 之后刷新用 v-loading */
 const hasLoaded = ref(false);
 const selectedRows = ref<NetworkLogItem[]>([])
@@ -29,11 +30,9 @@ const filters = reactive({
   traceId: '',
   range: null as [string, string] | null,
 })
-function buildQuery(): NetworkLogQuery {
-  const query: NetworkLogQuery = {
-    limit: PAGE_SIZE,
-    offset: (page.value - 1) * PAGE_SIZE,
-  }
+function buildQuery(cursor = ''): NetworkLogQuery {
+  const query: NetworkLogQuery = { limit: PAGE_SIZE }
+  if (cursor) query.cursor = cursor
   if (filters.method) query.method = filters.method
   if (filters.path.trim()) query.path = filters.path.trim()
   if (filters.status.trim()) query.status = Number(filters.status.trim())
@@ -45,22 +44,31 @@ function buildQuery(): NetworkLogQuery {
   }
   return query
 }
-async function loadLogs(): Promise<void> {
-  loading.value = true
+async function loadLogs(reset = true): Promise<void> {
+  const cursor = reset ? '' : nextCursor.value
+  if (!reset && !cursor) return
+  if (reset) loading.value = true
+  else loadingMore.value = true
   try {
-    const res = await getNetworkLogs(buildQuery())
-    logs.value = res.items ?? []
-    total.value = res.total ?? 0
+    const res = await getNetworkLogs(buildQuery(cursor))
+    const items = res.items ?? []
+    logs.value = reset ? items : [...logs.value, ...items]
+    nextCursor.value = res.nextCursor ?? ''
+    hasMore.value = Boolean(res.hasMore)
   } catch (err) {
     ElMessage.error(errorMessage(err, '加载失败'))
   } finally {
-    loading.value = false;
-  hasLoaded.value = true;
+    loading.value = false
+    loadingMore.value = false
+    hasLoaded.value = true
   }
 }
+function loadMore(): void {
+  void loadLogs(false)
+}
 function search(): void {
-  page.value = 1
-  void loadLogs()
+  nextCursor.value = ''
+  void loadLogs(true)
 }
 function resetFilters(): void {
   filters.method = ''
@@ -292,14 +300,11 @@ onMounted(() => void loadLogs())
             </template>
           </el-table>
           <div class="pager">
-            <el-pagination
-              v-model:current-page="page"
-              :page-size="PAGE_SIZE"
-              :total="total"
-              layout="total, prev, pager, next"
-              background
-              @current-change="loadLogs"
-            />
+            <span class="total-tip">已加载 {{ logs.length }} 条</span>
+            <el-button v-if="hasMore" :loading="loadingMore" @click="loadMore">
+              加载更多
+            </el-button>
+            <span v-else class="total-tip">已全部加载</span>
           </div>
         </el-tab-pane>
         <!-- ===== 设备管理 ===== -->

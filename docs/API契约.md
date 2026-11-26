@@ -189,7 +189,7 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/logs/network` | 网络日志（仅系统超管；`?userId&competitionId&deviceId&traceId&status&method&path&from&to&limit&offset`） |
+| GET | `/logs/network` | 网络日志（仅系统超管；`?userId&competitionId&deviceId&traceId&status&method&path&from&to&limit&cursor`，返回 `items/hasMore/nextCursor`，不做精确 COUNT） |
 | POST | `/logs/network/export` | 导出网络日志（仅系统超管） |
 | GET | `/logs/devices` | 设备管理（仅系统超管） |
 | GET | `/competitions/{cid}/logs/fields` | 字段日志（**仅系统超管 / 比赛超管**；`?companyId&fieldKey&contractId&operatorId&source&event&traceId&from&to`） |
