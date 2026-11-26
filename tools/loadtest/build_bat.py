@@ -20,8 +20,9 @@ rem ===========================================================================
 rem  BCM 独立压测工具（单文件 .bat 版，直接双击或在 cmd 里运行）
 rem  用法：
 rem    loadtest.bat
-rem    loadtest.bat --base-url http://127.0.0.1:8000 --username admin --users 20
-rem  说明：只需要系统有 Python 3.10+；报告默认写在 bat 同目录 reports\loadtest
+rem    loadtest.bat --base-url http://127.0.0.1:8000 --username admin --users 20 --duration 60
+rem  说明：只需要系统有 Python 3.10+；交互输入并发数与压测时长；
+rem        报告默认写在 bat 同目录 reports\loadtest
 rem ===========================================================================
 
 set "SELF=%~f0"

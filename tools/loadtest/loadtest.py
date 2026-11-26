@@ -33,6 +33,42 @@ from urllib.parse import urlparse
 THINK_JITTER = 0.3          # 思考时间抖动比例（±30%），避免所有线程同步
 
 
+class ProgressBar:
+    """终端进度条；非 TTY（CI/重定向）自动静默，避免日志刷屏。"""
+
+    def __init__(self, total: float, label: str, width: int = 28):
+        self.total = max(float(total), 0.001)
+        self.label = label
+        self.width = width
+        self.enabled = sys.stdout.isatty()
+        self._last_len = 0
+
+    def render(self, current: float, detail: str = '') -> None:
+        if not self.enabled:
+            return
+        ratio = max(0.0, min(1.0, current / self.total))
+        filled = int(ratio * self.width)
+        bar = '#' * filled + '-' * (self.width - filled)
+        line = f'\r{self.label} [{bar}] {ratio * 100:5.1f}%  {detail[:70]}'
+        pad = max(0, self._last_len - len(line))
+        sys.stdout.write(line + ' ' * pad)
+        sys.stdout.flush()
+        self._last_len = len(line)
+
+    def clear(self) -> None:
+        if self.enabled and self._last_len:
+            sys.stdout.write('\r' + ' ' * self._last_len + '\r')
+            sys.stdout.flush()
+        self._last_len = 0
+
+    def finish(self, detail: str = '') -> None:
+        self.render(self.total, detail)
+        if self.enabled:
+            sys.stdout.write('\n')
+            sys.stdout.flush()
+        self._last_len = 0
+
+
 # ---------------------------------------------------------------- HTTP 客户端
 class HttpClient:
     """HTTP/1.1 keep-alive 客户端（TCP_NODELAY；可复用连接，避免 Nagle 虚高）。"""
@@ -167,21 +203,31 @@ def build_endpoints(cid: int | None) -> list[dict]:
     return endpoints
 
 
-def probe(client: HttpClient, token: str, endpoints: list[dict], cid: int | None) -> list[dict]:
+def probe(client: HttpClient, token: str, endpoints: list[dict], cid: int | None,
+          progress: ProgressBar | None = None) -> list[dict]:
     available = []
-    for endpoint in endpoints:
+    total = len(endpoints)
+    for index, endpoint in enumerate(endpoints, start=1):
+        if progress:
+            progress.render(index - 1, f'{index}/{total}  {endpoint["label"]}')
         headers = {'X-Competition-Id': str(cid)} if endpoint['scope'] and cid else {}
         try:
             status, _ = client.request(
                 endpoint['method'], endpoint['path'], token=token, headers=headers)
         except Exception as exc:  # noqa: BLE001
+            if progress:
+                progress.clear()
             print(f'  [跳过] {endpoint["label"]}：{exc}')
             continue
+        if progress:
+            progress.clear()
         if status in (200, 201, 204):
             available.append(endpoint)
             print(f'  [可用] {endpoint["label"]}  HTTP {status}')
         else:
             print(f'  [跳过] {endpoint["label"]}  HTTP {status}')
+    if progress:
+        progress.clear()
     return available
 
 
@@ -195,6 +241,10 @@ class Stats:
         self.total = 0
         self.started_at = None
         self.ended_at = None
+
+    def snapshot(self) -> tuple[int, int]:
+        with self.lock:
+            return self.total, sum(self.errors.values())
 
     def record(self, label: str, latency: float, status: int):
         with self.lock:
@@ -214,8 +264,9 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[index]
 
 
-def worker(base_url, insecure, endpoints, token_holder, stop_at, think, stats, cid):
-    client = HttpClient(base_url, insecure=insecure)
+def worker(base_url, insecure, endpoints, token_holder, stop_at, think, stats, cid,
+           timeout=60):
+    client = HttpClient(base_url, insecure=insecure, timeout=timeout)
     local_token = token_holder['token']
     headers_base = {'X-Competition-Id': str(cid)} if cid else {}
     try:
@@ -394,6 +445,17 @@ def write_reports(summary, config, endpoints, report_dir: str, make_html: bool) 
 
 
 # ---------------------------------------------------------------- 入口
+def _ask_number(label: str, default, cast):
+    raw = input(f'{label}（默认 {default}）：').strip()
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        print(f'  输入无效，使用默认值 {default}')
+        return default
+
+
 def prompt_if_missing(args):
     if not args.base_url:
         args.base_url = input('目标网址（如 http://127.0.0.1:8000）：').strip()
@@ -401,6 +463,14 @@ def prompt_if_missing(args):
         args.username = input('超级管理员账号：').strip()
     if not args.password:
         args.password = getpass.getpass('密码（输入不回显）：')
+    # 并发/时长/思考时间：未显式传参时交互询问；--yes 或非交互环境用默认值
+    interactive = sys.stdin.isatty() and not args.yes
+    if args.users is None:
+        args.users = (_ask_number('并发用户数', 10, int) if interactive else 10)
+    if args.duration is None:
+        args.duration = (_ask_number('持续压测秒数', 30, float) if interactive else 30.0)
+    if args.think is None:
+        args.think = (_ask_number('每轮思考时间（秒）', 1.0, float) if interactive else 1.0)
 
 
 def main() -> int:
@@ -408,9 +478,14 @@ def main() -> int:
     parser.add_argument('--base-url', help='目标网址，如 http://127.0.0.1:8000')
     parser.add_argument('--username', help='超级管理员账号')
     parser.add_argument('--password', help='密码（不传则交互输入）')
-    parser.add_argument('--users', type=int, default=10, help='并发虚拟用户数（默认 10）')
-    parser.add_argument('--duration', type=float, default=30, help='持续秒数（默认 30）')
-    parser.add_argument('--think', type=float, default=1.0, help='每轮请求后的思考时间（秒，默认 1）')
+    parser.add_argument('--users', type=int, default=None,
+                        help='并发虚拟用户数（不传则交互询问，默认 10）')
+    parser.add_argument('--duration', type=float, default=None,
+                        help='持续压测秒数（不传则交互询问，默认 30）')
+    parser.add_argument('--think', type=float, default=None,
+                        help='每轮请求后的思考时间（秒，不传则交互询问，默认 1）')
+    parser.add_argument('--timeout', type=float, default=60.0,
+                        help='单请求超时秒数（默认 60）')
     parser.add_argument('--cid', type=int, help='指定比赛 ID（默认自动挑选）')
     parser.add_argument('--report-dir', default='reports/loadtest', help='报告输出目录')
     parser.add_argument('--insecure', action='store_true', help='HTTPS 忽略证书校验')
@@ -422,6 +497,14 @@ def main() -> int:
     prompt_if_missing(args)
     if not args.base_url or not args.username or not args.password:
         parser.error('缺少网址 / 账号 / 密码')
+    if args.users < 1:
+        parser.error('并发数必须 ≥ 1')
+    if args.duration <= 0:
+        parser.error('压测时长必须 > 0 秒')
+    if args.think < 0:
+        parser.error('思考时间不能为负数')
+    if args.timeout <= 0:
+        parser.error('请求超时必须 > 0 秒')
 
     print(f'\n目标：{args.base_url}　账号：{args.username}')
     print(f'计划：{args.users} 并发 × {args.duration}s（思考 {args.think}s）')
@@ -431,8 +514,9 @@ def main() -> int:
             print('已取消')
             return 0
 
-    client = HttpClient(args.base_url, insecure=args.insecure)
+    client = HttpClient(args.base_url, insecure=args.insecure, timeout=args.timeout)
     try:
+        print('正在登录…')
         login_data = api_login(client, args.username, args.password)
         token = login_data['access']
         user = login_data.get('user') or {}
@@ -443,7 +527,9 @@ def main() -> int:
         print(f'✓ 比赛范围：{cid or "未指定（仅全局接口）"}')
 
         print('探测接口：')
-        endpoints = probe(client, token, build_endpoints(cid), cid)
+        candidates = build_endpoints(cid)
+        endpoints = probe(client, token, candidates, cid,
+                          ProgressBar(len(candidates), '探测'))
         if not endpoints:
             print('没有可用的只读接口，终止')
             return 2
@@ -470,16 +556,30 @@ def main() -> int:
         threading.Thread(
             target=worker,
             args=(args.base_url, args.insecure, endpoints, token_holder,
-                  stop_at, args.think, stats, cid),
+                  stop_at, args.think, stats, cid, args.timeout),
             daemon=True,
         )
         for _ in range(max(1, args.users))
     ]
     for thread in threads:
         thread.start()
+    progress = ProgressBar(args.duration, '压测')
+    while True:
+        now = time.time()
+        elapsed = min(now - stats.started_at, args.duration)
+        total, errors = stats.snapshot()
+        progress.render(
+            elapsed,
+            f'{elapsed:0.0f}/{args.duration:.0f}s  请求 {total}  错误 {errors}  '
+            f'QPS {total / max(elapsed, 0.5):.1f}',
+        )
+        if now >= stop_at and not any(thread.is_alive() for thread in threads):
+            break
+        time.sleep(0.25)
     for thread in threads:
         thread.join()
     stats.ended_at = time.time()
+    progress.finish(f'{args.duration:.0f}s 完成')
 
     summary = summarize(stats)
     print('\n=== 压测结果 ===')
