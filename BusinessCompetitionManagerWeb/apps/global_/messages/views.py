@@ -1,8 +1,8 @@
 """站内信 API（系统级，独立于比赛）。
 
 - 收件箱 / 发件箱 / 已读 / 全部已读；
-- 发送（`POST /api/messages`）：**个人自由**，**按比赛批量（公告）仅超级管理员**（需求方口径）；
-- 通讯录（`GET /api/messages/address-book`）：收件人多选框数据（比赛 + 个人）。
+- **发送已关闭**：管理员与参赛选手均不可发信，仅保留历史查看；
+- 通讯录（`GET /api/messages/address-book`）：保留给历史/运维查询，前端不再使用。
 """
 
 from django.contrib.auth import get_user_model
@@ -88,11 +88,18 @@ class SentView(APIView):
 
 
 class SendView(APIView):
-    """发送站内信（需求方口径：个人自由；按比赛批量公告仅超级管理员）。"""
+    """发送站内信（2026-11 需求变更：消息中心只读，任何角色均不可发信）。"""
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        return Response(
+            {'code': 403, 'message': '消息中心已关闭发送功能，仅支持查看历史消息',
+             'details': ''},
+            status=403,
+        )
+
+        # 以下为旧发送逻辑，保留以便后续按需恢复；当前不可达。
         title = (request.data.get('title') or '').strip()
         body = request.data.get('body') or ''
         if not title:

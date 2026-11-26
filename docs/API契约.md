@@ -182,7 +182,7 @@ tech_nodes / production_lines / map_node_types / path_types / map_nodes / map_ed
 |------|------|------|
 | GET | `/messages` | 收件箱（站内信/公告/系统通知统一收件箱；`?unread=1&kind=&limit&offset`，返回 total/unread/items） |
 | GET | `/messages/sent` | 我发送的（含收件人阅读状态） |
-| POST | `/messages/send` | 发送 `{title, body, recipientUserIds[], competitionIds[]}`——**个人自由**；**按比赛批量（公告）仅超管**；自动去重 |
+| POST | `/messages/send` | **已关闭发送**（2026-11）：管理员与参赛选手均返回 403；仅保留历史查看 |
 | POST | `/messages/{recipientId}/read` | 标记已读（按收件人记录） |
 | POST | `/messages/read-all` | 全部已读 |
 | GET | `/messages/address-book` | 收件人多选框数据：比赛（选中=全员）+ 个人 |

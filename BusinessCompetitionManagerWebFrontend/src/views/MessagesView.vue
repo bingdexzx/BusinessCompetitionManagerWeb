@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 站内信（系统级，独立于比赛）：收件箱 / 发件箱 / 写站内信（收件人=比赛+个人混合多选）
-// 口径：个人发送自由；「按比赛（全员）」批量=公告，仅超级管理员可发。
+// 站内信（系统级，独立于比赛）：收件箱 / 发件箱
+// 需求口径（2026-11）：消息中心只读，管理员与参赛选手均不可发信。
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useRouter } from 'vue-router'
@@ -23,6 +23,8 @@ import { useNotifications, useResourceRefresh } from '@/composables/useNotificat
 
 const auth = useAuthStore()
 const router = useRouter()
+// 发送功能已关闭（任何角色均不可发信）；保留代码仅为后续恢复时减少改动
+const canSend = false
 const activeTab = ref<'inbox' | 'sent'>('inbox')
 
 // ---------- 收件箱 ----------
@@ -280,7 +282,7 @@ useResourceRefresh(['messages'], () => {
         <el-button :icon="Refresh" @click="activeTab === 'inbox' ? loadInbox() : loadSent()">
           刷新
         </el-button>
-        <el-button type="primary" :icon="EditPen" @click="openCompose">写消息</el-button>
+        <el-button v-if="canSend" type="primary" :icon="EditPen" @click="openCompose">写消息</el-button>
       </template>
     </PageHeader>
 
@@ -392,7 +394,7 @@ useResourceRefresh(['messages'], () => {
     </el-tabs>
 
     <!-- ===== 写站内信 ===== -->
-    <el-dialog v-model="composeVisible" title="写站内信" width="720px">
+    <el-dialog v-if="canSend" v-model="composeVisible" title="写站内信" width="720px">
       <el-form label-width="96px">
         <el-form-item label="标题" required>
           <el-input v-model="form.title" maxlength="200" placeholder="消息标题" />
