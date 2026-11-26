@@ -44,6 +44,8 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 # HTTPS 部署时开启（反代终止 TLS 时配合 TRUST_X_FORWARDED_PROTO=1）
 SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+# 健康检查必须允许内网 HTTP 直连，否则 deploy/status 会因为 301 一直判定未就绪
+SECURE_REDIRECT_EXEMPT = [r'^api/health$']
 SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0') or 0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 SECURE_HSTS_PRELOAD = os.getenv('SECURE_HSTS_PRELOAD', 'false').strip().lower() in ('1', 'true', 'yes', 'on')

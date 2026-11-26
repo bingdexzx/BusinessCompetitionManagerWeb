@@ -263,6 +263,7 @@ class Config:
     workers: int = 4
     threads: int = 8
     db_tune: bool = True
+    http_port_explicit: bool = False
     db_max_requests: int = 32
     db_max_connections: int = 100
     pg_shared_buffers_mb: int = 256
@@ -389,6 +390,9 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
         cfg.db_port = env_value(existing, 'DATABASES_PORT', cfg.db_port)
         cfg.site_dir = args.site_dir or ''
         cfg.nginx_mode = 'skip'
+        hosts = [h.strip() for h in env_value(
+            existing, 'ALLOWED_HOSTS', '').split(',') if h.strip()]
+        cfg.domain = hosts[0] if hosts else ''
         cfg.db_tune = not bool(args.no_db_tune)
         cfg.workers = int(args.workers or env_value(
             existing, 'WEB_CONCURRENCY', str(min(os.cpu_count() or 1, 8))))
@@ -501,6 +505,7 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
         if cfg.tls:
             UI.info('将自动申请 Let\'s Encrypt 证书（失败会回退 HTTP 并提示）')
     cfg.http_port = int(args.http_port or (80 if cfg.yes else ask('nginx 监听端口', '80')))
+    cfg.http_port_explicit = args.http_port is not None
     cfg.stop_openresty = bool(args.stop_openresty)
 
     cfg.build_frontend = args.build_frontend if args.build_frontend is not None else (
@@ -559,7 +564,7 @@ DATABASES_CONNECT_TIMEOUT = '5'
 
 SECRET_KEY = '{cfg.secret_key}'
 
-ALLOWED_HOSTS = '{cfg.domain}'
+ALLOWED_HOSTS = '{cfg.domain},127.0.0.1,localhost'
 CORS_ALLOWED_ORIGINS = '{proto}://{cfg.domain}'
 CSRF_TRUSTED_ORIGINS = '{proto}://{cfg.domain}'
 X_FRAME_OPTIONS = 'DENY'
@@ -1123,6 +1128,13 @@ def write_nginx(runner: Runner, cfg: Config) -> None:
     if cfg.nginx_mode == 'system' and not runner.dry_run and port_open('127.0.0.1', port):
         owner, pid = _port_owner(port)
         unit = _pid_unit(pid)
+        protected = 'pgadmin' in f'{owner} {unit}'.lower()
+        if cfg.http_port_explicit:
+            die(f'指定的端口 {port} 已被 {owner or "未知进程"}（{unit or "-"}）占用。\n'
+                f'  请换一个端口，或先停掉占用进程（pgadmin 请勿占用业务端口）。')
+        if protected:
+            die(f'{port} 被 pgadmin（{owner}/{unit}）占用；脚本不会停 pgadmin。\n'
+                f'  请把 pgadmin 移到其他端口，或显式 --http-port <空闲端口>。')
         if _openresty_running() or owner == 'openresty':
             if cfg.stop_openresty or cfg.yes or confirm(
                     f'80 被 {owner or "OpenResty"} 占用，停掉它并改用系统 nginx？', True):
@@ -1131,30 +1143,22 @@ def write_nginx(runner: Runner, cfg: Config) -> None:
                 time.sleep(1)
                 UI.ok('已停止 OpenResty，80 交给系统 nginx')
             else:
-                cfg.http_port = 8080
-                port = 8080
-                UI.warn(f'保留 OpenResty，改用 http://{cfg.domain}:{port}')
+                die('保留 OpenResty，无法在 80 启动；请加 --stop-openresty 或换端口。')
         elif owner == 'nginx':
             # 旧 BCM/系统 nginx 正在 80：更新配置后 reload，不切端口
             UI.info('80 已被 nginx 使用：更新站点配置并 reload（保持 80）')
         elif owner:
             if not unit:
-                cfg.http_port = 8080
-                port = 8080
-                UI.warn(f'80 被 {owner} 占用但无法识别 systemd 单元，改用 '
-                        f'http://{cfg.domain}:{port}（可手工停掉后重跑）')
-            elif cfg.yes or confirm(
+                die(f'80 被 {owner} 占用但无法识别 systemd 单元；'
+                    '请手工停掉后重跑（不要随意占用 8080）。')
+            if cfg.yes or confirm(
                     f'80 被 {owner}（{unit}）占用，停掉它并继续用 80？', True):
                 _stop_unit(runner, unit)
                 UI.ok(f'已停止 {unit}，继续使用 80')
             else:
-                cfg.http_port = 8080
-                port = 8080
-                UI.warn(f'保留 {owner}，改用 http://{cfg.domain}:{port}')
+                die(f'保留 {owner}，无法在 80 启动；请先停掉它或显式 --http-port <空闲端口>。')
         else:
-            cfg.http_port = 8080
-            port = 8080
-            UI.warn(f'80 被未知进程占用（ss 无法识别），改用 http://{cfg.domain}:{port}')
+            die('80 被未知进程占用（ss 无法识别）；请用 `ss -ltnp \'sport = :80\'` 排查后重跑。')
 
     conf = f"""upstream bcm_http {{
     server 127.0.0.1:{HTTP_PORT};
@@ -1443,15 +1447,23 @@ def fix_permissions(runner: Runner, cfg: Config) -> None:
     UI.ok('目录权限已交给 ' + SERVICE_USER)
 
 
+def _health_urlopen(host: str = ''):
+    import urllib.request
+
+    headers = {'Host': host} if host else {}
+    request = urllib.request.Request(
+        f'http://127.0.0.1:{HTTP_PORT}/api/health', headers=headers)
+    return urllib.request.urlopen(request, timeout=3)
+
+
 def health(runner: Runner, cfg: Config) -> None:
     UI.step('健康检查')
     if runner.dry_run:
         return
-    import urllib.request
+    host = cfg.domain or '127.0.0.1'
     for _ in range(30):
         try:
-            with urllib.request.urlopen(f'http://127.0.0.1:{HTTP_PORT}/api/health',
-                                        timeout=3) as resp:
+            with _health_urlopen(host) as resp:
                 if resp.status == 200:
                     UI.ok('后端健康检查通过')
                     return
