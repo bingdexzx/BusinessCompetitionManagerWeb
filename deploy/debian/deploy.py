@@ -145,6 +145,7 @@ class Facts:
     python: str = ''
     disk_free_gb: float = 0.0
     memory_gb: float = 0.0
+    cpu_count: int = 1
     local_ip: str = ''
 
 
@@ -214,6 +215,7 @@ def detect() -> Facts:
     facts.python = shutil.which('python3') or ''
     facts.disk_free_gb = disk_free_gb()
     facts.memory_gb = memory_gb()
+    facts.cpu_count = os.cpu_count() or 1
     facts.local_ip = detect_primary_ip()
     return facts
 
@@ -232,7 +234,8 @@ def show_facts(facts: Facts) -> None:
     ]
     for label, value in checks:
         print(f'  {"✓" if value else "·"} {label}')
-    print(f'  磁盘可用：{facts.disk_free_gb:.1f} GB　内存：{facts.memory_gb:.1f} GB')
+    print(f'  磁盘可用：{facts.disk_free_gb:.1f} GB　内存：{facts.memory_gb:.1f} GB'
+          f'　CPU：{facts.cpu_count} 核')
     if facts.local_ip:
         print(f'  本机 IP：{facts.local_ip}')
 
@@ -259,6 +262,17 @@ class Config:
     db_port: str = '5432'
     workers: int = 4
     threads: int = 8
+    db_tune: bool = True
+    db_max_requests: int = 32
+    db_max_connections: int = 100
+    pg_shared_buffers_mb: int = 256
+    pg_effective_cache_mb: int = 1024
+    pg_work_mem_mb: int = 8
+    pg_maintenance_mem_mb: int = 128
+    pg_wal_buffers_mb: int = 16
+    pgb_max_client: int = 200
+    pgb_pool_size: int = 30
+    pgb_reserve_pool: int = 5
     http_port: int = 80
     nginx_mode: str = 'system'     # 默认系统 nginx；manage | manual 可覆盖
     stop_openresty: bool = False
@@ -271,6 +285,64 @@ class Config:
     verbose: bool = False
     facts: Facts = field(default_factory=Facts)
 
+
+def _clamp(value: float, low: float, high: float) -> int:
+    return int(max(low, min(high, value)))
+
+
+def _set_capacity(cfg: Config, workers: int, threads: int) -> None:
+    """按已确定的 worker/线程数，推导 DB/PgBouncer 参数。"""
+    cpu = max(1, cfg.facts.cpu_count or os.cpu_count() or 1)
+    mem = max(0.5, cfg.facts.memory_gb or 1.0)
+    workers = max(1, int(workers))
+    threads = max(1, int(threads))
+    if workers * threads > 96:
+        threads = max(4, 96 // workers)
+
+    total_threads = workers * threads
+    db_max_requests = max(8, total_threads)
+    db_max_connections = _clamp(total_threads * 2 + 20, 50, 500)
+
+    # PostgreSQL 内存参数（只在 local 模式应用）
+    shared = _clamp(mem * 1024 * 0.25, 128, 8192)
+    effective = _clamp(mem * 1024 * 0.60, 256, 16384)
+    maintenance = _clamp(mem * 1024 * 0.05, 64, 1024)
+    work = _clamp(mem * 1024 * 0.02 / max(8, total_threads // 2), 4, 32)
+    wal = _clamp(shared / 32, 8, 64)
+
+    # PgBouncer：客户端连接要覆盖应用线程，服务端池可小于客户端
+    max_client = _clamp(total_threads * 2 + 50, 100, 2000)
+    pool = _clamp(total_threads // 2, 10, 100)
+    reserve = max(5, pool // 4)
+
+    cfg.workers = workers
+    cfg.threads = threads
+    cfg.db_max_requests = db_max_requests
+    cfg.db_max_connections = db_max_connections
+    cfg.pg_shared_buffers_mb = shared
+    cfg.pg_effective_cache_mb = effective
+    cfg.pg_work_mem_mb = work
+    cfg.pg_maintenance_mem_mb = maintenance
+    cfg.pg_wal_buffers_mb = wal
+    cfg.pgb_max_client = max_client
+    cfg.pgb_pool_size = pool
+    cfg.pgb_reserve_pool = reserve
+    UI.info(f'自动参数：{workers} worker × {threads} 线程，'
+            f'DB 并发 {db_max_requests}，max_connections {db_max_connections}，'
+            f'shared_buffers {shared}MB，PgBouncer 池 {pool}')
+
+
+def apply_hardware_profile(cfg: Config, args) -> None:
+    """按 CPU / 内存推导进程、连接与 PostgreSQL/PgBouncer 参数。
+
+    原则：小机器保守、大机器逐步放开；显式 --workers/--threads 优先。
+    数据库连接预算按「每请求最多占全局库+比赛库 2 条连接」估算。
+    """
+    cpu = max(1, cfg.facts.cpu_count or os.cpu_count() or 1)
+    mem = max(0.5, cfg.facts.memory_gb or 1.0)
+    workers = int(args.workers) if args.workers else min(cpu, 8)
+    threads = int(args.threads) if args.threads else (8 if mem >= 1.5 else 4)
+    _set_capacity(cfg, workers, threads)
 
 def is_ip(value: str) -> bool:
     import ipaddress
@@ -317,6 +389,11 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
         cfg.db_port = env_value(existing, 'DATABASES_PORT', cfg.db_port)
         cfg.site_dir = args.site_dir or ''
         cfg.nginx_mode = 'skip'
+        cfg.db_tune = not bool(args.no_db_tune)
+        cfg.workers = int(args.workers or env_value(
+            existing, 'WEB_CONCURRENCY', str(min(os.cpu_count() or 1, 8))))
+        cfg.threads = int(args.threads or 8)
+        _set_capacity(cfg, cfg.workers, cfg.threads)
         return cfg
 
     # ---- 访问地址（域名或 IP）
@@ -362,6 +439,7 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
     cfg.reset_admin = bool(args.reset_admin_password)
     cfg.force_cert = bool(args.force_cert)
     cfg.pgbouncer = bool(args.pgbouncer)
+    cfg.db_tune = not bool(args.no_db_tune)
 
     # ---- 数据库
     reuse = bool(existing.get('DATABASES_PASSWORD')) and not args.db_password
@@ -403,9 +481,11 @@ def collect(args, facts: Facts, env_path: Path) -> Config:
     if not cfg.db_password:
         die('缺少数据库密码：请用 --db-password 提供，或在 1Panel 创建库后重试')
 
-    cpu = os.cpu_count() or 2
-    cfg.workers = int(args.workers or (cpu if cfg.yes else ask('worker 进程数', str(cpu))))
-    cfg.threads = int(args.threads or (8 if cfg.yes else ask('每 worker 线程数', '8')))
+    apply_hardware_profile(cfg, args)
+    if not cfg.yes:
+        cfg.workers = int(ask('worker 进程数', str(cfg.workers)))
+        cfg.threads = int(ask('每 worker 线程数', str(cfg.threads)))
+        _set_capacity(cfg, cfg.workers, cfg.threads)
 
     # ---- nginx 模式：默认就是系统 nginx（不再依赖 1Panel/OpenResty 的判断）
     cfg.nginx_mode = args.nginx_mode or 'system'
@@ -464,7 +544,7 @@ def preflight(cfg: Config) -> None:
 def render_env(cfg: Config) -> str:
     secure = 'true' if (cfg.tls and not cfg.ip_mode) else 'false'
     proto = 'https' if secure == 'true' else 'http'
-    db_max = min(128, max(32, cfg.workers * cfg.threads))
+    db_max = cfg.db_max_requests
     return f"""# 由 deploy/debian/deploy.py 生成（{time.strftime('%Y-%m-%d %H:%M:%S')}）
 APP_VERSION = '1.0.0'
 DEBUG = 'false'
@@ -496,6 +576,11 @@ DATABASES_DISABLE_SERVER_SIDE_CURSORS = '{'true' if cfg.pgbouncer else 'false'}'
 
 WEB_CONCURRENCY = '{cfg.workers}'
 DB_MAX_CONCURRENT_REQUESTS = '{db_max}'
+# PostgreSQL 自动调参（由部署脚本按硬件写入，仅 local 模式应用）
+PG_MAX_CONNECTIONS = '{cfg.db_max_connections}'
+PG_SHARED_BUFFERS_MB = '{cfg.pg_shared_buffers_mb}'
+PG_EFFECTIVE_CACHE_MB = '{cfg.pg_effective_cache_mb}'
+PG_WORK_MEM_MB = '{cfg.pg_work_mem_mb}'
 DB_BACKPRESSURE_TIMEOUT = '10'
 
 CHANNEL_LAYER_BACKEND = 'postgres'
@@ -660,6 +745,45 @@ def install_python(runner: Runner, cfg: Config) -> None:
 
 
 # ---------------------------------------------------------------- 数据库
+def apply_postgres_tuning(runner: Runner, cfg: Config) -> None:
+    """仅 local 模式：按硬件写 ALTER SYSTEM；新装库会重启使内存参数生效。"""
+    if not cfg.db_tune or cfg.db_mode != 'local':
+        return
+    if cfg.facts.postgres_port:
+        UI.info('PostgreSQL 原本已在运行：跳过自动内存参数，避免影响同机其他库')
+        return
+    settings = {
+        'max_connections': str(cfg.db_max_connections),
+        'shared_buffers': f'{cfg.pg_shared_buffers_mb}MB',
+        'effective_cache_size': f'{cfg.pg_effective_cache_mb}MB',
+        'work_mem': f'{cfg.pg_work_mem_mb}MB',
+        'maintenance_work_mem': f'{cfg.pg_maintenance_mem_mb}MB',
+        'wal_buffers': f'{cfg.pg_wal_buffers_mb}MB',
+        'random_page_cost': '1.1',
+    }
+    if runner.dry_run:
+        UI.info('[dry-run] PostgreSQL 自动参数：'
+                + '，'.join(f'{k}={v}' for k, v in settings.items()))
+        return
+    check = runner.capture(['sudo', '-u', 'postgres', 'psql', '-tAc', 'SELECT 1'])
+    if check.returncode != 0:
+        UI.warn('无法用 postgres 用户执行 ALTER SYSTEM，跳过 PostgreSQL 内存参数')
+        return
+    sql = '; '.join(
+        f"ALTER SYSTEM SET {key} = '{value}'" for key, value in settings.items()) + ';'
+    result = runner.run(
+        ['sudo', '-u', 'postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+        check=False)
+    if result.returncode != 0:
+        UI.warn('PostgreSQL 参数写入失败，保留原配置')
+        return
+    runner.run(['sudo', '-u', 'postgres', 'psql', '-c', 'SELECT pg_reload_conf()'],
+               check=False)
+    # 本次是新装/启动的 PostgreSQL，重启使 shared_buffers/max_connections 生效
+    runner.run(['systemctl', 'restart', 'postgresql'], check=False)
+    UI.ok('PostgreSQL 自动参数已写入并重启生效')
+
+
 def setup_database(runner: Runner, cfg: Config) -> None:
     UI.step('数据库')
     if cfg.db_mode == 'existing':
@@ -687,6 +811,7 @@ def setup_database(runner: Runner, cfg: Config) -> None:
          f"SELECT 1 FROM pg_database WHERE datname='{cfg.db_name}'"])
     if not runner.dry_run and (exists.stdout or '').strip() != '1':
         runner.run(['sudo', '-u', 'postgres', 'createdb', '-O', cfg.db_user, cfg.db_name])
+    apply_postgres_tuning(runner, cfg)
     UI.ok('数据库就绪')
 
 
@@ -764,10 +889,10 @@ listen_port = 6432
 auth_type = plain
 auth_file = {userlist}
 pool_mode = transaction
-max_client_conn = 1000
-default_pool_size = 30
-min_pool_size = 5
-reserve_pool_size = 5
+max_client_conn = {cfg.pgb_max_client}
+default_pool_size = {cfg.pgb_pool_size}
+min_pool_size = {max(2, cfg.pgb_pool_size // 6)}
+reserve_pool_size = {cfg.pgb_reserve_pool}
 server_reset_query = DISCARD ALL
 ignore_startup_parameters = extra_float_digits,options
 """, encoding='utf-8')
@@ -1366,6 +1491,9 @@ def run_status(cfg: Config) -> int:
     print(f'服务状态：{active or "未知"}　健康检查：{healthy}')
     print(f'数据库：{env.get("DATABASES_USER")}@{env.get("DATABASES_HOST")}:'
           f'{env.get("DATABASES_PORT")}/{env.get("DATABASES_NAME")}')
+    print(f'自动参数：max_connections={env.get("PG_MAX_CONNECTIONS", "?")} '
+          f'shared_buffers={env.get("PG_SHARED_BUFFERS_MB", "?")}MB '
+          f'DB_MAX_CONCURRENT_REQUESTS={env.get("DB_MAX_CONCURRENT_REQUESTS", "?")}')
     print(f'访问地址：{proto}://{env.get("ALLOWED_HOSTS", "?")}')
     print(f'站点目录：{env.get("SITE_DIR", "（未配置，使用默认 dist）")}')
     print('常用命令：systemctl status|restart bcm；journalctl -u bcm -n 100 --no-pager')
@@ -1384,6 +1512,10 @@ def print_summary(cfg: Config) -> None:
         f'管理员账号：  {cfg.admin_user}',
         f'管理员密码：  {cfg.admin_password}（仅首次创建/重置时有效）',
         f'数据库：      {cfg.db_name}（用户 {cfg.db_user}）',
+        f'自动参数：    {cfg.workers} worker × {cfg.threads} 线程，'
+        f'max_connections {cfg.db_max_connections}，'
+        f'shared_buffers {cfg.pg_shared_buffers_mb}MB，'
+        f'PgBouncer 池 {cfg.pgb_pool_size}',
         '',
         '常用命令：',
         f'  systemctl status {SERVICE}',
@@ -1441,6 +1573,11 @@ def build_parser() -> argparse.ArgumentParser:
     pgb_group.add_argument('--pgbouncer', dest='pgbouncer', action='store_true', default=True,
                            help='部署时启动 PgBouncer（默认开启）')
     pgb_group.add_argument('--no-pgbouncer', dest='pgbouncer', action='store_false')
+    db_tune_group = parser.add_mutually_exclusive_group()
+    db_tune_group.add_argument('--db-tune', dest='no_db_tune', action='store_false',
+                               default=False, help='按硬件自动写 PostgreSQL 参数（默认开启）')
+    db_tune_group.add_argument('--no-db-tune', dest='no_db_tune', action='store_true',
+                               help='不改 PostgreSQL 参数')
     fw_group = parser.add_mutually_exclusive_group()
     fw_group.add_argument('--firewall', dest='firewall', action='store_true', default=None)
     fw_group.add_argument('--no-firewall', dest='firewall', action='store_false')

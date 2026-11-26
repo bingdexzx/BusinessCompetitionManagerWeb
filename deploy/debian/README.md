@@ -57,7 +57,8 @@ python3 deploy/debian/deploy.py status
 | `--stop-openresty` | 80 被 1Panel OpenResty 占用时停掉它 |
 | `--tls` / `--no-tls` | 是否申请 Let's Encrypt 证书（**域名默认自动申请**；`--no-tls` 关闭） |
 | `--force-cert` | 域名解析与本机 IP 不一致时仍尝试申请 |
-| `--workers/--threads` | waitress 进程数/线程数 |
+| `--workers/--threads` | 覆盖自动推导的 waitress 进程数/线程数 |
+| `--db-tune` / `--no-db-tune` | 是否按硬件自动写 PostgreSQL 内存/连接参数（默认开启） |
 | `--admin-user/--admin-email/--admin-password` | 管理员账号 |
 | `--reset-admin-password` | 已存在时重置密码为本次密码 |
 | `--no-frontend-build` | 使用现有 dist，不构建 |
@@ -67,9 +68,44 @@ python3 deploy/debian/deploy.py status
 | `--dry-run` | 只打印计划，不执行 |
 | `--verbose` | 打印每条命令 |
 
+## 硬件自动调参
+
+脚本会读取本机 **CPU 核数 / 内存 / 磁盘**，自动推导：
+
+| 参数 | 规则（示例） |
+| --- | --- |
+| `workers × threads` | `min(CPU, 8) × 8`；总线程上限 96；内存不足 1.5GB 时线程降为 4 |
+| `DB_MAX_CONCURRENT_REQUESTS` | 等于总线程数 |
+| PostgreSQL `max_connections` | `总线程 × 2 + 20`，限制在 50–500 |
+| `shared_buffers` | 内存的 25%，限制 128MB–8GB |
+| `effective_cache_size` | 内存的 60%，限制 256MB–16GB |
+| `work_mem` | 按内存和并发推导，4–32MB |
+| `maintenance_work_mem` | 内存的 5%，64MB–1GB |
+| PgBouncer `max_client_conn` | 应用线程 × 2 + 50，100–2000 |
+| PgBouncer `default_pool_size` | 应用线程 ÷ 2，10–100 |
+
+示例：
+
+```
+2 核 / 2GB   → 2 worker × 8 线程，max_connections 52，shared_buffers 512MB
+4 核 / 8GB   → 4 worker × 8 线程，max_connections 84，shared_buffers 2GB
+8 核 / 16GB  → 8 worker × 8 线程，max_connections 148，shared_buffers 4GB
+```
+
+应用方式：
+
+- **新装的本地 PostgreSQL**：写入 `ALTER SYSTEM` 并重启 PostgreSQL 生效；
+- **本机已有 PostgreSQL**：跳过自动内存参数，避免影响同机其他库；
+- **已有外部库（1Panel/Docker/远程）**：不改数据库参数，只调整应用线程与 PgBouncer；
+- 想完全关闭：加 `--no-db-tune`。
+
+`upgrade` 会按 `.env` 里的 `WEB_CONCURRENCY` 重新计算 PgBouncer 参数，不会改 PostgreSQL
+内存参数（避免升级时重启数据库）；需要重调 PostgreSQL 请重新执行 install 或手工
+`ALTER SYSTEM`。
+
 ## 安装流程
 
-1. 环境探测（Debian/root/1Panel/OpenResty/nginx/PostgreSQL/Node/磁盘/内存/IP）；
+1. 环境探测（Debian/root/1Panel/OpenResty/nginx/PostgreSQL/Node/磁盘/内存/CPU/IP）；
 2. 只安装缺失的系统包；
 3. 数据库：复用或创建库/用户；**安装并启动 PgBouncer（127.0.0.1:6432）**；
 4. 创建 `bcm` 系统用户与安装目录；
