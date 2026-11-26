@@ -69,6 +69,8 @@ class NetworkLog(models.Model):
             models.Index(fields=['user', 'occurred_at']),
             models.Index(fields=['device', 'occurred_at']),
             models.Index(fields=['competition_id', 'occurred_at']),
+            # 默认按时间倒序翻页；没有该索引时每次都要对全表排序
+            models.Index(fields=['-occurred_at'], name='logs_networ_occurred_idx'),
         ]
 
     def save(self, *args, **kwargs):

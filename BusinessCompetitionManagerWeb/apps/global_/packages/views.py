@@ -7,6 +7,7 @@ import uuid
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from django.core.cache import cache
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -172,15 +173,21 @@ class PluginRegistryView(APIView):
             qs = qs.filter(
                 package_links__package__competition_id=competition_id).distinct()
 
-        if request.query_params.get('kind'):
-            qs = qs.filter(kind=request.query_params['kind'].upper())
-        return Response([
-            {
-                'id': p.id, 'kind': p.kind, 'key': p.key, 'name': p.name,
-                'version': p.version, 'sha256': p.sha256, 'fileName': p.file_name,
-                'numberPrefix': p.number_prefix,
-                'uploadedBy': p.uploaded_by, 'uploadedByUsername': p.uploaded_by_username,
-                'auditTrail': p.audit_trail, 'createdAt': p.created_at.isoformat(),
-            }
-            for p in qs[:200]
-        ])
+        kind = (request.query_params.get('kind') or '').upper()
+        if kind:
+            qs = qs.filter(kind=kind)
+        cache_key = f'plugins:registry:{competition_id or 0}:{kind}'
+        data = cache.get(cache_key)
+        if data is None:
+            data = [
+                {
+                    'id': p.id, 'kind': p.kind, 'key': p.key, 'name': p.name,
+                    'version': p.version, 'sha256': p.sha256, 'fileName': p.file_name,
+                    'numberPrefix': p.number_prefix,
+                    'uploadedBy': p.uploaded_by, 'uploadedByUsername': p.uploaded_by_username,
+                    'auditTrail': p.audit_trail, 'createdAt': p.created_at.isoformat(),
+                }
+                for p in qs[:200]
+            ]
+            cache.set(cache_key, data, 15)
+        return Response(data)
